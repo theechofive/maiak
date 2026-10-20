@@ -4,12 +4,12 @@ Statuses are kept current in this file. Semantics for lifecycle, leases, rollups
 
 | ID | Task | Depends on | Status |
 |---|---|---|---|
-| B-01 | Platform: config (including `MAIAK_PUBLIC_URL`, `MAIAK_BLOCKED_CIDRS`), slog, DB pool, `WithTenantTx`/`WithTx`, UUIDv7, crypto (AES-GCM), clock, metrics, admin server (`/healthz`, `/readyz`, `/metrics`), graceful shutdown | none | doing |
-| B-02 | Migration `init_tenancy_auth` (tenants, users, memberships, auth_identities, sessions, audit_log, RLS, grants, `auth_lookup_session`), `cmd/migrate` (goose, advisory lock), schema-lint test (covers partition children and a definer-function allow-list) | B-01 | doing |
-| B-03 | `maiakctl db bootstrap` (idempotent DB and roles, Secret `maiak-db` through the Kubernetes API) and `maiakctl hashpw` | B-01 | doing |
-| B-04 | Auth: admin bootstrap from env, login/logout/me, sessions, CSRF, rate limit, audit rows | B-02 | doing |
+| B-01 | Platform: config (including `MAIAK_PUBLIC_URL`, `MAIAK_BLOCKED_CIDRS`), slog, DB pool, `WithTenantTx`/`WithTx`, UUIDv7, crypto (AES-GCM), clock, metrics, admin server (`/healthz`, `/readyz`, `/metrics`), graceful shutdown | none | done |
+| B-02 | Migration `init_tenancy_auth` (tenants, users, memberships, auth_identities, sessions, audit_log, RLS, grants, `auth_lookup_session`), `cmd/migrate` (goose, advisory lock), schema-lint test (covers partition children and a definer-function allow-list) | B-01 | done |
+| B-03 | `maiakctl db bootstrap` (idempotent DB and roles, Secret `maiak-db` through the Kubernetes API) and `maiakctl hashpw` | B-01 | done |
+| B-04 | Auth: admin bootstrap from env, login/logout/me, sessions, CSRF, rate limit, audit rows | B-02 | done |
 | B-05 | Full MVP OpenAPI contract (`api/openapi.yaml`, table in `README.md` of this folder plus the ADR-0016 additions), generated server code, `cmd/api` router wiring, problem+json mapping, a test that every unsafe operation except login requires the CSRF header | B-01, B-04 | todo |
-| B-06 | Dockerfile (multi-arch, five binaries), Makefile (`generate`, `lint`, `test`, `build`, `check-generated`), golangci config with depguard | B-01 | doing |
+| B-06 | Dockerfile (multi-arch, five binaries), Makefile (`generate`, `lint`, `test`, `build`, `check-generated`), golangci config with depguard | B-01 | done |
 | B-07 | Migration `monitors_locations`: monitors (`paused`, `deleted_at`), probe_locations (seed the home location), monitor_locations, monitor_location_state (lease_token, lease_until, next_run_at), monitor_state (status, status_changed_at, last_error_kind, last_checked_at, tls_warned_not_after); RLS and grants; tenant limits (default 50 monitors, interval 60 s only) | B-02 | todo |
 | B-08 | Monitors API per ADR-0016 lifecycle: create (one transaction, limit check with tenant row lock, initial state rows), list, get, patch, delete (soft), pause, resume; validation (https, port 443, literal private IPs rejected, limits), audit rows | B-05, B-07 | todo |
 | B-09 | SSRF guard and HTTPS prober (`checks`): connect-time IP validation, blocked ranges plus `MAIAK_BLOCKED_CIDRS`, at most 3 revalidated redirects within the 10 s deadline, no proxy, no body read, port 443 only, TLS expiry capture, typed error kinds; table-driven tests including DNS rebinding (injectable resolver and dialer). The guarded HTTP client is a reusable package (used by B-13) | B-01 | todo |
