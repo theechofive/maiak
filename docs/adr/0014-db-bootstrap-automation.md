@@ -24,3 +24,8 @@ Migrations need an existing database and roles, which only an administrator can 
 - Init container in every pod: every replica, including the worker, would hold the admin login.
 - A copy of the master login in `platform/maiak/db-admin`: drifts when the password rotates.
 - Passwords in Secrets Manager: needs AWS access from the Job; unnecessary because the Job can always regenerate them.
+
+## Implementation notes (2026-10-20)
+- Role passwords are sent to PostgreSQL as SCRAM verifiers, never as plaintext statements; statements are built server-side with `format(%I, %L)`.
+- A Secret with missing password keys makes the run fail instead of overwriting; a Secret with missing or stale `*_url` keys gets its URLs rebuilt.
+- Tested only with a superuser admin and a `CREATEROLE CREATEDB` approximation of `rds_superuser`; the real RDS path is verified at the first deploy (L-022).

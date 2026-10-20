@@ -18,3 +18,8 @@ One schema, `tenant_id` on every tenant-scoped table, RLS forced with a policy o
 ## Alternatives considered
 - Schema per tenant: migrations N times, `search_path` pitfalls, scheduler must scan schemas.
 - Database per tenant: strongest isolation, heavy operations; for enterprise only.
+
+## Implementation notes (2026-10-20)
+- The policy reads the setting as `NULLIF(current_setting('app.tenant_id', true), '')::uuid`: on a pooled connection the setting is an empty string after an earlier transaction, and a plain cast would fail on some connections only.
+- `sessions` has an extra SELECT-only policy for `maiak_owner` so that the `SECURITY DEFINER` lookup (owned by `maiak_owner`) can see sessions under FORCE RLS. The schema-lint test allows this policy by name.
+- Runtime roles must never be members of `maiak_owner`; the schema-lint test and the bootstrap verification check it.

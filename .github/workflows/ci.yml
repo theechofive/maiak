@@ -37,7 +37,7 @@ jobs:
           fi
           fail=0
           shopt -s nullglob
-          for f in "$dir"/*; do
+          for f in "$dir"/*.sql; do
             [ -f "$f" ] || continue
             base=$(basename "$f")
             if ! [[ "$base" =~ ^[0-9]{14}_[a-z0-9_]+\.sql$ ]]; then

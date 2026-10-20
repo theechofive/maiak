@@ -17,3 +17,11 @@ The admin email and an argon2id password hash come from a Kubernetes Secret (fed
 ## Alternatives considered
 - No users table: would force a rewrite of sessions and authorization when users arrive.
 - Own signup with email verification: needs SMTP and more attack surface, not needed now.
+
+## Amendments after implementation and review (2026-10-20)
+- Sessions: `expires_at` is fixed at login; only `last_seen_at` slides. Login always binds to the `default` tenant.
+- Session lookup rejects disabled users and suspended or deleted tenants; a changed admin password hash deletes that user's sessions.
+- Rotating `MAIAK_ADMIN_EMAIL` disables the previous owner(s), deletes their sessions and writes an audit row.
+- The login rate limit reserves an attempt atomically before the argon2 verification and the verification queue has a bounded wait (HTTP 429). It is in memory, per replica. The per-email limit (10 failures per 15 minutes) lets anyone lock the single admin out for a while; accepted for the MVP (L-007).
+- Argon2 memory is capped at 256 MiB; the pod limit is small, so concurrent logins are limited to 2.
+- `MAIAK_ENV` defaults to `production`.
