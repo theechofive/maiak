@@ -41,7 +41,6 @@ Created 2026-10-20 from the design session.
 | R-007 | risk | open | Worker with `hostNetwork` would reach IMDS | Node IMDS is v2 with hop limit 1, which protects only non-hostNetwork pods. The chart must never set `hostNetwork` on the worker | Permanent |
 | L-022 | deferred | open | Verify bootstrap hook behaviour at the first real sync | Unverified assumptions: ArgoCD deletes the `maiak-db-admin` ExternalSecret and its Secret after the Job succeeds (`HookSucceeded`); the bootstrap RBAC is sufficient; External Secrets resolves `platform/grafana/db`. Consider a PostSync check that `maiak-db` exists with all keys | At the first deploy (slice 1) |
 | L-023 | deferred | open | Web image never built or run | Docker was not running when F-10 was written: the Dockerfile, nginx config (read-only rootfs, arbitrary uid) and probes (chart still probes `/`, nginx serves `/healthz`) are untested | Before the first deploy; first CI run of `release.yml` |
-| L-024 | deferred | open | Client-up-to-date CI check for the web | Needs the generated client from F-02 | With F-02 |
 | R-010 | risk | open | Backend and web bump jobs both push to `main` | `release.yml` runs them in parallel; the retry loop with `git reset --hard` is untested | First CI run of `release.yml` |
 | L-025 | deferred | open | Expired-session cleanup | Implemented by `purge_expired_sessions()` in task B-10 and run by `jobs` in B-14; until then expired rows accumulate (harmless, lookups check `expires_at`) | B-14 |
 | L-026 | deferred | open | Digest-pinned base images | `golang` and distroless images are pinned by tag only; part of L-019 | With L-019 |
@@ -62,3 +61,4 @@ Created 2026-10-20 from the design session.
 |---|---|---|
 | L-015 | Frontend stack | [ADR-0015](adr/0015-frontend-stack.md): minimal React + Vite, Pico.css, generated client (2026-10-20) |
 | L-021 | First ArgoCD sync: PreSync migration hook ran before the ExternalSecret existed, and in Sync mode the Job (wave 1) would start after workloads (wave 0) | Chart: ExternalSecret and migrate ServiceAccount wave -2, migrate Job `Sync` hook wave -1, workloads wave 0; `migration.hookPhase` defaults to `Sync` (2026-10-20) |
+| L-024 | Client-up-to-date CI check for the web | F-02: the `web` CI job runs `npm run gen:api` and fails when `web/src/api/generated` changes; the job also runs on `api/**` changes (2026-10-20) |

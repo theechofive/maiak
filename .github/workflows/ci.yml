@@ -94,6 +94,7 @@ jobs:
               - '.github/workflows/ci.yml'
             web:
               - 'web/**'
+              - 'api/**'
               - '.github/workflows/ci.yml'
 
   backend:
@@ -193,6 +194,16 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+      - name: Generated client is up to date
+        run: |
+          npm run gen:api
+          if [ -n "$(git status --porcelain -- src/api/generated)" ]; then
+            git status --porcelain -- src/api/generated
+            echo "::error::web/src/api/generated is stale: run 'npm run gen:api' in web/ and commit the result"
+            exit 1
+          fi
+      - name: Format
+        run: npm run format:check
       - name: Lint
         run: npm run lint
       - name: Typecheck
