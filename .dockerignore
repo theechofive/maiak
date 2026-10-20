@@ -1,0 +1,6 @@
+# Allow-list: the image is built from backend/ only.
+*
+!backend/
+backend/bin/
+backend/tools/
+backend/**/*_test.go

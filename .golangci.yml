@@ -1,0 +1,73 @@
+# golangci-lint v2 configuration (CI runs it in backend/; this file is found by walking up).
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - depguard
+    - errcheck
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - revive
+    - staticcheck
+    - unused
+  settings:
+    depguard:
+      rules:
+        # Tenant data must go through db.WithTenantTx; only the db package and the process
+        # entry points may touch the pool type.
+        no-direct-pool:
+          files:
+            - "$all"
+            - "!**/internal/platform/db/**"
+            - "!**/cmd/**"
+          deny:
+            - pkg: github.com/jackc/pgx/v5/pgxpool
+              desc: use internal/platform/db (WithTx / WithTenantTx) instead of the pool
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+        - name: var-naming
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: context-as-argument
+        - name: unused-parameter
+          disabled: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters: [gosec, revive]
+      - path: internal/testsupport/
+        linters: [gosec]
+      # DDL cannot take bind parameters; identifiers are package constants quoted with
+      # pgx.Identifier and the password statement is built server-side with format().
+      - path: internal/dbbootstrap/
+        linters: [gosec]
+        text: "G20[12]"
+      # Reads the fixed service account mount paths.
+      - path: internal/dbbootstrap/secrets\.go
+        linters: [gosec]
+        text: "G304"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/theechofive/maiak
+  exclusions:
+    generated: lax
