@@ -4,6 +4,7 @@
 - [Architecture overview](architecture/overview.md): components, processes, flows, ownership.
 - [Data model](architecture/data-model.md): tables, tenancy, partitioning, retention.
 - [ADRs](adr/): one architectural decision per file, with the reasoning.
+- [MVP task lists](tasks/README.md): backend, frontend, deploy.
 - [Ledger](LEDGER.md): deferred work, problems and risks, with revisit triggers.
 - [Runbooks](runbooks/): operational procedures.
 

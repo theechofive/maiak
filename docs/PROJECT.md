@@ -39,6 +39,9 @@ Stack: Go (`chi`, `pgx`, `sqlc`, `goose`, `oapi-codegen`, `slog`), PostgreSQL 15
 
 Environment: a single environment on `klr-platform` (EKS, arm64), internal host `maiak.klr-ops.net`.
 
+## Task lists
+MVP work is tracked in [tasks/backend.md](tasks/backend.md), [tasks/frontend.md](tasks/frontend.md) and [tasks/deploy.md](tasks/deploy.md). The frontend is minimal React + Vite ([ADR-0015](adr/0015-frontend-stack.md)).
+
 ## Quality approach
 Unit tests for pure logic (incident state machine first, written test-first); integration tests against real Postgres in CI (migrations from scratch, RLS isolation, schema-lint); handler tests against the generated server; OpenAPI lint and `oasdiff` for breaking changes; a smoke test after deploy. There is no local development environment: CI is the safety net. Every slice is deployed to the cluster.
 

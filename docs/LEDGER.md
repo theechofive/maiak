@@ -27,7 +27,6 @@ Created 2026-10-20 from the design session.
 | L-012 | deferred | open | Protection against mass false-positive alerts | If our own egress fails, all monitors go down at once: canary targets, confirmation from a second location, global kill switch | When the second location appears |
 | L-013 | deferred | open | ClickHouse for results, sharded scheduler, cells | Scale stage 2/3 in ADR-0012. The company already runs ClickHouse in `klr-dev` | At stage 2 (about 1 000 tenants or 800+ checks/s) |
 | L-014 | deferred | open | SSE, Slack OAuth app, TCP/DNS/k8s checks | Out of MVP scope; each is additive | On demand |
-| L-015 | deferred | open | Frontend stack | Owner decides; the API contract and TS client generation work with any framework. Web image build job is a disabled placeholder in CI | Before slice 5 (dashboard) |
 | L-016 | deferred | open | Metadata and docs language | Docs and code are written in English by assumption (not discussed). Reverse the decision if the team wants Ukrainian | Before the first external contributor |
 | L-017 | deferred | open | Network egress cost control | Default is to not read response bodies (cap 64 KB only with keyword checks). NAT cost at scale needs a re-estimate | During the load test (L-010) |
 | L-018 | deferred | open | RDS TLS verification | DB URLs use `sslmode=require` (encrypted, server not verified). Move to `verify-full` with the RDS CA bundle in the image | Before production clients |
@@ -48,4 +47,5 @@ Created 2026-10-20 from the design session.
 
 | ID | Title | Closed by |
 |---|---|---|
+| L-015 | Frontend stack | [ADR-0015](adr/0015-frontend-stack.md): minimal React + Vite, Pico.css, generated client (2026-10-20) |
 | L-021 | First ArgoCD sync: PreSync migration hook ran before the ExternalSecret existed, and in Sync mode the Job (wave 1) would start after workloads (wave 0) | Chart: ExternalSecret and migrate ServiceAccount wave -2, migrate Job `Sync` hook wave -1, workloads wave 0; `migration.hookPhase` defaults to `Sync` (2026-10-20) |
