@@ -28,6 +28,8 @@ const (
 	ReasonRecovered = "recovered"
 	ReasonPaused    = "paused"
 	ReasonDeleted   = "deleted"
+	// ReasonURLChanged ends an incident when the monitor's URL changes (ADR-0018, task B-19).
+	ReasonURLChanged = "url_changed"
 )
 
 // ErrMonitorNotFound means the monitor or its state row does not exist in the tenant.
@@ -208,8 +210,8 @@ func (s *Service) enqueue(ctx context.Context, q *incidentsdb.Queries, in Result
 	return nil
 }
 
-// ResolveOpen resolves the monitor's open incident, if any, with reason (ReasonPaused or
-// ReasonDeleted) and without a notification (ADR-0016). tx must be a tenant transaction of
+// ResolveOpen resolves the monitor's open incident, if any, with reason (ReasonPaused,
+// ReasonDeleted or ReasonURLChanged) and without a notification (ADR-0016, ADR-0018). tx must be a tenant transaction of
 // tenantID; it is called by the monitors module on pause and delete.
 func (s *Service) ResolveOpen(ctx context.Context, tx pgx.Tx, tenantID, monitorID uuid.UUID, reason string) error {
 	q := incidentsdb.New(tx)

@@ -13,7 +13,7 @@ CREATE TABLE incidents (
     tenant_id       uuid        NOT NULL REFERENCES tenants (id),
     started_at      timestamptz NOT NULL,
     resolved_at     timestamptz,
-    resolve_reason  text        CHECK (resolve_reason IN ('recovered', 'paused', 'deleted')),
+    resolve_reason  text        CHECK (resolve_reason IN ('recovered', 'paused', 'deleted', 'url_changed')),
     reason          text        CHECK (length(reason) BETWEEN 1 AND 64),
     created_at      timestamptz NOT NULL DEFAULT now(),
     UNIQUE (tenant_id, id),
@@ -141,7 +141,7 @@ CREATE POLICY tenant_isolation ON notification_deliveries
     USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
     WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 
--- For the definer functions below (ADR-0018 pattern).
+-- For the definer functions below (ADR-0021 pattern).
 CREATE POLICY owner_delivery_read ON notification_deliveries FOR SELECT TO maiak_owner USING (true);
 CREATE POLICY owner_delivery_update ON notification_deliveries FOR UPDATE TO maiak_owner USING (true) WITH CHECK (true);
 

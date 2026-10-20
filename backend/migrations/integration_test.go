@@ -57,7 +57,7 @@ var extraPolicies = map[string]struct {
 }{
 	// The SECURITY DEFINER session lookup runs as maiak_owner before the tenant is known (ADR-0004).
 	"sessions.owner_session_lookup": {cmd: "r", roles: []string{"maiak_owner"}},
-	// The cross-tenant definer functions of the results migration (ADR-0016, ADR-0018).
+	// The cross-tenant definer functions of the results migration (ADR-0016, ADR-0021).
 	"sessions.owner_session_purge":             {cmd: "d", roles: []string{"maiak_owner"}},
 	"monitors.owner_claim_read":                {cmd: "r", roles: []string{"maiak_owner"}},
 	"monitor_location_state.owner_claim_read":  {cmd: "r", roles: []string{"maiak_owner"}},

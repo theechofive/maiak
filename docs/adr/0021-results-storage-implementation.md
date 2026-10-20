@@ -1,4 +1,4 @@
-# ADR-0018: How the results migration implements the definer functions
+# ADR-0021: How the results migration implements the definer functions
 
 - Status: Accepted
 - Date: 2026-10-20
