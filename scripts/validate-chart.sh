@@ -22,6 +22,10 @@ combos=(
   "platform|-f $platform"
   "platform-no-bootstrap|-f $platform --set dbBootstrap.enabled=false"
   "platform-no-web|-f $platform --set web.enabled=false"
+  "platform-login-set|-f $platform --set secrets.admin.login=owner@example.com"
+  "platform-external-secrets|-f $platform --set secrets.admin.source=externalSecret --set secrets.crypto.source=externalSecret"
+  "platform-admin-external|-f $platform --set secrets.admin.source=externalSecret"
+  "platform-crypto-external|-f $platform --set secrets.crypto.source=externalSecret"
   "platform-all-optional|-f $platform --set serviceMonitor.enabled=true --set networkPolicy.enabled=true --set api.pdb.enabled=true --set topologySpread.enabled=true --set config.blockedCIDRs[0]=100.64.0.0/10 --set config.blockedCIDRs[1]=198.18.0.0/15 --set worker.location=home-test"
 )
 
@@ -54,6 +58,13 @@ expect_fail "public URL with trailing slash" --set config.publicUrl=https://maia
 expect_fail "PreSync migration with bootstrap" -f "$platform" --set migration.hookPhase=PreSync
 expect_fail "bootstrap without host" --set dbBootstrap.enabled=true
 expect_fail "memory limit missing" --set worker.resources.limits=null
+expect_fail "unknown secrets source" --set secrets.admin.source=manual
+expect_fail "upper-case admin login" --set secrets.admin.login=Admin
+expect_fail "admin login with a space" --set "secrets.admin.login=a b"
+expect_fail "empty admin login in generate mode" --set secrets.admin.login=
+expect_fail "admin login removed in generate mode" -f "$platform" --set secrets.admin.login=null
+expect_fail "invalid crypto key id" --set "secrets.crypto.keyId=k 1"
+expect_fail "externalSecret without remote key" --set secrets.crypto.source=externalSecret --set secrets.crypto.remoteKey=
 
 echo "== invariants on rendered manifests"
 python3 scripts/check-rendered-chart.py "${renders[@]}"

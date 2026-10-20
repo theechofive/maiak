@@ -2,7 +2,7 @@
 
 Deploys Maiak (multi-tenant uptime monitoring): `api`, `worker`, `jobs` (all from the single
 `maiak-backend` image, different `command`), an optional `web` frontend, a migration hook Job,
-a DB bootstrap hook Job, ExternalSecrets and a Gateway API `HTTPRoute`. No Ingress objects are created.
+a DB bootstrap hook Job, a secrets bootstrap hook Job, ExternalSecrets and a Gateway API `HTTPRoute`. No Ingress objects are created.
 
 ## Files
 
@@ -41,6 +41,9 @@ Source of truth: `backend/internal/platform/config/config.go`.
 | `MAIAK_MIGRATE_DATABASE_URL` (`owner_url`) | | | | x | |
 | `MAIAK_BOOTSTRAP_*` (admin login from the hook ExternalSecret) | | | | | x |
 
+The secrets bootstrap Job gets only `MAIAK_ENV`, `MAIAK_LOG_LEVEL` and `MAIAK_SECRETS_*` (modes, admin login,
+Secret names, key id): no database URL and no RDS login.
+
 Only the migrate Job reads `owner_url`.
 
 ## Hardening and resources
@@ -58,12 +61,27 @@ Only the migrate Job reads `owner_url`.
 
 ## Secrets
 
-ExternalSecrets (`ClusterSecretStore aws-secrets`):
+Workloads always read `maiak-admin` (`email`, `password_hash`) and `maiak-crypto` (`keys`, `active_key_id`).
+`secrets.admin.source` and `secrets.crypto.source` choose, per Secret, who creates them (ADR-0091):
+
+- `generate` (default): the secrets bootstrap hook Job (`/app/maiakctl secrets bootstrap`) creates the Secret
+  in the cluster when it is absent and never overwrites it (an incomplete existing Secret fails the Job).
+  - admin: login `secrets.admin.login` (default `admin`, stored under the key `email` until B-24, L-152), a random
+    password whose argon2id hash goes to `maiak-admin`; the plaintext goes ONCE to `maiak-admin-initial`
+    (`login`, `password`). Read it, log in, delete `maiak-admin-initial`. It is never recreated.
+  - crypto: one random 32-byte key with id `secrets.crypto.keyId` (default `k1`). It lives only in the cluster;
+    deleting the namespace loses it (it only encrypts the Slack webhook URLs, which can be re-entered).
+- `externalSecret`: an ExternalSecret (`ClusterSecretStore aws-secrets`, wave -2) materialises it:
 
 | Remote key (values-driven) | Properties | K8s Secret |
 |---|---|---|
-| `platform/maiak/admin` | `email`, `password_hash` | `maiak-admin` |
-| `platform/maiak/crypto` | `keys` (JSON string), `active_key_id` | `maiak-crypto` |
+| `secrets.admin.remoteKey` (`platform/maiak/admin`) | `email`, `password_hash` | `maiak-admin` |
+| `secrets.crypto.remoteKey` (`platform/maiak/crypto`) | `keys` (JSON string), `active_key_id` | `maiak-crypto` |
+
+The secrets Job (`maiak-secrets-bootstrap`, rendered when any source is `generate`) has its own ServiceAccount
+with an API token and a Role limited to `create` on secrets and `get,update,patch` on exactly `maiak-admin`,
+`maiak-admin-initial` and `maiak-crypto`. It has no database credentials, so unlike `dbBootstrap` it stays enabled.
+Password reset: delete `maiak-admin` (and `maiak-admin-initial` if still there) and re-sync.
 
 The Secret `maiak-db` is NOT an ExternalSecret and NOT managed by Helm/ArgoCD: the `dbBootstrap` Job creates it
 at runtime with keys `api_url`, `worker_url`, `owner_url`, `owner_password`, `api_password`, `worker_password`
@@ -79,7 +97,7 @@ When `dbBootstrap.enabled=true` (on in `values-platform.yaml` for the first depl
 runs `/app/maiakctl db bootstrap` before the migration: it creates the database and
 roles (`maiak_owner`, `maiak_api`, `maiak_worker`) and the Secret `maiak-db`. It reads the RDS master login from
 a short-lived ExternalSecret `maiak-db-admin` (`platform/grafana/db`, deleted after success) and uses a
-dedicated ServiceAccount `maiak-db-bootstrap`, the only one in the chart with an API token mounted, limited by a
+dedicated ServiceAccount `maiak-db-bootstrap` (one of the two in the chart with an API token mounted), limited by a
 Role (`create` on secrets; `get,update,patch` only on `maiak-db`).
 
 Security trade-off (risk R-009): while enabled, the Job holds the RDS master login, which is Grafana's own login
@@ -92,9 +110,9 @@ All hooks are ArgoCD `Sync` hooks ordered by waves, so the very first sync works
 
 | Wave | Resources |
 |---|---|
-| -4 | `maiak-db-admin` ExternalSecret, bootstrap ServiceAccount/Role/RoleBinding |
-| -3 | `maiak-db-bootstrap` Job |
-| -2 | `maiak-admin` / `maiak-crypto` ExternalSecrets, migrate ServiceAccount |
+| -4 | `maiak-db-admin` ExternalSecret, db and secrets bootstrap ServiceAccount/Role/RoleBinding |
+| -3 | `maiak-db-bootstrap` and `maiak-secrets-bootstrap` Jobs |
+| -2 | `maiak-admin` / `maiak-crypto` ExternalSecrets (only with source `externalSecret`), migrate ServiceAccount |
 | -1 | `maiak-migrate` Job |
 | 0 | workloads (api, worker, jobs, web), Services, HTTPRoute |
 

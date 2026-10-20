@@ -5,7 +5,8 @@
 # Before the first sync, see docs/runbooks/first-deploy.md:
 #   - ArgoCD needs a READ-ONLY credential for this private repository (deploy key registered as a repository Secret
 #     in the argo-cd namespace); without it the Application shows "authentication required".
-#   - Secrets platform/maiak/admin and platform/maiak/crypto must exist in AWS Secrets Manager.
+#   - Admin login and encryption key are generated in the cluster by default (ADR-0091); the AWS secrets
+#     platform/maiak/admin and platform/maiak/crypto are needed only with secrets.*.source: externalSecret.
 #   - The ghcr pull-secret decision (ledger L-002) must be made, or the images must be public.
 #   - The Cloudflare CNAME for maiak.klr-ops.net must point to the internal NLB.
 # After the first successful sync set dbBootstrap.enabled: false in values-platform.yaml (risk R-009).

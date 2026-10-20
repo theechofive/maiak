@@ -14,6 +14,10 @@ ADMIN_ENV = {"MAIAK_ADMIN_EMAIL", "MAIAK_ADMIN_PASSWORD_HASH"}
 # The worker is the only process that runs tenant-supplied targets; the processes below must
 # not see anything the worker has not been given (ADR-0016, L-042).
 ENCRYPTION_COMPONENTS = {"api", "jobs"}
+# The only components whose ServiceAccount and pod mount an API token (they create Secrets).
+TOKEN_COMPONENTS = {"db-bootstrap", "secrets-bootstrap"}
+# The exact Secrets the secrets bootstrap Role may read/update (ADR-0091), for release "maiak".
+SECRETS_BOOTSTRAP_NAMES = {"maiak-admin", "maiak-admin-initial", "maiak-crypto"}
 
 
 def mem_mi(value):
@@ -163,18 +167,64 @@ def check(path):
         elif spec and "MAIAK_MIGRATE_DATABASE_URL" in str(spec["containers"]):
             fail(f"{d['metadata']['name']} has MAIAK_MIGRATE_DATABASE_URL")
 
-    # Token automount: only the db-bootstrap ServiceAccount and Job.
+    # Token automount: only the two bootstrap ServiceAccounts and Jobs.
     for d in docs:
         if d["kind"] == "ServiceAccount":
             mounts = d.get("automountServiceAccountToken")
-            if mounts is True and component(d) != "db-bootstrap":
+            if mounts is True and component(d) not in TOKEN_COMPONENTS:
                 fail(f"ServiceAccount {d['metadata']['name']} automounts a token")
             if mounts is not True and mounts is not False:
                 fail(f"ServiceAccount {d['metadata']['name']} does not set automountServiceAccountToken")
-            if component(d) == "db-bootstrap" and mounts is not True:
-                fail("db-bootstrap ServiceAccount must automount its token")
-    if token_pods - {"db-bootstrap"}:
-        fail(f"pods without automountServiceAccountToken=false: {sorted(token_pods - {'db-bootstrap'})}")
+            if component(d) in TOKEN_COMPONENTS and mounts is not True:
+                fail(f"{component(d)} ServiceAccount must automount its token")
+    if token_pods - TOKEN_COMPONENTS:
+        fail(f"pods without automountServiceAccountToken=false: {sorted(token_pods - TOKEN_COMPONENTS)}")
+
+    # Secrets bootstrap (ADR-0091): narrow Role, no DB access, and exactly one source per Secret.
+    sb_jobs = [d for d in docs if d["kind"] == "Job" and component(d) == "secrets-bootstrap"]
+    modes = {}
+    for d in sb_jobs:
+        c = d["spec"]["template"]["spec"]["containers"][0]
+        env = {e["name"]: e for e in c.get("env", [])}
+        for n, e in env.items():
+            if not n.startswith(("MAIAK_SECRETS_", "MAIAK_ENV", "MAIAK_LOG_LEVEL")):
+                fail(f"secrets-bootstrap Job has unexpected env {n}")
+            if "valueFrom" in e:
+                fail(f"secrets-bootstrap Job reads {n} from a Secret")
+        if re.search(r"DATABASE|BOOTSTRAP_|owner_url|api_url|worker_url|-db\b", str(c)):
+            fail("secrets-bootstrap Job has database configuration")
+        for n in ("ADMIN", "CRYPTO"):
+            modes[n] = env.get(f"MAIAK_SECRETS_{n}_MODE", {}).get("value")
+            if modes[n] not in ("generate", "skip"):
+                fail(f"secrets-bootstrap Job: MAIAK_SECRETS_{n}_MODE is {modes[n]!r}")
+        if modes.get("ADMIN") == "generate" and not env.get("MAIAK_SECRETS_ADMIN_LOGIN", {}).get("value"):
+            fail("secrets-bootstrap Job generates the admin without MAIAK_SECRETS_ADMIN_LOGIN")
+        if d["spec"]["template"]["spec"].get("automountServiceAccountToken") is not True:
+            fail("secrets-bootstrap Job must automount its token")
+    if len(sb_jobs) > 1:
+        fail("more than one secrets-bootstrap Job")
+    if sb_jobs and "generate" not in modes.values():
+        fail("secrets-bootstrap Job rendered although no secret is generated")
+    for d in docs:
+        if d["kind"] == "Role" and component(d) == "secrets-bootstrap":
+            for rule in d["rules"]:
+                verbs, names = set(rule.get("verbs", [])), rule.get("resourceNames")
+                if rule.get("resources") != ["secrets"] or rule.get("apiGroups") != [""]:
+                    fail(f"secrets-bootstrap Role grants {rule.get('resources')}")
+                elif names is None and verbs != {"create"}:
+                    fail(f"secrets-bootstrap Role grants {sorted(verbs)} on all secrets")
+                elif names is not None and (set(names) != SECRETS_BOOTSTRAP_NAMES or len(names) != 3 or verbs != {"get", "update", "patch"}):
+                    fail(f"secrets-bootstrap Role: {sorted(verbs)} on {names}, want get/update/patch on {sorted(SECRETS_BOOTSTRAP_NAMES)}")
+    has_role = any(d["kind"] == "Role" and component(d) == "secrets-bootstrap" for d in docs)
+    if bool(sb_jobs) != has_role:
+        fail("secrets-bootstrap Job and Role must be rendered together")
+    es_names = {d["metadata"]["name"] for d in docs if d["kind"] == "ExternalSecret"}
+    for mode_key, secret in (("ADMIN", "maiak-admin"), ("CRYPTO", "maiak-crypto")):
+        generated = modes.get(mode_key) == "generate"
+        if generated and secret in es_names:
+            fail(f"{secret}: generated by the secrets bootstrap Job AND rendered as an ExternalSecret")
+        if not generated and secret not in es_names:
+            fail(f"{secret}: neither generated nor an ExternalSecret")
 
     # Web and routing.
     web = "web" in deployments

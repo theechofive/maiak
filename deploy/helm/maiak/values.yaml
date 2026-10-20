@@ -29,7 +29,42 @@ config:
   # cluster (L-100), because NetworkPolicy is not enforced (R-002).
   blockedCIDRs: []
 
-# Secrets are materialised by External Secrets Operator from AWS Secrets Manager (wave -2).
+# Admin login and encryption keys (ADR-0091). Workloads always read the Secrets `<fullname>-admin`
+# (email, password_hash) and `<fullname>-crypto` (keys, active_key_id). Per Secret, `source` picks
+# who creates it:
+#   generate        (default) the secrets bootstrap hook Job creates it in the cluster if absent and
+#                   never overwrites it. The admin password is generated and readable ONCE from the
+#                   Secret `<fullname>-admin-initial` (delete it after the first login). A generated
+#                   key exists only in the cluster: losing the namespace loses it (it only encrypts the
+#                   Slack webhook URLs, which can be re-entered).
+#   externalSecret  an ExternalSecret reads it from AWS Secrets Manager (`remoteKey`, wave -2).
+secrets:
+  admin:
+    source: generate
+    # System admin login (generate mode). Stored under the Secret key `email` until B-24 (L-152).
+    login: admin
+    # externalSecret mode: JSON secret with properties email, password_hash
+    remoteKey: platform/maiak/admin
+  crypto:
+    source: generate
+    # Key id of the generated key (generate mode); MAIAK_ENCRYPTION_ACTIVE_KEY_ID.
+    keyId: k1
+    # externalSecret mode: JSON secret with properties keys (JSON string), active_key_id
+    remoteKey: platform/maiak/crypto
+  # The hook Job (ArgoCD Sync, wave -3) rendered when any source is generate. It has no database
+  # credentials; its Role can only create Secrets and read/update the three Secrets above.
+  bootstrap:
+    command: ["/app/maiakctl", "secrets", "bootstrap"]
+    backoffLimit: 2
+    activeDeadlineSeconds: 300
+    ttlSecondsAfterFinished: 600
+    # argon2id hashing uses 64 MiB (the `maiakctl hashpw` default).
+    resources:
+      requests: {cpu: 50m, memory: 96Mi}
+      limits: {cpu: 500m, memory: 256Mi}
+
+# External Secrets Operator settings (AWS Secrets Manager), used by the db bootstrap admin
+# ExternalSecret and by every `secrets.*.source: externalSecret` (wave -2).
 externalSecrets:
   enabled: true
   apiVersion: external-secrets.io/v1
@@ -41,12 +76,7 @@ externalSecrets:
   # No `db` entry: the Secret `maiak-db` (api_url, worker_url, owner_url, owner_password,
   # api_password, worker_password) is created at runtime by the dbBootstrap Job and is not
   # managed by ArgoCD/Helm (ADR-0014). With dbBootstrap.enabled=false it must already exist.
-  admin:
-    # JSON secret with properties: email, password_hash
-    remoteKey: platform/maiak/admin
-  crypto:
-    # JSON secret with properties: keys (JSON string), active_key_id
-    remoteKey: platform/maiak/crypto
+  # The admin/crypto remote keys moved to secrets.admin.remoteKey / secrets.crypto.remoteKey.
 
 podAnnotations: {}
 podLabels: {}
@@ -181,7 +211,7 @@ dbBootstrap:
 # Database migration (ArgoCD hook running /app/migrate).
 migration:
   # Sync (default) | PreSync.
-  # Sync: ordering by waves: -4 admin ExternalSecret + bootstrap RBAC, -3 bootstrap Job,
+  # Sync: ordering by waves: -4 admin ExternalSecret + bootstrap RBAC, -3 bootstrap Jobs (db, secrets),
   # -2 other ExternalSecrets + migrate ServiceAccount, -1 migrate Job, 0 workloads; so the very
   # first sync works. PreSync would run the Job before the ExternalSecrets exist on a first sync
   # and before the bootstrap Job (rejected at render time when dbBootstrap.enabled=true).

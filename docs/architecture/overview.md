@@ -10,7 +10,7 @@ Maiak is a **modular monolith deployed as several processes** from one Go module
 | `worker` (`cmd/worker`) | Claims due (monitor, location) jobs every second, runs HTTPS checks through the SSRF guard, writes result, schedule, incident state and outbox in one transaction per tenant batch. Calls `ensure_partitions()` at start and hourly | `maiak_worker` | replicas (limits are per process, R-030) |
 | `jobs` (`cmd/jobs`) | Outbox delivery to Slack (retries, per-channel rate limit) and singleton housekeeping under advisory locks: partitions (daily), rollups (5 min), retention (daily), expired-session purge (hourly) | `maiak_worker` | 1+ replicas (R-060, L-082) |
 | `migrate` (`cmd/migrate`) | Applies migrations (ArgoCD Sync hook Job, wave -1, ADR-0013) | `maiak_owner` | one-shot Job |
-| `maiakctl` (`cmd/maiakctl`) | Admin CLI: `hashpw`, `db bootstrap` (also the hook Job `maiak-db-bootstrap`, wave -3, ADR-0014) | RDS admin login | local / one-shot Job |
+| `maiakctl` (`cmd/maiakctl`) | Admin CLI: `hashpw`, `db bootstrap` (also the hook Job `maiak-db-bootstrap`, wave -3, ADR-0014), `secrets bootstrap` (hook Job `maiak-secrets-bootstrap`, wave -3, generates the admin and encryption Secrets when absent, ADR-0091) | RDS admin login (db bootstrap only) | local / one-shot Job |
 | `web` | Static React SPA served by nginx | none | 1-2 replicas |
 | Postgres | Only datastore (database `maiak` in RDS) | | external |
 

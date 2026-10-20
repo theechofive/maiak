@@ -25,3 +25,4 @@ The admin email and an argon2id password hash come from a Kubernetes Secret (fed
 - The login rate limit reserves an attempt atomically before the argon2 verification and the verification queue has a bounded wait (HTTP 429). It is in memory, per replica. The per-email limit (10 failures per 15 minutes) lets anyone lock the single admin out for a while; accepted for the MVP (L-007).
 - Argon2 memory is capped at 256 MiB; the pod limit is small, so concurrent logins are limited to 2.
 - `MAIAK_ENV` defaults to `production`.
+- 2026-10-20, ADR-0091: by default the admin Secret is generated in the cluster (system login `admin`, one-time password in `maiak-admin-initial`); AWS Secrets Manager is an alternative per Secret. Password reset: delete the admin Secrets and re-sync. Until B-24 the api still requires an email-shaped `MAIAK_ADMIN_EMAIL` (L-152).

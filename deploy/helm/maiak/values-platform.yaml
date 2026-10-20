@@ -24,6 +24,16 @@ web:
     # exactly `web.image.tag` (4-space indent, double quotes).
     tag: "49e33c1"
 
+# Admin login and encryption key (ADR-0091): generated in the cluster on the first sync. Log in as `admin` with
+# the one-time password from the Secret maiak-admin-initial, then delete that Secret
+# (docs/runbooks/first-deploy.md). Switch a source to externalSecret to read it from AWS Secrets Manager instead.
+secrets:
+  admin:
+    source: generate
+    login: admin
+  crypto:
+    source: generate
+
 # First deploy: creates database/roles and the `maiak-db` Secret (ADR-0014).
 # OWNER: set `enabled: false` after the first successful sync (the Secret persists), because while
 # enabled the Job holds the RDS master login, which is Grafana's own login (risk R-009, L-009).

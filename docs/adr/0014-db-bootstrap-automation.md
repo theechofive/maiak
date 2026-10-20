@@ -29,3 +29,6 @@ Migrations need an existing database and roles, which only an administrator can 
 - Role passwords are sent to PostgreSQL as SCRAM verifiers, never as plaintext statements; statements are built server-side with `format(%I, %L)`.
 - A Secret with missing password keys makes the run fail instead of overwriting; a Secret with missing or stale `*_url` keys gets its URLs rebuilt.
 - Tested only with a superuser admin and a `CREATEROLE CREATEDB` approximation of `rds_superuser`; the real RDS path is verified at the first deploy (L-022).
+
+## Amendment (2026-10-20, ADR-0091)
+The encryption keys and the admin hash no longer have to come from AWS Secrets Manager: by default a separate hook Job without database credentials generates them in the cluster. Losing a generated key only costs the Slack webhook URL, which is re-entered. Secrets Manager stays available per Secret (`secrets.*.source: externalSecret`).

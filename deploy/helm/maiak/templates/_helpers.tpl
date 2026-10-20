@@ -56,7 +56,14 @@ app.kubernetes.io/managed-by: {{ .ctx.Release.Service }}
 {{- define "maiak.secret.db" -}}{{ default (printf "%s-db" (include "maiak.fullname" .)) .Values.dbBootstrap.secretName }}{{- end }}
 {{- define "maiak.secret.dbAdmin" -}}{{ include "maiak.secret.db" . }}-admin{{- end }}
 {{- define "maiak.secret.admin" -}}{{ include "maiak.fullname" . }}-admin{{- end }}
+{{/* One-time plaintext admin password, created by the secrets bootstrap Job (ADR-0091), never by Helm. */}}
+{{- define "maiak.secret.adminInitial" -}}{{ include "maiak.secret.admin" . }}-initial{{- end }}
 {{- define "maiak.secret.crypto" -}}{{ include "maiak.fullname" . }}-crypto{{- end }}
+
+{{/* True when the secrets bootstrap Job is needed (any secrets.*.source is generate). Arg: root context */}}
+{{- define "maiak.secrets.generate" -}}
+{{- if or (eq .Values.secrets.admin.source "generate") (eq .Values.secrets.crypto.source "generate") }}true{{ end }}
+{{- end }}
 
 {{/* Env shared by api/worker/jobs (config.Server + config.Base). Args: dict ctx, dbKey */}}
 {{- define "maiak.env.common" -}}
