@@ -16,7 +16,7 @@ No metric is labelled per tenant, monitor, incident, user, channel, URL, host, p
 ### api
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `maiak_http_requests_total` | counter | `route`, `method`, `code` | Requests by route template and status; `route="unmatched"` for paths no route matched |
+| `maiak_http_requests_total` | counter | `route`, `method`, `code` | Requests by route template and status; `route="unmatched"` for paths no route matched; `method` is one of `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, else `other` |
 | `maiak_http_request_duration_seconds` | histogram | `route`, `method` | Request latency |
 | `maiak_auth_logins_total` | counter | `result` (`succeeded`, `failed`, `rate_limited`) | Login attempts |
 
@@ -45,6 +45,7 @@ No metric is labelled per tenant, monitor, incident, user, channel, URL, host, p
 | `maiak_jobs_claim_errors_total` | counter | | Failed `claim_deliveries` calls |
 | `maiak_jobs_housekeeping_runs_total` | counter | `task`, `result` (`ok`, `skipped`, `error`) | Housekeeping runs; `task` is `ensure_partitions`, `compute_rollups`, `drop_expired_partitions` (the retention task, implemented by `list_droppable_partitions` / `detach_expired_partition` / `drop_detached_partition`) or `purge_expired_sessions` |
 | `maiak_jobs_housekeeping_last_success_timestamp_seconds` | gauge | `task` | Unix time of the last successful run of each task |
+| `maiak_jobs_partitions_kept_total` | counter | `reason` (`rollups_incomplete`, `error`) | Expired `check_results` partitions the retention task kept back; each one is also logged at warn level with the partition name (ADR-0090) |
 
 ## Logs
 All processes write one JSON object per line to stdout (`log/slog`, level from `MAIAK_LOG_LEVEL`). Every line has `time`, `level`, `msg`, `service` and `version`.
@@ -76,6 +77,7 @@ Written for the VictoriaMetrics/Alertmanager stack of L-003; thresholds are firs
 | PartitionsFailing | `increase(maiak_worker_ensure_partitions_errors_total[2h]) > 1` or `time() - maiak_jobs_housekeeping_last_success_timestamp_seconds{task="ensure_partitions"} > 2*86400` | 0m | Without future partitions result inserts fail at the next month (L-040) |
 | HousekeepingStale | `time() - maiak_jobs_housekeeping_last_success_timestamp_seconds{task="compute_rollups"} > 1800` (and for `drop_expired_partitions` and `purge_expired_sessions`: `> 2*86400`, `> 3*3600`) | 0m | A singleton task stopped succeeding |
 | RetentionErrors | `increase(maiak_jobs_housekeeping_runs_total{task="drop_expired_partitions",result="error"}[1d]) > 2` | 0m | The detach keeps hitting its lock timeout (L-091) |
+| PartitionsKept | `increase(maiak_jobs_partitions_kept_total{reason="rollups_incomplete"}[2d]) > 0` | 0m | An expired month still has hours without rollups: older than the 7-day catch-up, needs a manual `compute_rollups(from, to)` (L-130) |
 | OutboxBacklog | `maiak_jobs_outbox_pending > 50` | 10m | Alerts are not leaving: Slack down, rate limits or jobs stuck |
 | DeliveriesFailing | `sum(rate(maiak_jobs_deliveries_total{status="failed"}[1h])) > 0` | 0m | A delivery gave up after five attempts or its channel is unusable |
 | APIErrors | `sum(rate(maiak_http_requests_total{code=~"5.."}[5m])) / sum(rate(maiak_http_requests_total[5m])) > 0.05` | 10m | api failing |

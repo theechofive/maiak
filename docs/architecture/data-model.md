@@ -36,6 +36,7 @@ Owning module in brackets, as declared in the migrations; only the owner writes 
 | `monitor_state` [monitors; updated by the incidents state machine] | PK `monitor_id`; `status`, `status_changed_at`, `last_error_kind`, `last_checked_at`, `tls_expires_at`, `tls_warned_not_after`, `current_incident_id` | S I U(status, status_changed_at, last_error_kind, tls_expires_at, tls_warned_not_after, current_incident_id) | S U |
 | `check_results` [results] | Partitioned by range on `checked_at`; PK `(monitor_id, checked_at, location_id)`; `ok`, `status_code` (100-599), `latency_ms` (NULL without a response), `error_kind` (set exactly when not ok), `tls_not_after`; BRIN on `checked_at` | S | S I |
 | `result_rollups_hourly` [results] | PK `(monitor_id, location_id, hour)`; `total`, `ok_count`, `latency_sum_ms`, `latency_histogram int[11]` (edges 10 ... 10000 ms and overflow), `computed_at`. Written only by `compute_rollups` | S | S |
+| `rollup_state` [results] | One row (`singleton` = true): `watermark` (every closed UTC hour before it was rolled up once), `updated_at`. System state, no `tenant_id`; RLS enabled without a policy, no runtime-role privileges. Written only by `compute_rollups_catch_up` (ADR-0090) | none | none |
 | `incidents` [incidents] | `id`, `tenant_id` (unique `(tenant_id, id)`), `monitor_id` (set for automatic incidents, composite FK to `monitors`), `started_at`, `resolved_at` + `resolve_reason` (`recovered`/`paused`/`deleted`/`url_changed`, both or neither), `reason` (error kind), `created_at`. Unique partial index `incidents_one_open_per_monitor_idx` on `monitor_id` where open | S U | S I U |
 | `incident_monitors` [incidents] | PK `(incident_id, monitor_id)`; many-to-many kept for manual incidents spanning monitors (L-004) | S | S I |
 | `notification_channels` [notify] | `id`, `tenant_id`, `type` (`slack_webhook`), `config_encrypted bytea`, `status` (`active`/`failed`), timestamps; at most one Slack channel per tenant (unique partial index) | S I U | S U(status, updated_at) |
@@ -64,7 +65,8 @@ All are owned by `maiak_owner`, pin `search_path = public, pg_temp`, are not exe
 | `reset_monitor_runtime(monitor_id)` | `maiak_api` | api (`monitors` pause, resume, URL change, through `scheduler`) | Resets the monitor's location rows (status unknown, lease dropped, next run within 30 s); tenant taken from `app.tenant_id` |
 | `claim_due_monitors(n, p_location)` | `maiak_worker` | worker (`scheduler.Claim`), every second | Leases up to `n` due rows of one location, skipping paused or deleted monitors and suspended or deleted tenants |
 | `ensure_partitions()` | `maiak_worker` | worker (start, hourly), jobs (daily) | Creates missing partitions |
-| `compute_rollups(from_hour, to_hour)` | `maiak_worker` | jobs, every 5 minutes | Upserts hourly rollups under an advisory xact lock |
+| `compute_rollups(from_hour, to_hour)` | `maiak_worker` | `compute_rollups_catch_up`; the previous jobs release; manual backfills | Upserts hourly rollups of a range under an advisory xact lock |
+| `compute_rollups_catch_up(max_hours, lookback_hours)` | `maiak_worker` | jobs, every 5 minutes (48, 3) | Rolls up from the `rollup_state` watermark (at most `max_hours`, never older than 7 days) plus the lookback, then moves the watermark (ADR-0090) |
 | `list_droppable_partitions()` | `maiak_worker` | jobs, daily | Retention step 1 |
 | `detach_expired_partition(name)` | `maiak_worker` | jobs, daily | Retention step 2 |
 | `drop_detached_partition(name)` | `maiak_worker` | jobs, daily | Retention step 3 |

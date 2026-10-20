@@ -20,6 +20,7 @@ var definerCalls = map[string]string{
 	"ensure_partitions":         `SELECT ensure_partitions()`,
 	"claim_due_monitors":        `SELECT * FROM claim_due_monitors(1, 'home-eu-central-1')`,
 	"compute_rollups":           `SELECT compute_rollups(now() - interval '2 hours', now())`,
+	"compute_rollups_catch_up":  `SELECT compute_rollups_catch_up(1, 0)`,
 	"list_droppable_partitions": `SELECT * FROM list_droppable_partitions()`,
 	"detach_expired_partition":  `SELECT detach_expired_partition('check_results_p200001')`,
 	"drop_detached_partition":   `SELECT drop_detached_partition('check_results_p200001')`,

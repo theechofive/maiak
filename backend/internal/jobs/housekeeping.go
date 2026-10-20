@@ -36,16 +36,24 @@ const (
 	lockPurgeSessions    int64 = 0x6d6a_0004
 )
 
-// RollupLookback is how many closed hours compute_rollups recomputes on every run, so late
-// results and a missed run are absorbed (the function is an idempotent upsert).
+// RollupLookback is how many closed hours compute_rollups recomputes on every run besides the
+// catch-up from its watermark, so late results are absorbed (the function is an idempotent
+// upsert).
 const RollupLookback = 3 * time.Hour
 
-// DefaultTasks are the housekeeping tasks of ADR-0016/ADR-0021.
-func DefaultTasks() []Task {
+// RollupMaxHoursPerRun caps the hours one compute_rollups run catches up after an outage
+// (ADR-0090): a run every 5 minutes clears two days of backlog per run without one long
+// transaction.
+const RollupMaxHoursPerRun = 48
+
+// DefaultTasks are the housekeeping tasks of ADR-0016/ADR-0021. Partitions that retention keeps
+// back are counted in m and logged to log.
+func DefaultTasks(m *Metrics, log *slog.Logger) []Task {
+	r := retention{metrics: m, log: log}
 	return []Task{
 		{Name: "ensure_partitions", Every: 24 * time.Hour, LockKey: lockEnsurePartitions, Run: scalar(`SELECT ensure_partitions()`)},
 		{Name: "compute_rollups", Every: 5 * time.Minute, LockKey: lockComputeRollups, Run: computeRollups},
-		{Name: "drop_expired_partitions", Every: 24 * time.Hour, LockKey: lockDropPartitions, RunOutsideTx: dropExpiredPartitions},
+		{Name: "drop_expired_partitions", Every: 24 * time.Hour, LockKey: lockDropPartitions, RunOutsideTx: r.dropExpiredPartitions},
 		{Name: "purge_expired_sessions", Every: time.Hour, LockKey: lockPurgeSessions, Run: scalar(`SELECT purge_expired_sessions()`)},
 	}
 }
@@ -58,21 +66,43 @@ func scalar(sql string) func(context.Context, pgx.Tx, time.Time) (int, error) {
 	}
 }
 
-// computeRollups recomputes the closed hours of the lookback window; the function itself never
-// rolls up the open hour.
-func computeRollups(ctx context.Context, tx pgx.Tx, now time.Time) (int, error) {
-	to := now.UTC().Truncate(time.Hour)
+// computeRollups rolls up the closed hours from the database watermark (at most
+// RollupMaxHoursPerRun of them) and the lookback window; the function never rolls up the open
+// hour.
+func computeRollups(ctx context.Context, tx pgx.Tx, _ time.Time) (int, error) {
 	var n int32
-	err := tx.QueryRow(ctx, `SELECT compute_rollups($1, $2)`, to.Add(-RollupLookback), to).Scan(&n)
+	err := tx.QueryRow(ctx, `SELECT compute_rollups_catch_up($1, $2)`, RollupMaxHoursPerRun, int(RollupLookback/time.Hour)).Scan(&n)
 	return int(n), err
+}
+
+// Reasons retention keeps an expired partition (maiak_jobs_partitions_kept_total{reason}).
+const (
+	keptRollupsIncomplete = "rollups_incomplete"
+	keptError             = "error"
+)
+
+type retention struct {
+	metrics *Metrics
+	log     *slog.Logger
+}
+
+// kept records an expired partition that retention could not drop. The partition name is not
+// tenant data; it says which month to look at.
+func (r retention) kept(ctx context.Context, name, reason string, err error) {
+	r.metrics.partitionsKept.WithLabelValues(reason).Inc()
+	if err != nil {
+		r.log.WarnContext(ctx, "retention kept an expired partition", "partition", name, "reason", reason, "error", err)
+		return
+	}
+	r.log.WarnContext(ctx, "retention kept an expired partition", "partition", name, "reason", reason)
 }
 
 // dropExpiredPartitions is the retention of ADR-0060: list the expired partitions, then detach
 // and drop each in its own short transaction, so the ACCESS EXCLUSIVE lock the detach needs on
 // check_results is held only for that one catalog change. A partition whose rollups are not
-// complete is kept; one detached by an interrupted run is listed again and dropped. Errors of
-// one partition do not stop the others.
-func dropExpiredPartitions(ctx context.Context, pool *db.Pool, _ time.Time) (int, error) {
+// complete is kept, counted and logged; one detached by an interrupted run is listed again and
+// dropped. Errors of one partition do not stop the others.
+func (r retention) dropExpiredPartitions(ctx context.Context, pool *db.Pool, _ time.Time) (int, error) {
 	type candidate struct {
 		name     string
 		detached bool
@@ -103,15 +133,20 @@ func dropExpiredPartitions(ctx context.Context, pool *db.Pool, _ time.Time) (int
 		if !c.detached {
 			ok, err := call(`SELECT detach_expired_partition($1)`, c.name)
 			if err != nil {
+				r.kept(ctx, c.name, keptError, err)
 				errs = append(errs, fmt.Errorf("detach %s: %w", c.name, err))
 				continue
 			}
 			if !ok {
-				continue // rollups incomplete: kept until compute_rollups covers it
+				// The candidate was just listed as expired and attached, so false means its
+				// rollups are incomplete: kept until compute_rollups covers it.
+				r.kept(ctx, c.name, keptRollupsIncomplete, nil)
+				continue
 			}
 		}
 		ok, err := call(`SELECT drop_detached_partition($1)`, c.name)
 		if err != nil {
+			r.kept(ctx, c.name, keptError, err)
 			errs = append(errs, fmt.Errorf("drop %s: %w", c.name, err))
 			continue
 		}

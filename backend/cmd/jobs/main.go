@@ -62,7 +62,7 @@ func run() error {
 		Metrics:  m,
 		Log:      log,
 	})
-	housekeeper := jobs.NewHousekeeper(pool, jobs.DefaultTasks(), m, log, clock.System{})
+	housekeeper := jobs.NewHousekeeper(pool, jobs.DefaultTasks(m, log), m, log, clock.System{})
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {

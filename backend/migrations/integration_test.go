@@ -30,7 +30,7 @@ func TestIntegrationMigrateFromScratchAndRerun(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "audit_log,auth_identities,check_results,incident_monitors,incidents,memberships,monitor_channels,monitor_location_state," +
-		"monitor_locations,monitor_state,monitors,notification_channels,notification_deliveries,probe_locations,result_rollups_hourly,sessions,tenants,users"
+		"monitor_locations,monitor_state,monitors,notification_channels,notification_deliveries,probe_locations,result_rollups_hourly,rollup_state,sessions,tenants,users"
 	if got := strings.Join(tables, ","); got != want {
 		t.Fatalf("tables = %s, want %s", got, want)
 	}
@@ -43,6 +43,8 @@ var definerAllowList = map[string][]string{
 	"ensure_partitions":   {"maiak_worker"},
 	"claim_due_monitors":  {"maiak_worker"},
 	"compute_rollups":     {"maiak_worker"},
+	// Rollups from the watermark in rollup_state (ADR-0090).
+	"compute_rollups_catch_up": {"maiak_worker"},
 	// Retention in three steps driven by jobs (ADR-0060).
 	"list_droppable_partitions": {"maiak_worker"},
 	"detach_expired_partition":  {"maiak_worker"},

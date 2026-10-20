@@ -10,6 +10,8 @@ type Metrics struct {
 	claimErrors  prometheus.Counter
 	housekeeping *prometheus.CounterVec
 	lastSuccess  *prometheus.GaugeVec
+	// partitionsKept counts expired partitions retention could not drop, by reason.
+	partitionsKept *prometheus.CounterVec
 }
 
 // NewMetrics registers the jobs metrics.
@@ -34,10 +36,16 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		lastSuccess: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "maiak_jobs_housekeeping_last_success_timestamp_seconds", Help: "Unix time of the last successful run of each housekeeping task.",
 		}, []string{"task"}),
+		partitionsKept: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "maiak_jobs_partitions_kept_total", Help: "Expired check_results partitions retention kept back, by reason (rollups_incomplete, error).",
+		}, []string{"reason"}),
 	}
 	for _, s := range []string{statusSent, "retry", statusFailed} {
 		m.deliveries.WithLabelValues(s)
 	}
-	reg.MustRegister(m.deliveries, m.duration, m.pending, m.claimErrors, m.housekeeping, m.lastSuccess)
+	for _, r := range []string{keptRollupsIncomplete, keptError} {
+		m.partitionsKept.WithLabelValues(r)
+	}
+	reg.MustRegister(m.deliveries, m.duration, m.pending, m.claimErrors, m.housekeeping, m.lastSuccess, m.partitionsKept)
 	return m
 }

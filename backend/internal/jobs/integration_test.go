@@ -485,9 +485,11 @@ func TestIntegrationHousekeeping(t *testing.T) {
 	e := newEnv(t, "jobshousekeeping")
 	reg := prometheus.NewRegistry()
 	m := jobs.NewMetrics(reg)
-	h := jobs.NewHousekeeper(e.Pool(t, e.WorkerURL, 2), jobs.DefaultTasks(), m, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	log := slog.New(slog.NewJSONHandler(e, nil))
+	tasks := jobs.DefaultTasks(m, log)
+	h := jobs.NewHousekeeper(e.Pool(t, e.WorkerURL, 2), tasks, m, log, nil)
 	task := func(name string) jobs.Task {
-		for _, t := range jobs.DefaultTasks() {
+		for _, t := range tasks {
 			if t.Name == name {
 				return t
 			}
@@ -549,7 +551,7 @@ func TestIntegrationHousekeeping(t *testing.T) {
 		}
 	})
 
-	t.Run("compute_rollups covers closed hours of the lookback only", func(t *testing.T) {
+	t.Run("compute_rollups catches up the closed hours since the earliest raw hour", func(t *testing.T) {
 		mon := e.monitor(tenantA, "R")
 		pgtest.MustExec(t, e.admin,
 			`INSERT INTO monitor_locations (tenant_id, monitor_id, location_id) VALUES ('`+tenantA+`', '`+mon.String()+`', '`+homeLocation+`')`,
@@ -563,12 +565,71 @@ func TestIntegrationHousekeeping(t *testing.T) {
 				t.Fatal(got)
 			}
 		}
-		var total, ok int
-		if err := e.admin.QueryRow(e.ctx, `SELECT total, ok_count FROM result_rollups_hourly WHERE monitor_id = $1`, mon).Scan(&total, &ok); err != nil {
-			t.Fatalf("rollup rows: %v (want exactly the hour 90 minutes ago)", err)
+		// No watermark yet: the first run starts at the earliest raw hour (5 hours ago), beyond
+		// the 3-hour lookback, and never rolls up the open hour.
+		rows, _ := e.admin.Query(e.ctx, `SELECT (date_trunc('hour', now(), 'UTC') - hour)::text || ':' || total || '/' || ok_count
+			FROM result_rollups_hourly WHERE monitor_id = $1 ORDER BY hour`, mon)
+		got, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatal(err)
 		}
-		if total != 2 || ok != 1 {
-			t.Fatalf("rollup total=%d ok=%d", total, ok)
+		if want := []string{"05:00:00:1/1", "02:00:00:2/1"}; !slices.Equal(got, want) {
+			t.Fatalf("rollups (age:total/ok) = %v, want %v", got, want)
+		}
+		if count(`SELECT count(*) FROM rollup_state WHERE watermark = date_trunc('hour', now(), 'UTC')`) != 1 {
+			t.Fatal("watermark is not the start of the current hour")
+		}
+	})
+
+	t.Run("retention keeps and counts a partition with unrolled data, drops it once rolled up", func(t *testing.T) {
+		mon := e.monitor(tenantA, "Old")
+		withRollup, unrolled := "check_results_p202402", "check_results_p202403"
+		for i, name := range []string{withRollup, unrolled} {
+			lo := time.Date(2024, time.Month(2+i), 1, 0, 0, 0, 0, time.UTC)
+			pgtest.MustExec(t, e.admin,
+				fmt.Sprintf(`CREATE TABLE %s PARTITION OF check_results FOR VALUES FROM ('%s') TO ('%s')`, name, lo.Format(time.RFC3339), lo.AddDate(0, 1, 0).Format(time.RFC3339)),
+				`ALTER TABLE `+name+` OWNER TO maiak_owner`,
+				fmt.Sprintf(`INSERT INTO check_results (tenant_id, monitor_id, location_id, checked_at, ok, latency_ms) VALUES ('%s', '%s', '%s', '%s', true, 10)`,
+					tenantA, mon, homeLocation, lo.Add(3*time.Hour).Format(time.RFC3339)))
+		}
+		// The first month was rolled up (a backfill with the explicit range; the catch-up never
+		// looks back more than 7 days); the second was not.
+		worker := e.Conn(t, e.WorkerURL)
+		if _, err := worker.Exec(e.ctx, `SELECT compute_rollups('2024-02-01T00:00:00Z', '2024-03-01T00:00:00Z')`); err != nil {
+			t.Fatal(err)
+		}
+		before := metric(t, reg, "maiak_jobs_partitions_kept_total", "rollups_incomplete")
+		if got := h.RunTask(e.ctx, task("drop_expired_partitions")); got != "ok" {
+			t.Fatal(got)
+		}
+		if count(`SELECT count(*) FROM pg_class WHERE relname = $1`, withRollup) != 0 {
+			t.Fatal("rolled-up expired partition kept")
+		}
+		if count(`SELECT count(*) FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid WHERE c.relname = $1`, unrolled) != 1 {
+			t.Fatal("partition with unrolled data was detached or dropped")
+		}
+		if got := metric(t, reg, "maiak_jobs_partitions_kept_total", "rollups_incomplete"); got != before+1 {
+			t.Fatalf("kept metric = %v, want %v", got, before+1)
+		}
+		e.logMu.Lock()
+		logs := e.logs.String()
+		e.logMu.Unlock()
+		if !strings.Contains(logs, `"msg":"retention kept an expired partition","partition":"`+unrolled+`","reason":"rollups_incomplete"`) {
+			t.Fatalf("kept partition not logged:\n%s", logs)
+		}
+
+		// Once its hours are rolled up, the next run drops it and counts nothing more.
+		if _, err := worker.Exec(e.ctx, `SELECT compute_rollups('2024-03-01T00:00:00Z', '2024-04-01T00:00:00Z')`); err != nil {
+			t.Fatal(err)
+		}
+		if got := h.RunTask(e.ctx, task("drop_expired_partitions")); got != "ok" {
+			t.Fatal(got)
+		}
+		if count(`SELECT count(*) FROM pg_class WHERE relname = $1`, unrolled) != 0 {
+			t.Fatal("partition kept after its rollups were completed")
+		}
+		if got := metric(t, reg, "maiak_jobs_partitions_kept_total", "rollups_incomplete"); got != before+1 {
+			t.Fatalf("kept metric after the drop = %v, want %v", got, before+1)
 		}
 	})
 

@@ -23,6 +23,7 @@ Rules are in [ADR-0013](../adr/0013-migrations.md). This page is the practical s
 | `20261020160000_api_runtime_grants.sql` | B-19: revokes table-wide `UPDATE` on `monitor_location_state` and `monitor_state` from `maiak_api`, column grant on `monitor_state`, `reset_monitor_runtime` (L-070) |
 | `20261020170000_outbox_stats.sql` | `outbox_pending` |
 | `20261020180000_review_fixes_b10_b12.sql` | B-20: `incidents.monitor_id` and the one-open-incident index, `claim_due_monitors(n, p_location)`, `notification_deliveries.claim_token`, new `claim_deliveries` and `finish_delivery(id, token, ...)`, `compute_rollups` under an advisory lock, `drop_expired_partitions` replaced by `list_droppable_partitions` / `detach_expired_partition` / `drop_detached_partition` (L-090) |
+| `20261020190000_rollup_watermark_review_fixes_b21.sql` | B-21: `rollup_state` and `compute_rollups_catch_up` (ADR-0090; `compute_rollups(from, to)` kept), `reset_monitor_runtime` skips soft-deleted monitors |
 
 `claim_due_monitors(n)`, `finish_delivery(id, status, error, retry_at)` and `drop_expired_partitions()` no longer exist; the [data model](../architecture/data-model.md) lists the current functions.
 

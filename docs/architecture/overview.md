@@ -80,7 +80,7 @@ Create inserts the monitor, its home location and the initial state rows in one 
 |---|---|
 | api | `auth_lookup_session`, `reset_monitor_runtime` |
 | worker | `claim_due_monitors`, `ensure_partitions` |
-| jobs | `claim_deliveries`, `finish_delivery`, `outbox_pending`, `ensure_partitions`, `compute_rollups`, `list_droppable_partitions`, `detach_expired_partition`, `drop_detached_partition`, `purge_expired_sessions` |
+| jobs | `claim_deliveries`, `finish_delivery`, `outbox_pending`, `ensure_partitions`, `compute_rollups_catch_up`, `list_droppable_partitions`, `detach_expired_partition`, `drop_detached_partition`, `purge_expired_sessions` |
 
 Grantees and purposes are in the [data model](data-model.md#security-definer-functions).
 
