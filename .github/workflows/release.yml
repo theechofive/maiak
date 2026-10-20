@@ -1,8 +1,11 @@
 name: release
 
-# Builds and pushes the multi-arch backend and web images, then bumps image.tag / web.image.tag in values-platform.yaml.
-# `paths` (not paths-ignore) is used: GitHub does not allow both on one event. deploy/** is not listed,
-# so the bump commit cannot re-trigger this workflow; it also carries [skip ci].
+# Builds and pushes the multi-arch backend and web images (tag: short SHA, plus `main`), then bumps
+# image.tag / web.image.tag in values-platform.yaml with scripts/bump-image-tag.sh.
+# `paths` (not paths-ignore) is used: GitHub does not allow both on one event. deploy/** and scripts/**
+# are not listed, so the bump commit cannot re-trigger this workflow; it also carries [skip ci], and a
+# push made with GITHUB_TOKEN does not start workflows anyway.
+# Never executed yet: see ledger L-102 and R-010 for the first-run caveats.
 on:
   push:
     branches: [main]
@@ -28,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
-      contents: write
+      contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
@@ -51,45 +54,20 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ steps.vars.outputs.sha }}
             ${{ env.IMAGE }}:main
+          # Links the package to this repository so GITHUB_TOKEN may push it (L-102).
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
           build-args: |
             VERSION=${{ steps.vars.outputs.sha }}
             COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Bump image.tag in values-platform.yaml
-        env:
-          SHA: ${{ steps.vars.outputs.sha }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          FILE=deploy/helm/maiak/values-platform.yaml
-          for attempt in 1 2 3; do
-            git fetch origin main
-            git reset --hard origin/main
-            # Rewrite only `tag:` inside the top-level `image:` block.
-            sed -i '/^image:/,/^[^ #]/ s/^\(  tag: \)"[^"]*"/\1"'"${SHA}"'"/' "$FILE"
-            grep -q "^  tag: \"${SHA}\"" "$FILE" || { echo "image.tag rewrite failed"; exit 1; }
-            if git diff --quiet -- "$FILE"; then
-              echo "image.tag already ${SHA}; nothing to commit."
-              exit 0
-            fi
-            git add "$FILE"
-            git commit -m "chore(deploy): maiak-backend ${SHA} [skip ci]"
-            if git push origin HEAD:main; then
-              exit 0
-            fi
-            echo "push raced (attempt ${attempt}); retrying"
-            sleep $((attempt * 3))
-          done
-          echo "failed to push image.tag bump after 3 attempts"
-          exit 1
 
   web-image:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: write
+      contents: read
       packages: write
     env:
       WEB_IMAGE: ghcr.io/theechofive/maiak-web
@@ -113,33 +91,48 @@ jobs:
           tags: |
             ${{ env.WEB_IMAGE }}:${{ steps.vars.outputs.sha }}
             ${{ env.WEB_IMAGE }}:main
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
-      - name: Bump web.image.tag in values-platform.yaml
-        env:
-          SHA: ${{ steps.vars.outputs.sha }}
+
+  # The two bump jobs edit different keys of the same file and both push to main. They share one
+  # concurrency group, so they never run at the same time; the script also retries a push that
+  # lost a race against anything else (a human commit, for example). The group name differs from the
+  # workflow-level `release` group on purpose: the same name would make the job wait for its own run.
+  bump-backend:
+    needs: backend-image
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: release-bump
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      # Credentials stay persisted on purpose: the script pushes with them.
+      - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
+      - name: Bump image.tag in values-platform.yaml
         run: |
-          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          FILE=deploy/helm/maiak/values-platform.yaml
-          for attempt in 1 2 3; do
-            git fetch origin main
-            git reset --hard origin/main
-            # Rewrite only `tag:` inside the `image:` block nested under the top-level `web:` block.
-            sed -i '/^web:/,/^[^ #]/ s/^\(    tag: \)"[^"]*"/\1"'"${SHA}"'"/' "$FILE"
-            grep -q "^    tag: \"${SHA}\"" "$FILE" || { echo "web.image.tag rewrite failed"; exit 1; }
-            if git diff --quiet -- "$FILE"; then
-              echo "web.image.tag already ${SHA}; nothing to commit."
-              exit 0
-            fi
-            git add "$FILE"
-            git commit -m "chore(deploy): maiak-web ${SHA} [skip ci]"
-            if git push origin HEAD:main; then
-              exit 0
-            fi
-            echo "push raced (attempt ${attempt}); retrying"
-            sleep $((attempt * 3))
-          done
-          echo "failed to push web.image.tag bump after 3 attempts"
-          exit 1
+          bash scripts/bump-image-tag.sh backend "${GITHUB_SHA::7}"
+
+  bump-web:
+    needs: web-image
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: release-bump
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
+      - name: Bump web.image.tag in values-platform.yaml
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          bash scripts/bump-image-tag.sh web "${GITHUB_SHA::7}"
