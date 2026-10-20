@@ -68,7 +68,7 @@ describe("auth guard", () => {
   it("shows an error state when the session check fails for another reason", async () => {
     mockApi({ "GET /api/v1/auth/me": () => problem(500, "Internal error") });
     renderApp("/");
-    expect(await screen.findByRole("heading", { name: "Cannot load your session" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Cannot load your session");
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 

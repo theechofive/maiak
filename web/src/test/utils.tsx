@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { setCsrfToken } from "../api/client";
 import App from "../App";
 import { AuthProvider } from "../auth/AuthProvider";
+import { ToastProvider } from "../components/Toasts";
 
 type Handler = (request: Request) => Response | Promise<Response>;
 
@@ -50,7 +51,9 @@ export function renderApp(path: string) {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
         <AuthProvider>
-          <App />
+          <ToastProvider>
+            <App />
+          </ToastProvider>
         </AuthProvider>
       </MemoryRouter>
     </QueryClientProvider>,

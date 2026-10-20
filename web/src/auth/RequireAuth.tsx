@@ -1,5 +1,5 @@
 import { Navigate, Outlet, useLocation } from "react-router-dom";
-import { errorMessage } from "../api/client";
+import { ErrorState, Loading } from "../components/QueryState";
 import { useAuth } from "./AuthProvider";
 
 /** Renders the child routes only with a session; otherwise redirects to /login keeping the target. */
@@ -8,17 +8,17 @@ export default function RequireAuth() {
   const location = useLocation();
 
   if (auth.status === "loading") {
-    return <p aria-busy="true">Checking your session…</p>;
+    return (
+      <main className="container">
+        <Loading label="Checking your session…" />
+      </main>
+    );
   }
   if (auth.status === "error") {
     return (
-      <section role="alert">
-        <h1>Cannot load your session</h1>
-        <p>{errorMessage(auth.error)}</p>
-        <button type="button" onClick={auth.retry}>
-          Try again
-        </button>
-      </section>
+      <main className="container">
+        <ErrorState title="Cannot load your session" error={auth.error} onRetry={auth.retry} />
+      </main>
     );
   }
   if (!auth.session) {
