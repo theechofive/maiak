@@ -1,7 +1,7 @@
 // Package scheduler owns probe_locations and monitor_location_state: where and when each
 // monitor is checked. The monitors module initialises and restarts schedules only through this
 // service, inside its own transaction, so a monitor and its schedule commit together. The
-// worker's claim loop (B-12) will live here too.
+// worker claims due jobs, completes and releases leases through it (ADR-0016).
 package scheduler
 
 import (
@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/theechofive/maiak/backend/internal/platform/db"
 	"github.com/theechofive/maiak/backend/internal/scheduler/schedulerdb"
 )
 
@@ -105,6 +106,78 @@ func (s *Service) SaveLocationState(ctx context.Context, tx pgx.Tx, tenantID, mo
 	})
 	if err != nil {
 		return fmt.Errorf("scheduler: save location state: %w", err)
+	}
+	return nil
+}
+
+// Lease identifies a claimed (monitor, location); Token fences off stale writers.
+type Lease struct {
+	TenantID   uuid.UUID
+	MonitorID  uuid.UUID
+	LocationID uuid.UUID
+	Token      uuid.UUID
+	Until      time.Time
+}
+
+// Job is a claimed check with what is needed to run it.
+type Job struct {
+	Lease
+	URL              string
+	ExpectedStatus   string
+	FailureThreshold int
+	Interval         time.Duration
+	Timeout          time.Duration
+	// NextRunAt is when the job was due; now minus NextRunAt is the scheduler lag.
+	NextRunAt time.Time
+}
+
+// Claim leases up to n due jobs across all tenants through claim_due_monitors (a SECURITY
+// DEFINER function, so it runs outside a tenant transaction).
+func (s *Service) Claim(ctx context.Context, pool *db.Pool, n int) ([]Job, error) {
+	var jobs []Job
+	err := db.WithTx(ctx, pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT tenant_id, monitor_id, location_id, lease_token, lease_until, url, expected_status,
+			failure_threshold, interval_seconds, timeout_seconds, next_run_at FROM claim_due_monitors($1)`, n)
+		if err != nil {
+			return err
+		}
+		jobs, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (Job, error) {
+			var j Job
+			var interval, timeout int32
+			err := r.Scan(&j.TenantID, &j.MonitorID, &j.LocationID, &j.Token, &j.Until, &j.URL, &j.ExpectedStatus,
+				&j.FailureThreshold, &interval, &timeout, &j.NextRunAt)
+			j.Interval, j.Timeout = time.Duration(interval)*time.Second, time.Duration(timeout)*time.Second
+			return j, err
+		})
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scheduler: claim: %w", err)
+	}
+	return jobs, nil
+}
+
+// Complete checks that l is still held (token matches and not expired), schedules the next run
+// at nextRunAt and releases the lease. It returns false for a stale lease; the caller must then
+// discard the result. tx must be a tenant transaction of l.TenantID.
+func (s *Service) Complete(ctx context.Context, tx pgx.Tx, l Lease, nextRunAt time.Time) (bool, error) {
+	n, err := schedulerdb.New(tx).CompleteLease(ctx, schedulerdb.CompleteLeaseParams{
+		TenantID: l.TenantID, MonitorID: l.MonitorID, LocationID: l.LocationID, LeaseToken: &l.Token, NextRunAt: nextRunAt,
+	})
+	if err != nil {
+		return false, fmt.Errorf("scheduler: complete lease: %w", err)
+	}
+	return n == 1, nil
+}
+
+// Release gives a claimed job back without checking it; it is due again after delay (or at its
+// next_run_at if that is later). tx must be a tenant transaction of l.TenantID.
+func (s *Service) Release(ctx context.Context, tx pgx.Tx, l Lease, delay time.Duration) error {
+	if _, err := schedulerdb.New(tx).ReleaseLease(ctx, schedulerdb.ReleaseLeaseParams{
+		TenantID: l.TenantID, MonitorID: l.MonitorID, LocationID: l.LocationID, LeaseToken: &l.Token,
+		DelaySeconds: delay.Seconds(),
+	}); err != nil {
+		return fmt.Errorf("scheduler: release lease: %w", err)
 	}
 	return nil
 }

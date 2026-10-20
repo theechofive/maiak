@@ -1,5 +1,5 @@
-// Command worker will claim due checks and run them. In slice 1 it only connects to the
-// database and serves the admin endpoints, so the deployment and its probes can be verified.
+// Command worker claims due checks from the database, runs them through the SSRF-guarded HTTPS
+// prober and records results, incident transitions and outbox rows (internal/worker).
 package main
 
 import (
@@ -9,11 +9,18 @@ import (
 	"os/signal"
 	"syscall"
 
+	"golang.org/x/sync/errgroup"
+
+	"github.com/theechofive/maiak/backend/internal/checks"
+	"github.com/theechofive/maiak/backend/internal/incidents"
 	"github.com/theechofive/maiak/backend/internal/platform/config"
 	"github.com/theechofive/maiak/backend/internal/platform/db"
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
 	"github.com/theechofive/maiak/backend/internal/platform/metrics"
+	"github.com/theechofive/maiak/backend/internal/safehttp"
+	"github.com/theechofive/maiak/backend/internal/scheduler"
+	"github.com/theechofive/maiak/backend/internal/worker"
 )
 
 var (
@@ -44,8 +51,24 @@ func run() error {
 	defer pool.Close()
 
 	reg := metrics.NewRegistry("worker", version, commit)
-	log.Info("worker started; no check execution in this slice")
-	return httpx.Serve(ctx, log, cfg.ShutdownTimeout,
-		httpx.NewServer(cfg.AdminAddr, httpx.AdminHandler(log, pool.Ping, reg), log),
-	)
+	sched := scheduler.New()
+	client := safehttp.NewClient(safehttp.Options{
+		Timeout: checks.DefaultTimeout, MaxRedirects: 3, BlockedPrefixes: cfg.BlockedCIDRs,
+	})
+	w := worker.New(worker.Config{
+		ClaimBatch: cfg.ClaimBatch, Concurrency: cfg.Concurrency,
+		TenantConcurrency: cfg.TenantConcurrency, HostConcurrency: cfg.HostConcurrency,
+		DrainTimeout: cfg.ShutdownTimeout,
+	}, worker.Deps{
+		Pool: pool, Scheduler: sched, Incidents: incidents.NewService(sched),
+		Prober: checks.NewHTTPSProber(client), Metrics: worker.NewMetrics(reg), Log: log,
+	})
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		return httpx.Serve(gctx, log, cfg.ShutdownTimeout,
+			httpx.NewServer(cfg.AdminAddr, httpx.AdminHandler(log, pool.Ping, reg), log))
+	})
+	g.Go(func() error { return w.Run(gctx) })
+	return g.Wait()
 }

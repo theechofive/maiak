@@ -87,6 +87,15 @@ type Worker struct {
 	// BlockedCIDRs are blocked by the SSRF guard in addition to its built-in ranges
 	// (MAIAK_BLOCKED_CIDRS, comma-separated, ADR-0016).
 	BlockedCIDRs []netip.Prefix
+	// ClaimBatch is the most (monitor, location) jobs one scheduler tick claims
+	// (MAIAK_WORKER_CLAIM_BATCH, default 100).
+	ClaimBatch int
+	// Concurrency caps checks in flight in one worker process (MAIAK_WORKER_CONCURRENCY,
+	// default 50); TenantConcurrency and HostConcurrency cap them per tenant and per target
+	// host (MAIAK_WORKER_TENANT_CONCURRENCY default 5, MAIAK_WORKER_HOST_CONCURRENCY default 2).
+	Concurrency       int
+	TenantConcurrency int
+	HostConcurrency   int
 }
 
 // Migrate is the configuration of cmd/migrate.
@@ -134,7 +143,14 @@ func LoadAPI(lookup LookupFunc) (API, error) {
 // LoadWorker loads the worker (and jobs) configuration.
 func LoadWorker(lookup LookupFunc) (Worker, error) {
 	l := &loader{lookup: lookup}
-	cfg := Worker{Server: l.server(5), BlockedCIDRs: l.cidrs("MAIAK_BLOCKED_CIDRS")}
+	cfg := Worker{
+		Server:            l.server(5),
+		BlockedCIDRs:      l.cidrs("MAIAK_BLOCKED_CIDRS"),
+		ClaimBatch:        l.integer("MAIAK_WORKER_CLAIM_BATCH", 100, 1, 1000),
+		Concurrency:       l.integer("MAIAK_WORKER_CONCURRENCY", 50, 1, 1000),
+		TenantConcurrency: l.integer("MAIAK_WORKER_TENANT_CONCURRENCY", 5, 1, 1000),
+		HostConcurrency:   l.integer("MAIAK_WORKER_HOST_CONCURRENCY", 2, 1, 1000),
+	}
 	return cfg, l.err()
 }
 

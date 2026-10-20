@@ -164,6 +164,22 @@ func TestLoadWorkerBlockedCIDRs(t *testing.T) {
 	}
 }
 
+func TestLoadWorkerLimits(t *testing.T) {
+	e := apiEnv(t)
+	cfg, err := LoadWorker(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ClaimBatch != 100 || cfg.Concurrency != 50 || cfg.TenantConcurrency != 5 || cfg.HostConcurrency != 2 {
+		t.Fatalf("defaults = %d %d %d %d", cfg.ClaimBatch, cfg.Concurrency, cfg.TenantConcurrency, cfg.HostConcurrency)
+	}
+	e["MAIAK_WORKER_CONCURRENCY"] = "20"
+	e["MAIAK_WORKER_HOST_CONCURRENCY"] = "0"
+	if _, err := LoadWorker(env(e)); err == nil || !strings.Contains(err.Error(), "MAIAK_WORKER_HOST_CONCURRENCY") {
+		t.Fatalf("zero host concurrency accepted: %v", err)
+	}
+}
+
 func TestLoadBootstrap(t *testing.T) {
 	cfg, err := LoadBootstrap(env(map[string]string{
 		"MAIAK_BOOTSTRAP_HOST":           "db.example.internal",

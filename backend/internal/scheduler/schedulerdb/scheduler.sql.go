@@ -12,6 +12,38 @@ import (
 	"github.com/google/uuid"
 )
 
+const completeLease = `-- name: CompleteLease :execrows
+UPDATE monitor_location_state
+SET next_run_at = $1, lease_token = NULL, lease_until = NULL
+WHERE tenant_id = $2 AND monitor_id = $3 AND location_id = $4
+  AND lease_token = $5 AND lease_until > now()
+`
+
+type CompleteLeaseParams struct {
+	NextRunAt  time.Time
+	TenantID   uuid.UUID
+	MonitorID  uuid.UUID
+	LocationID uuid.UUID
+	LeaseToken *uuid.UUID
+}
+
+// The lease check of ADR-0016: zero rows means the lease expired or was taken over, and the
+// caller discards its result. On success the next run is scheduled and the lease released; the
+// row stays locked until the result transaction commits, so nobody can claim it in between.
+func (q *Queries) CompleteLease(ctx context.Context, arg CompleteLeaseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completeLease,
+		arg.NextRunAt,
+		arg.TenantID,
+		arg.MonitorID,
+		arg.LocationID,
+		arg.LeaseToken,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getActiveLocationIDByCode = `-- name: GetActiveLocationIDByCode :one
 SELECT id
 FROM probe_locations
@@ -89,6 +121,39 @@ func (q *Queries) ListLocationStates(ctx context.Context, arg ListLocationStates
 		return nil, err
 	}
 	return items, nil
+}
+
+const releaseLease = `-- name: ReleaseLease :execrows
+UPDATE monitor_location_state
+SET lease_token = NULL, lease_until = NULL,
+    next_run_at = greatest(next_run_at, now() + make_interval(secs => $1::float8))
+WHERE tenant_id = $2 AND monitor_id = $3 AND location_id = $4
+  AND lease_token = $5
+`
+
+type ReleaseLeaseParams struct {
+	DelaySeconds float64
+	TenantID     uuid.UUID
+	MonitorID    uuid.UUID
+	LocationID   uuid.UUID
+	LeaseToken   *uuid.UUID
+}
+
+// Gives a claimed job back unchecked (the worker had no capacity for it). It becomes due again
+// after a short delay, so the claim (oldest first) does not keep returning the same saturated
+// tenant's jobs ahead of everybody else's.
+func (q *Queries) ReleaseLease(ctx context.Context, arg ReleaseLeaseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseLease,
+		arg.DelaySeconds,
+		arg.TenantID,
+		arg.MonitorID,
+		arg.LocationID,
+		arg.LeaseToken,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const restartMonitorLocations = `-- name: RestartMonitorLocations :execrows

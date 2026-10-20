@@ -10,7 +10,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 
 # Paths written by `generate`; check-generated fails if they drift from what is committed.
 GENERATED := backend/internal/api/gen backend/internal/auth/authdb backend/internal/tenants/tenantsdb backend/internal/audit/auditdb \
-	backend/internal/scheduler/schedulerdb backend/internal/monitors/monitorsdb backend/internal/incidents/incidentsdb
+	backend/internal/scheduler/schedulerdb backend/internal/monitors/monitorsdb backend/internal/incidents/incidentsdb backend/internal/results/resultsdb
 
 .PHONY: generate check-generated lint test build tidy
 

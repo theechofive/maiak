@@ -429,7 +429,7 @@ func TestIntegrationClaimDueMonitors(t *testing.T) {
 		if c.url != "https://example.com/"+c.monitor || c.expected != "204" || c.threshold != 2 || c.interval != 60 || c.timeout != 10 {
 			t.Errorf("claim row = %+v", c)
 		}
-		if d := c.leaseUntil.Sub(time.Now()); d < 20*time.Second || d > 40*time.Second {
+		if d := time.Until(c.leaseUntil); d < 20*time.Second || d > 40*time.Second {
 			t.Errorf("lease_until is %s from now, want about 30 s", d)
 		}
 		if err := tx1.Commit(ctx); err != nil {

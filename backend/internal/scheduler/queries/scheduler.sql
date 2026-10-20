@@ -27,3 +27,22 @@ ORDER BY location_id;
 UPDATE monitor_location_state
 SET status = @status, consecutive_failures = @consecutive_failures, last_checked_at = @last_checked_at
 WHERE tenant_id = @tenant_id AND monitor_id = @monitor_id AND location_id = @location_id;
+
+-- name: CompleteLease :execrows
+-- The lease check of ADR-0016: zero rows means the lease expired or was taken over, and the
+-- caller discards its result. On success the next run is scheduled and the lease released; the
+-- row stays locked until the result transaction commits, so nobody can claim it in between.
+UPDATE monitor_location_state
+SET next_run_at = @next_run_at, lease_token = NULL, lease_until = NULL
+WHERE tenant_id = @tenant_id AND monitor_id = @monitor_id AND location_id = @location_id
+  AND lease_token = @lease_token AND lease_until > now();
+
+-- name: ReleaseLease :execrows
+-- Gives a claimed job back unchecked (the worker had no capacity for it). It becomes due again
+-- after a short delay, so the claim (oldest first) does not keep returning the same saturated
+-- tenant's jobs ahead of everybody else's.
+UPDATE monitor_location_state
+SET lease_token = NULL, lease_until = NULL,
+    next_run_at = greatest(next_run_at, now() + make_interval(secs => @delay_seconds::float8))
+WHERE tenant_id = @tenant_id AND monitor_id = @monitor_id AND location_id = @location_id
+  AND lease_token = @lease_token;
