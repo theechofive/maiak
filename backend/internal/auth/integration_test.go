@@ -1,0 +1,283 @@
+package auth_test
+
+import (
+	"context"
+	"errors"
+	"net/netip"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/theechofive/maiak/backend/internal/auth"
+	"github.com/theechofive/maiak/backend/internal/platform/clock"
+	"github.com/theechofive/maiak/backend/internal/platform/crypto"
+	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
+)
+
+var cheap = crypto.Argon2Params{Memory: 64, Iterations: 1, Parallelism: 1, SaltLength: 16, KeyLength: 32}
+
+func TestIntegrationBootstrapAdminIdempotent(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("auth"))
+	ctx := context.Background()
+	pool := env.Pool(t, env.APIURL, 8)
+	admin := env.AdminConn(t)
+
+	hash1, _ := crypto.HashPassword("first", cheap)
+	hash2, _ := crypto.HashPassword("second", cheap)
+
+	// Several replicas starting at once.
+	var wg sync.WaitGroup
+	errs := make(chan error, 5)
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			svc, err := auth.NewService(pool, auth.Options{SessionTTL: time.Hour})
+			if err == nil {
+				err = svc.BootstrapAdmin(ctx, "admin@example.com", hash1)
+			}
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent bootstrap: %v", err)
+		}
+	}
+
+	svc, err := auth.NewService(pool, auth.Options{SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.BootstrapAdmin(ctx, "admin@example.com", hash1); err != nil {
+		t.Fatal(err)
+	}
+	// Unknown emails are verified against a dummy hash with the admin hash's cost.
+	if got := svc.DummyParams(); got != cheap {
+		t.Fatalf("dummy hash params = %+v, want the admin's %+v", got, cheap)
+	}
+	assertCounts := func(wantHash string) {
+		t.Helper()
+		var tenants, users, members int
+		var stored, role string
+		q := `SELECT (SELECT count(*) FROM tenants WHERE slug = 'default'),
+		             (SELECT count(*) FROM users),
+		             (SELECT count(*) FROM memberships),
+		             (SELECT password_hash FROM users WHERE email = 'admin@example.com'),
+		             (SELECT role FROM memberships)`
+		if err := admin.QueryRow(ctx, q).Scan(&tenants, &users, &members, &stored, &role); err != nil {
+			t.Fatal(err)
+		}
+		if tenants != 1 || users != 1 || members != 1 || role != "owner" {
+			t.Fatalf("tenants=%d users=%d memberships=%d role=%s, want 1/1/1/owner", tenants, users, members, role)
+		}
+		if stored != wantHash {
+			t.Fatal("stored password hash does not match the configured one")
+		}
+	}
+	assertCounts(hash1)
+
+	// A changed Secret (password reset) replaces the hash; a demoted membership is restored.
+	if _, err := admin.Exec(ctx, `UPDATE memberships SET role = 'viewer'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.BootstrapAdmin(ctx, "ADMIN@example.com", hash2); err != nil {
+		t.Fatal(err)
+	}
+	assertCounts(hash2)
+
+	if err := svc.BootstrapAdmin(ctx, "admin@example.com", "not-a-hash"); !errors.Is(err, crypto.ErrInvalidHash) {
+		t.Fatalf("invalid hash: err = %v", err)
+	}
+}
+
+var testIP = netip.MustParseAddr("192.0.2.10")
+
+func newBootstrapped(t *testing.T, env *pgtest.Env, email, hash string) *auth.Service {
+	t.Helper()
+	svc, err := auth.NewService(env.Pool(t, env.APIURL, 8), auth.Options{SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.BootstrapAdmin(context.Background(), email, hash); err != nil {
+		t.Fatal(err)
+	}
+	return svc
+}
+
+func login(t *testing.T, svc *auth.Service, email, password string) (auth.LoginResult, error) {
+	t.Helper()
+	return svc.Login(context.Background(), auth.LoginInput{Email: email, Password: password, IP: testIP})
+}
+
+func mustLogin(t *testing.T, svc *auth.Service, email, password string) string {
+	t.Helper()
+	res, err := login(t, svc, email, password)
+	if err != nil {
+		t.Fatalf("login %s: %v", email, err)
+	}
+	return res.Token
+}
+
+func TestIntegrationAdminEmailRotation(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("auth_rotation"))
+	ctx := context.Background()
+	admin := env.AdminConn(t)
+	hash, _ := crypto.HashPassword("pw", cheap)
+
+	svcA := newBootstrapped(t, env, "a@example.com", hash)
+	tokenA := mustLogin(t, svcA, "a@example.com", "pw")
+
+	// The Secret now names b@: a@ is disabled, its session revoked, b@ can log in.
+	svcB := newBootstrapped(t, env, "b@example.com", hash)
+	if _, err := svcB.Authenticate(ctx, tokenA); !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Fatalf("old admin session: err = %v, want ErrUnauthenticated", err)
+	}
+	if _, err := login(t, svcB, "a@example.com", "pw"); !errors.Is(err, auth.ErrInvalidCredentials) {
+		t.Fatalf("old admin login: err = %v, want ErrInvalidCredentials", err)
+	}
+	tokenB := mustLogin(t, svcB, "b@example.com", "pw")
+	if _, err := svcB.Authenticate(ctx, tokenB); err != nil {
+		t.Fatalf("new admin session: %v", err)
+	}
+
+	var statusA string
+	var sessionsA, rotated int
+	if err := admin.QueryRow(ctx, `SELECT (SELECT status FROM users WHERE email = 'a@example.com'),
+		(SELECT count(*) FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.email = 'a@example.com'),
+		(SELECT count(*) FROM audit_log WHERE action = 'admin.rotated'
+		   AND entity_id = (SELECT id::text FROM users WHERE email = 'a@example.com'))`).Scan(&statusA, &sessionsA, &rotated); err != nil {
+		t.Fatal(err)
+	}
+	if statusA != "disabled" || sessionsA != 0 || rotated != 1 {
+		t.Fatalf("old admin: status=%s sessions=%d admin.rotated rows=%d, want disabled/0/1", statusA, sessionsA, rotated)
+	}
+
+	// Re-running with the same email changes nothing (no second audit row).
+	_ = newBootstrapped(t, env, "b@example.com", hash)
+	if err := admin.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE action = 'admin.rotated'`).Scan(&rotated); err != nil || rotated != 1 {
+		t.Fatalf("admin.rotated rows after rerun = %d (err %v), want 1", rotated, err)
+	}
+
+	// Rotating back re-enables a@ and retires b@.
+	svcA2 := newBootstrapped(t, env, "a@example.com", hash)
+	mustLogin(t, svcA2, "a@example.com", "pw")
+	if _, err := svcA2.Authenticate(ctx, tokenB); !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Fatalf("b@ session after rotating back: err = %v", err)
+	}
+}
+
+func TestIntegrationSessionRejectedForInactiveUserOrTenant(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("auth_inactive"))
+	ctx := context.Background()
+	admin := env.AdminConn(t)
+	hash, _ := crypto.HashPassword("pw", cheap)
+	svc := newBootstrapped(t, env, "admin@example.com", hash)
+
+	cases := []struct {
+		name, disable, enable string
+	}{
+		{"disabled user", `UPDATE users SET status = 'disabled'`, `UPDATE users SET status = 'active'`},
+		{"suspended tenant", `UPDATE tenants SET status = 'suspended'`, `UPDATE tenants SET status = 'active'`},
+		{"deleted tenant", `UPDATE tenants SET deleted_at = now()`, `UPDATE tenants SET deleted_at = NULL`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			token := mustLogin(t, svc, "admin@example.com", "pw")
+			if _, err := svc.Authenticate(ctx, token); err != nil {
+				t.Fatalf("before: %v", err)
+			}
+			pgtest.MustExec(t, admin, c.disable)
+			if _, err := svc.Authenticate(ctx, token); !errors.Is(err, auth.ErrUnauthenticated) {
+				t.Fatalf("after %q: err = %v, want ErrUnauthenticated", c.disable, err)
+			}
+			pgtest.MustExec(t, admin, c.enable)
+			if _, err := svc.Authenticate(ctx, token); err != nil {
+				t.Fatalf("after re-enabling: %v", err)
+			}
+		})
+	}
+}
+
+func TestIntegrationPasswordChangeRevokesSessions(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("auth_pwchange"))
+	ctx := context.Background()
+	hash1, _ := crypto.HashPassword("first", cheap)
+	hash2, _ := crypto.HashPassword("second", cheap)
+
+	svc := newBootstrapped(t, env, "admin@example.com", hash1)
+	token := mustLogin(t, svc, "admin@example.com", "first")
+
+	// Same hash again (a restart): the session survives.
+	svc = newBootstrapped(t, env, "admin@example.com", hash1)
+	if _, err := svc.Authenticate(ctx, token); err != nil {
+		t.Fatalf("restart with the same hash revoked the session: %v", err)
+	}
+
+	svc = newBootstrapped(t, env, "admin@example.com", hash2)
+	if _, err := svc.Authenticate(ctx, token); !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Fatalf("session after password change: err = %v, want ErrUnauthenticated", err)
+	}
+	if _, err := login(t, svc, "admin@example.com", "first"); !errors.Is(err, auth.ErrInvalidCredentials) {
+		t.Fatalf("old password: err = %v", err)
+	}
+	mustLogin(t, svc, "admin@example.com", "second")
+}
+
+// Concurrent wrong passwords for one email cannot run more verifications than the limit:
+// every attempt is either rejected by the limiter or verified (and then fails).
+func TestIntegrationLoginLimitHoldsUnderConcurrency(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("auth_ratelimit"))
+	ctx := context.Background()
+	admin := env.AdminConn(t)
+	hash, _ := crypto.HashPassword("pw", cheap)
+	const limit = 10
+	svc, err := auth.NewService(env.Pool(t, env.APIURL, 8), auth.Options{
+		SessionTTL:    time.Hour,
+		IPLimiter:     auth.NewLimiter(1000, 15*time.Minute, 1000, clock.System{}),
+		EmailLimiter:  auth.NewLimiter(limit, 15*time.Minute, 1000, clock.System{}),
+		HashQueueWait: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.BootstrapAdmin(ctx, "admin@example.com", hash); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	var verified, limited, other atomic.Int32
+	for i := 0; i < 200; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := svc.Login(ctx, auth.LoginInput{Email: "Admin@example.com", Password: "wrong", IP: testIP})
+			switch {
+			case errors.Is(err, auth.ErrInvalidCredentials):
+				verified.Add(1)
+			case errors.Is(err, auth.ErrRateLimited):
+				limited.Add(1)
+			default:
+				other.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if verified.Load() > limit || other.Load() != 0 || verified.Load()+limited.Load() != 200 {
+		t.Fatalf("verified=%d rate_limited=%d other=%d; want at most %d verifications", verified.Load(), limited.Load(), other.Load(), limit)
+	}
+	var failures int32
+	if err := admin.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE action = 'auth.login.failed'`).Scan(&failures); err != nil {
+		t.Fatal(err)
+	}
+	if failures != verified.Load() {
+		t.Fatalf("audit rows = %d, verifications = %d", failures, verified.Load())
+	}
+	// The correct password is now rate limited too, for this email.
+	if _, err := login(t, svc, "admin@example.com", "pw"); !errors.Is(err, auth.ErrRateLimited) {
+		t.Fatalf("login after the limit: err = %v", err)
+	}
+}
