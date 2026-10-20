@@ -35,7 +35,7 @@ jobs:
         id: vars
         run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@v3 # TODO(L-019) pin to SHA
-      - uses: docker/setup-buildx-action@v3 # TODO(L-019) pin to SHA
+      - uses: docker/setup-buildx-action@v4 # TODO(L-019) pin to SHA
       - uses: docker/login-action@v3 # TODO(L-019) pin to SHA
         with:
           registry: ghcr.io
@@ -99,7 +99,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
       - uses: docker/setup-qemu-action@v3 # TODO(L-019) pin to SHA
-      - uses: docker/setup-buildx-action@v3 # TODO(L-019) pin to SHA
+      - uses: docker/setup-buildx-action@v4 # TODO(L-019) pin to SHA
       - uses: docker/login-action@v3 # TODO(L-019) pin to SHA
         with:
           registry: ghcr.io
