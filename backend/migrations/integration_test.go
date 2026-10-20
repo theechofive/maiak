@@ -22,12 +22,14 @@ func TestIntegrationMigrateFromScratchAndRerun(t *testing.T) {
 	}
 	admin := env.AdminConn(t)
 	var tables []string
-	rows, _ := admin.Query(ctx, `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'goose_db_version' ORDER BY 1`)
+	// Partitions are named after the current month; they are checked in results_integration_test.go.
+	rows, _ := admin.Query(ctx, `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'
+		WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition AND c.relname <> 'goose_db_version' ORDER BY 1`)
 	tables, err = pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "audit_log,auth_identities,memberships,monitor_location_state,monitor_locations,monitor_state,monitors,probe_locations,sessions,tenants,users"
+	want := "audit_log,auth_identities,check_results,memberships,monitor_location_state,monitor_locations,monitor_state,monitors,probe_locations,result_rollups_hourly,sessions,tenants,users"
 	if got := strings.Join(tables, ","); got != want {
 		t.Fatalf("tables = %s, want %s", got, want)
 	}
@@ -36,7 +38,12 @@ func TestIntegrationMigrateFromScratchAndRerun(t *testing.T) {
 // definerAllowList names every SECURITY DEFINER function and the roles allowed to execute it.
 // A new definer function fails the lint until it is reviewed and added here (ADR-0016).
 var definerAllowList = map[string][]string{
-	"auth_lookup_session": {"maiak_api"},
+	"auth_lookup_session":     {"maiak_api"},
+	"ensure_partitions":       {"maiak_worker"},
+	"claim_due_monitors":      {"maiak_worker"},
+	"compute_rollups":         {"maiak_worker"},
+	"drop_expired_partitions": {"maiak_worker"},
+	"purge_expired_sessions":  {"maiak_worker"},
 }
 
 // extraPolicies are the permissive policies on tenant tables that are not tenant isolation
@@ -47,6 +54,13 @@ var extraPolicies = map[string]struct {
 }{
 	// The SECURITY DEFINER session lookup runs as maiak_owner before the tenant is known (ADR-0004).
 	"sessions.owner_session_lookup": {cmd: "r", roles: []string{"maiak_owner"}},
+	// The cross-tenant definer functions of the results migration (ADR-0016, ADR-0018).
+	"sessions.owner_session_purge":             {cmd: "d", roles: []string{"maiak_owner"}},
+	"monitors.owner_claim_read":                {cmd: "r", roles: []string{"maiak_owner"}},
+	"monitor_location_state.owner_claim_read":  {cmd: "r", roles: []string{"maiak_owner"}},
+	"monitor_location_state.owner_claim_lease": {cmd: "w", roles: []string{"maiak_owner"}},
+	"check_results.owner_rollup_read":          {cmd: "r", roles: []string{"maiak_owner"}},
+	"result_rollups_hourly.owner_rollup_write": {cmd: "*", roles: []string{"maiak_owner"}},
 }
 
 var runtimeRoles = []string{"maiak_api", "maiak_worker"}
@@ -123,6 +137,9 @@ func TestIntegrationSchemaLint(t *testing.T) {
 		{"definer function executable by PUBLIC",
 			`GRANT EXECUTE ON FUNCTION auth_lookup_session(bytea) TO PUBLIC;`,
 			[]string{"auth_lookup_session: executable by PUBLIC"}},
+		{"partition without RLS",
+			`CREATE TABLE lint_part PARTITION OF check_results FOR VALUES FROM ('2001-01-01 00:00:00+00') TO ('2001-02-01 00:00:00+00');`,
+			[]string{"lint_part: row level security not enabled", "lint_part: row level security not forced", "lint_part: no policy"}},
 		{"runtime role member of maiak_owner",
 			`GRANT maiak_owner TO maiak_api;`,
 			[]string{"maiak_api: member of maiak_owner"}},
