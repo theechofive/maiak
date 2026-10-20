@@ -134,17 +134,34 @@ jobs:
           cache-dependency-path: backend/go.sum
       - name: Generated code is up to date
         run: make check-generated
-      # Deviation from `make lint`: the action installs golangci-lint (with its cache) and runs it
-      # in backend/. Keep flags in sync with the Makefile `lint` target.
-      - uses: golangci/golangci-lint-action@v8 # TODO(L-019) pin to SHA
-        with:
-          version: latest # TODO(L-019) pin golangci-lint version
-          working-directory: backend
       - name: Test
         run: make test
       # TEST_DATABASE_ADMIN_URL comes from the job env above, like the normal tests.
       - name: End-to-end test (maiaktest build tag)
         run: make test-e2e
+
+  # Separate from `backend` so a lint finding never hides the test and e2e results.
+  backend-lint:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5 # TODO(L-019) pin to SHA
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      # Deviation from `make lint`: the action installs golangci-lint (with its cache) and runs it
+      # in backend/. Keep flags in sync with the Makefile `lint` target.
+      - uses: golangci/golangci-lint-action@v8 # TODO(L-019) pin to SHA
+        with:
+          version: v2.15.0
+          working-directory: backend
 
   api-contract:
     needs: changes

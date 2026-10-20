@@ -3,6 +3,7 @@ package crypto
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -96,14 +97,43 @@ func TestNewKeyringValidation(t *testing.T) {
 		keys   map[string][]byte
 		active string
 	}{
-		"empty":          {map[string][]byte{}, "k1"},
-		"short key":      {map[string][]byte{"k1": make([]byte, 16)}, "k1"},
-		"missing active": {map[string][]byte{"k1": key(1)}, "k2"},
-		"bad key id":     {map[string][]byte{"k 1": key(1)}, "k 1"},
+		"empty":              {map[string][]byte{}, "k1"},
+		"short key":          {map[string][]byte{"k1": make([]byte, 16)}, "k1"},
+		"missing active":     {map[string][]byte{"k1": key(1)}, "k2"},
+		"bad key id":         {map[string][]byte{"k 1": key(1)}, "k 1"},
+		"key id too long":    {map[string][]byte{strings.Repeat("k", maxKeyIDLen+1): key(1)}, strings.Repeat("k", maxKeyIDLen+1)},
+		"key id over a byte": {map[string][]byte{strings.Repeat("k", 256): key(1)}, strings.Repeat("k", 256)},
 	}
 	for name, c := range cases {
 		if _, err := NewKeyring(c.keys, c.active); err == nil {
 			t.Errorf("%s: expected error", name)
 		}
+	}
+}
+
+func TestKeyIDLengthLimit(t *testing.T) {
+	longest := strings.Repeat("k", maxKeyIDLen)
+	kr, err := NewKeyring(map[string][]byte{longest: key(1)}, longest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ct, err := kr.Encrypt([]byte("secret"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := kr.Decrypt(ct, nil); err != nil || string(got) != "secret" {
+		t.Fatalf("max-length key id roundtrip: %q %v", got, err)
+	}
+
+	// An envelope naming a key id longer than any valid one is malformed, not an unknown key.
+	tooLong := append([]byte{envelopeV1, maxKeyIDLen + 1}, bytes.Repeat([]byte("k"), maxKeyIDLen+1+nonceSize+16)...)
+	if _, err := kr.Decrypt(tooLong, nil); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("over-long key id in envelope: err = %v, want ErrMalformed", err)
+	}
+
+	// A keyring bypassing NewKeyring must still refuse to encrypt rather than truncate the length.
+	bad := &Keyring{active: strings.Repeat("k", 256), aeads: kr.aeads}
+	if _, err := bad.Encrypt([]byte("secret"), nil); err == nil {
+		t.Fatal("encrypt with an over-long active key id must fail")
 	}
 }

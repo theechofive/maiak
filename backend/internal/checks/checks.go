@@ -102,7 +102,8 @@ func (p *HTTPSProber) Probe(parent context.Context, req Request) Result {
 		res.ErrorKind = classify(ctx, err)
 		return res
 	}
-	resp.Body.Close()
+	// The body is never read (no response content reaches users), so a close error changes nothing.
+	_ = resp.Body.Close()
 	cancel()
 
 	res.LatencyMs = int(latency.Milliseconds())

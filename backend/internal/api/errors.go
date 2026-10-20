@@ -28,7 +28,7 @@ import (
 const (
 	problemBadRequest         = "urn:maiak:problem:bad-request"
 	problemUnauthenticated    = "urn:maiak:problem:unauthenticated"
-	problemInvalidCredentials = "urn:maiak:problem:invalid-credentials"
+	problemInvalidCredentials = "urn:maiak:problem:invalid-credentials" //nolint:gosec // G101: problem type URN, not a credential
 	problemCSRF               = "urn:maiak:problem:csrf"
 	problemRateLimited        = "urn:maiak:problem:rate-limited"
 	problemNotFound           = "urn:maiak:problem:not-found"

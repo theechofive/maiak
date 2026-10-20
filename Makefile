@@ -38,6 +38,7 @@ test:
 test-e2e:
 	cd $(BACKEND) && go test -tags maiaktest -race -count=1 ./internal/e2e/...
 
+# CI pins golangci-lint v2.15.0 (.github/workflows/ci.yml, job backend-lint); use the same locally.
 lint:
 	cd $(BACKEND) && golangci-lint run ./...
 

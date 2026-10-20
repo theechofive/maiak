@@ -123,13 +123,16 @@ func (ts *testServer) dialed() []string {
 	return append([]string(nil), ts.dials...)
 }
 
-func get(t *testing.T, c *http.Client, url string) (*http.Response, error) {
+// get performs a GET and closes the body; only the status code is returned, so no response can
+// leak an open body.
+func get(t *testing.T, c *http.Client, url string) (int, error) {
 	t.Helper()
 	resp, err := c.Get(url)
-	if resp != nil {
-		resp.Body.Close()
+	if err != nil {
+		return 0, err
 	}
-	return resp, err
+	_ = resp.Body.Close()
+	return resp.StatusCode, nil
 }
 
 func TestAllowed(t *testing.T) {
@@ -232,9 +235,9 @@ func TestResolutionRules(t *testing.T) {
 func TestAllowedRequestDialsValidatedIP(t *testing.T) {
 	ts := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
 	c := NewClient(ts.options(Options{Resolver: static("93.184.215.14")}))
-	resp, err := get(t, c, "https://example.test/")
-	if err != nil || resp.StatusCode != 204 {
-		t.Fatalf("resp=%v err=%v", resp, err)
+	status, err := get(t, c, "https://example.test/")
+	if err != nil || status != 204 {
+		t.Fatalf("status=%d err=%v", status, err)
 	}
 	if d := ts.dialed(); len(d) != 1 || d[0] != "93.184.215.14:443" {
 		t.Fatalf("dialed %v", d)
@@ -548,7 +551,7 @@ func TestOverrideNotSetOutsideTests(t *testing.T) {
 		}
 		isTest := strings.HasSuffix(path, "_test.go")
 		switch {
-		case hasTag && path != self && !(isTest && strings.HasPrefix(path, e2eDir)):
+		case hasTag && path != self && (!isTest || !strings.HasPrefix(path, e2eDir)):
 			t.Errorf("%s: only %s and internal/e2e tests may use the maiaktest build tag", path, tagFile)
 		case !isTest && path != self && namesConstructor:
 			t.Errorf("%s: production code names NewLoopbackTestClient", path)
@@ -580,8 +583,8 @@ func TestLoopbackModeKeepsOtherRules(t *testing.T) {
 		return NewClient(Options{Resolver: static(addrs...), MaxRedirects: 3, rootCAs: ts.roots, loopbackPort: port})
 	}
 
-	if resp, err := get(t, client("127.0.0.1"), "https://example.test/"); err != nil || resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("loopback in test mode: %v %v", resp, err)
+	if status, err := get(t, client("127.0.0.1"), "https://example.test/"); err != nil || status != http.StatusNoContent {
+		t.Fatalf("loopback in test mode: %d %v", status, err)
 	}
 	for _, c := range []struct {
 		name, url string

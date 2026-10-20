@@ -63,10 +63,6 @@ type Deps struct {
 }
 
 type server struct {
-	// unimplemented answers 501 for every operation this type does not implement yet. Removing
-	// an operation from it without implementing it on server is a compile error (see below).
-	unimplemented
-
 	cfg      Config
 	auth     *auth.Service
 	monitors *monitors.Service
@@ -294,7 +290,8 @@ func (s *server) GetMe(ctx context.Context, _ gen.GetMeRequestObject) (gen.GetMe
 
 // sessionCookie builds the session cookie; an empty token expires it.
 func (s *server) sessionCookie(token string, expires time.Time) *http.Cookie {
-	c := &http.Cookie{
+	// Secure comes from MAIAK_COOKIE_SECURE (default true); gosec G124 only accepts a literal true.
+	c := &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are literal, Secure is configurable (default true)
 		Name:     SessionCookie,
 		Value:    token,
 		Path:     "/",

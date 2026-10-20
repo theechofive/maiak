@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 )
 
 // Ciphertext layout (version 1):
@@ -21,9 +22,11 @@ const (
 	envelopeV1 = 0x01
 	keySize    = 32
 	nonceSize  = 12
+	// maxKeyIDLen bounds key ids so their length always fits the one-byte header field.
+	maxKeyIDLen = 32
 )
 
-var keyIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
+var keyIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,` + strconv.Itoa(maxKeyIDLen) + `}$`)
 
 var (
 	// ErrUnknownKey means the ciphertext names a key id the keyring does not have.
@@ -72,7 +75,7 @@ func NewKeyring(keys map[string][]byte, activeKeyID string) (*Keyring, error) {
 // ValidateKeyID checks that a key id is short and URL-safe.
 func ValidateKeyID(id string) error {
 	if !keyIDPattern.MatchString(id) {
-		return fmt.Errorf("crypto: invalid key id %q (want 1-32 of [A-Za-z0-9_-])", id)
+		return fmt.Errorf("crypto: invalid key id %q (want 1-%d of [A-Za-z0-9_-])", id, maxKeyIDLen)
 	}
 	return nil
 }
@@ -84,9 +87,14 @@ func (k *Keyring) ActiveKeyID() string { return k.active }
 // ciphertext to its context, for example "notification_channels.config:<id>", so a value
 // cannot be copied to another row; the same aad must be passed to Decrypt.
 func (k *Keyring) Encrypt(plaintext, aad []byte) ([]byte, error) {
+	idLen := len(k.active)
+	if idLen == 0 || idLen > maxKeyIDLen {
+		// Unreachable through NewKeyring, which validates every id.
+		return nil, fmt.Errorf("crypto: active key id length %d out of range", idLen)
+	}
 	aead := k.aeads[k.active]
-	out := make([]byte, 0, 2+len(k.active)+nonceSize+len(plaintext)+aead.Overhead())
-	out = append(out, envelopeV1, byte(len(k.active)))
+	out := make([]byte, 0, 2+idLen+nonceSize+len(plaintext)+aead.Overhead())
+	out = append(out, envelopeV1, byte(idLen))
 	out = append(out, k.active...)
 	nonce := make([]byte, nonceSize)
 	if _, err := rand.Read(nonce); err != nil {
@@ -145,7 +153,7 @@ func parseEnvelope(c []byte) (keyID string, header, rest []byte, err error) {
 		return "", nil, nil, ErrMalformed
 	}
 	n := int(c[1])
-	if n == 0 || len(c) < 2+n {
+	if n == 0 || n > maxKeyIDLen || len(c) < 2+n {
 		return "", nil, nil, ErrMalformed
 	}
 	return string(c[2 : 2+n]), c[:2+n], c[2+n:], nil

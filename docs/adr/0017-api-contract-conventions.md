@@ -24,3 +24,6 @@ Task B-05 extended `api/openapi.yaml` from the slice-1 auth endpoints to the who
 - Keeping the non-strict `ServerInterface` with `gen.Unimplemented`: the generated stub silently covers a forgotten operation, so a missing handler is not a compile error.
 - Mapping all body schema failures to 422: would change the login error contract from slice 1.
 - `expectedStatus` as `oneOf: [string, integer]`: awkward generated types in Go and TypeScript.
+
+## Amendment (2026-10-20)
+The `unimplemented.go` stub described above was removed after B-15: every operation of the MVP contract has a handler. The compile-time assertion `var _ gen.StrictServerInterface = (*server)(nil)` in `internal/api/api.go` still makes a new spec operation a build error until it is implemented.
