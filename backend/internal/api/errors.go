@@ -15,6 +15,7 @@ import (
 	"github.com/getkin/kin-openapi/routers"
 
 	"github.com/theechofive/maiak/backend/internal/auth"
+	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
 	"github.com/theechofive/maiak/backend/internal/platform/validation"
@@ -31,6 +32,7 @@ const (
 	problemMethodNotAllowed   = "urn:maiak:problem:method-not-allowed"
 	problemValidation         = "urn:maiak:problem:validation"
 	problemNotImplemented     = "urn:maiak:problem:not-implemented"
+	problemLimitReached       = "urn:maiak:problem:limit-reached"
 	problemInternal           = "urn:maiak:problem:internal"
 )
 
@@ -54,6 +56,7 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 	var reqErr *openapi3filter.RequestError
 	var rateErr *auth.RateLimitedError
 	var valErr *validation.Error
+	var limitErr *monitors.LimitError
 	switch {
 	case errors.As(err, &badReq):
 		p.Type, p.Title, p.Status, p.Detail = problemBadRequest, "Bad request", http.StatusBadRequest, badReq.detail
@@ -75,7 +78,10 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 		secs := int(math.Ceil(rateErr.RetryAfter.Seconds()))
 		w.Header().Set("Retry-After", strconv.Itoa(max(secs, 1)))
 		p.Type, p.Title, p.Status = problemRateLimited, "Too many attempts, try again later", http.StatusTooManyRequests
-	case errors.Is(err, errNotFound), errors.Is(err, routers.ErrPathNotFound):
+	case errors.As(err, &limitErr):
+		p.Type, p.Title, p.Status = problemLimitReached, "Monitor limit reached", http.StatusConflict
+		p.Detail = fmt.Sprintf("This tenant can have at most %d monitors.", limitErr.Limit)
+	case errors.Is(err, errNotFound), errors.Is(err, routers.ErrPathNotFound), errors.Is(err, monitors.ErrNotFound):
 		p.Type, p.Title, p.Status = problemNotFound, "Not found", http.StatusNotFound
 	case errors.Is(err, errMethodNotAllowed), errors.Is(err, routers.ErrMethodNotAllowed):
 		p.Type, p.Title, p.Status = problemMethodNotAllowed, "Method not allowed", http.StatusMethodNotAllowed

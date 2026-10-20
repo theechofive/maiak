@@ -1,0 +1,301 @@
+package api_test
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
+	"net/http"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/theechofive/maiak/backend/internal/api"
+	"github.com/theechofive/maiak/backend/internal/auth"
+	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
+)
+
+// withCSRF returns the session headers plus the CSRF token for unsafe requests.
+func withCSRF(cookie map[string]string, csrf string) map[string]string {
+	return map[string]string{"Cookie": cookie["Cookie"], "X-CSRF-Token": csrf}
+}
+
+func TestIntegrationMonitorLifecycle(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("apimonitors"))
+	c := newServer(t, env, auth.Options{})
+	cookie, csrf := c.login()
+	unsafe := withCSRF(cookie, csrf)
+	admin := env.AdminConn(t)
+	ctx := context.Background()
+
+	r := c.do(http.MethodPost, "/api/v1/monitors", `{"name":" Website ","url":"HTTPS://Example.com/health?token=s3cr3t"}`, unsafe)
+	if r.code != http.StatusCreated {
+		t.Fatalf("create: %d %s", r.code, r.raw)
+	}
+	id, _ := r.body["id"].(string)
+	want := map[string]any{
+		"name": "Website", "url": "https://example.com/health?token=s3cr3t", "status": "unknown", "paused": false,
+		"intervalSeconds": 60.0, "timeoutSeconds": 10.0, "failureThreshold": 2.0, "expectedStatus": "2xx",
+		"notifySlack": true, "lastErrorKind": nil, "lastCheckedAt": nil, "tlsExpiresAt": nil, "ongoingIncident": nil,
+	}
+	for k, v := range want {
+		if r.body[k] != v {
+			t.Errorf("create %s = %v, want %v", k, r.body[k], v)
+		}
+	}
+	if up, _ := r.body["uptime"].(map[string]any); up == nil || up["h24"] != nil {
+		t.Errorf("uptime = %v", r.body["uptime"])
+	}
+
+	// Initial rows: home location, schedule within the jitter window, state unknown.
+	var code, lsStatus, msStatus string
+	var delay time.Duration
+	var failures int
+	if err := admin.QueryRow(ctx, `
+		SELECT l.code, s.status, s.consecutive_failures, s.next_run_at - now(), ms.status
+		FROM monitor_location_state s
+		JOIN probe_locations l ON l.id = s.location_id
+		JOIN monitor_state ms ON ms.monitor_id = s.monitor_id
+		WHERE s.monitor_id = $1`, id).Scan(&code, &lsStatus, &failures, &delay, &msStatus); err != nil {
+		t.Fatal(err)
+	}
+	if code != "home-eu-central-1" || lsStatus != "unknown" || failures != 0 || msStatus != "unknown" || delay < -time.Second || delay > 30*time.Second {
+		t.Fatalf("initial state: %s %s %d %v %s", code, lsStatus, failures, delay, msStatus)
+	}
+
+	list := c.do(http.MethodGet, "/api/v1/monitors", "", cookie)
+	items, _ := list.body["items"].([]any)
+	if list.code != http.StatusOK || len(items) != 1 || fmt.Sprint(list.body["summary"]) != "map[down:0 paused:0 unknown:1 up:0]" {
+		t.Fatalf("list: %d %s", list.code, list.raw)
+	}
+	if item := items[0].(map[string]any); item["uptime24h"] != nil || item["lastResponseMs"] != nil || item["id"] != id {
+		t.Fatalf("list item: %v", item)
+	}
+	if g := c.do(http.MethodGet, "/api/v1/monitors/"+id, "", cookie); g.code != http.StatusOK || g.body["name"] != "Website" {
+		t.Fatalf("get: %d %s", g.code, g.raw)
+	}
+
+	// Patch.
+	p := c.do(http.MethodPatch, "/api/v1/monitors/"+id, `{"name":"Site","expectedStatus":"204","failureThreshold":3,"notifySlack":false,"intervalSeconds":60}`, unsafe)
+	if p.code != http.StatusOK || p.body["name"] != "Site" || p.body["expectedStatus"] != "204" || p.body["failureThreshold"] != 3.0 || p.body["notifySlack"] != false {
+		t.Fatalf("patch: %d %s", p.code, p.raw)
+	}
+	for body, field := range map[string]string{
+		`{"intervalSeconds":30}`:       "intervalSeconds",
+		`{"timeoutSeconds":5}`:         "timeoutSeconds",
+		`{"url":"https://10.0.0.1/"}`:  "url",
+		`{"url":"http://example.com"}`: "url",
+		`{"expectedStatus":"3xx"}`:     "",
+		`{"name":"   "}`:               "name",
+	} {
+		r := c.do(http.MethodPatch, "/api/v1/monitors/"+id, body, unsafe)
+		if field == "" { // rejected by the contract (pattern) before the domain
+			if r.code != http.StatusBadRequest {
+				t.Errorf("patch %s: %d %s", body, r.code, r.raw)
+			}
+			continue
+		}
+		fe, _ := r.body["fieldErrors"].([]any)
+		if r.code != http.StatusUnprocessableEntity || r.body["type"] != "urn:maiak:problem:validation" || len(fe) != 1 || fe[0].(map[string]any)["field"] != field {
+			t.Errorf("patch %s: %d %s", body, r.code, r.raw)
+		}
+	}
+	if r := c.do(http.MethodPost, "/api/v1/monitors", `{"name":"x","url":"https://localhost/"}`, unsafe); r.code != http.StatusUnprocessableEntity {
+		t.Fatalf("create with internal host: %d %s", r.code, r.raw)
+	}
+	if r := c.do(http.MethodPost, "/api/v1/monitors", `{"name":"`+strings.Repeat("a", 81)+`","url":"https://example.com"}`, unsafe); r.code != http.StatusBadRequest || r.body["fieldErrors"] == nil {
+		t.Fatalf("create with long name: %d %s", r.code, r.raw)
+	}
+
+	// Pause, then simulate a failing location and an in-flight lease, then resume.
+	pause := c.do(http.MethodPost, "/api/v1/monitors/"+id+"/pause", "", unsafe)
+	if pause.code != http.StatusOK || pause.body["paused"] != true {
+		t.Fatalf("pause: %d %s", pause.code, pause.raw)
+	}
+	if again := c.do(http.MethodPost, "/api/v1/monitors/"+id+"/pause", "", unsafe); again.code != http.StatusOK {
+		t.Fatalf("pause again: %d", again.code)
+	}
+	if l := c.do(http.MethodGet, "/api/v1/monitors", "", cookie); fmt.Sprint(l.body["summary"]) != "map[down:0 paused:1 unknown:0 up:0]" {
+		t.Fatalf("summary while paused: %s", l.raw)
+	}
+	pgtest.MustExec(t, admin,
+		`UPDATE monitor_location_state SET status = 'down', consecutive_failures = 3, lease_token = gen_random_uuid(),
+			lease_until = now() + interval '30 seconds', next_run_at = now() + interval '1 hour' WHERE monitor_id = '`+id+`'`,
+		`UPDATE monitor_state SET status = 'down', last_error_kind = 'timeout', status_changed_at = now() - interval '1 day' WHERE monitor_id = '`+id+`'`)
+	res := c.do(http.MethodPost, "/api/v1/monitors/"+id+"/resume", "", unsafe)
+	if res.code != http.StatusOK || res.body["paused"] != false || res.body["status"] != "unknown" || res.body["lastErrorKind"] != nil {
+		t.Fatalf("resume: %d %s", res.code, res.raw)
+	}
+	var leased bool
+	if err := admin.QueryRow(ctx, `SELECT status, consecutive_failures, next_run_at - now(), lease_token IS NOT NULL
+		FROM monitor_location_state WHERE monitor_id = $1`, id).Scan(&lsStatus, &failures, &delay, &leased); err != nil {
+		t.Fatal(err)
+	}
+	if lsStatus != "unknown" || failures != 0 || leased || delay < -time.Second || delay > 30*time.Second {
+		t.Fatalf("after resume: %s %d %v leased=%v", lsStatus, failures, delay, leased)
+	}
+	if since, _ := time.Parse(time.RFC3339Nano, res.body["statusSince"].(string)); time.Since(since) > time.Minute {
+		t.Fatalf("statusSince not reset: %v", res.body["statusSince"])
+	}
+
+	// Delete.
+	if d := c.do(http.MethodDelete, "/api/v1/monitors/"+id, "", unsafe); d.code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", d.code, d.raw)
+	}
+	for _, rq := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/monitors/" + id},
+		{http.MethodDelete, "/api/v1/monitors/" + id},
+		{http.MethodPost, "/api/v1/monitors/" + id + "/resume"},
+	} {
+		if r := c.do(rq.method, rq.path, "", unsafe); r.code != http.StatusNotFound || r.body["type"] != "urn:maiak:problem:not-found" {
+			t.Errorf("%s %s after delete: %d %s", rq.method, rq.path, r.code, r.raw)
+		}
+	}
+	if l := c.do(http.MethodGet, "/api/v1/monitors", "", cookie); l.raw != "" && !strings.Contains(l.raw, `"items":[]`) {
+		t.Fatalf("list after delete: %s", l.raw)
+	}
+	var deleted bool
+	if err := admin.QueryRow(ctx, `SELECT deleted_at IS NOT NULL FROM monitors WHERE id = $1`, id).Scan(&deleted); err != nil || !deleted {
+		t.Fatalf("soft delete: %v %v", deleted, err)
+	}
+
+	// Audit trail: one row per effective change, no URL anywhere.
+	rows, err := admin.Query(ctx, `SELECT action, metadata::text FROM audit_log WHERE entity_type = 'monitor' ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var action, meta string
+		if err := rows.Scan(&action, &meta); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(meta, "s3cr3t") || strings.Contains(meta, "example.com") {
+			t.Errorf("audit metadata leaks the URL: %s", meta)
+		}
+		got = append(got, action)
+	}
+	wantAudit := "monitor.created,monitor.updated,monitor.paused,monitor.resumed,monitor.deleted"
+	if strings.Join(got, ",") != wantAudit {
+		t.Fatalf("audit = %s\nwant    %s", strings.Join(got, ","), wantAudit)
+	}
+}
+
+func TestIntegrationMonitorLimitUnderConcurrency(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("apimonlimit"))
+	c := newServer(t, env, auth.Options{})
+	cookie, csrf := c.login()
+	pgtest.MustExec(t, env.AdminConn(t), `UPDATE tenants SET limits = '{"max_monitors": 5}' WHERE slug = 'default'`)
+
+	const n = 20
+	codes := make(chan int, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			body := fmt.Sprintf(`{"name":"m%d","url":"https://example.com/%d"}`, i, i)
+			req, _ := http.NewRequest(http.MethodPost, c.srv.URL+"/api/v1/monitors", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			for k, v := range withCSRF(cookie, csrf) {
+				req.Header.Set(k, v)
+			}
+			resp, err := c.srv.Client().Do(req)
+			if err != nil {
+				codes <- -1
+				return
+			}
+			_ = resp.Body.Close()
+			codes <- resp.StatusCode
+		}()
+	}
+	wg.Wait()
+	close(codes)
+	count := map[int]int{}
+	for code := range codes {
+		count[code]++
+	}
+	if count[http.StatusCreated] != 5 || count[http.StatusConflict] != n-5 {
+		t.Fatalf("status codes = %v, want 5 created and %d conflicts", count, n-5)
+	}
+	var live int
+	if err := env.AdminConn(t).QueryRow(context.Background(), `SELECT count(*) FROM monitors WHERE deleted_at IS NULL`).Scan(&live); err != nil || live != 5 {
+		t.Fatalf("live monitors = %d (%v)", live, err)
+	}
+
+	// The limit problem says why; a deleted monitor frees its slot.
+	r := c.do(http.MethodPost, "/api/v1/monitors", `{"name":"x","url":"https://example.com"}`, withCSRF(cookie, csrf))
+	if r.code != http.StatusConflict || r.body["type"] != "urn:maiak:problem:limit-reached" {
+		t.Fatalf("over limit: %d %s", r.code, r.raw)
+	}
+	l := c.do(http.MethodGet, "/api/v1/monitors", "", cookie)
+	first := l.body["items"].([]any)[0].(map[string]any)["id"].(string)
+	if d := c.do(http.MethodDelete, "/api/v1/monitors/"+first, "", withCSRF(cookie, csrf)); d.code != http.StatusNoContent {
+		t.Fatalf("delete: %d", d.code)
+	}
+	if r := c.do(http.MethodPost, "/api/v1/monitors", `{"name":"x","url":"https://example.com"}`, withCSRF(cookie, csrf)); r.code != http.StatusCreated {
+		t.Fatalf("create after delete: %d %s", r.code, r.raw)
+	}
+}
+
+// otherTenantSession creates a second tenant with its own owner and session directly in the
+// database (login always binds to the default tenant) and returns the session headers.
+func otherTenantSession(t *testing.T, env *pgtest.Env) (map[string]string, string) {
+	t.Helper()
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatal(err)
+	}
+	token := base64.RawURLEncoding.EncodeToString(b)
+	sum := sha256.Sum256([]byte(token))
+	const csrf = "other-tenant-csrf"
+	_, err := env.AdminConn(t).Exec(context.Background(), `
+		WITH t AS (INSERT INTO tenants (id, slug, name) VALUES ('01920000-0000-7000-8000-0000000000b0', 'other', 'Other') RETURNING id),
+		     u AS (INSERT INTO users (id, email) VALUES ('01920000-0000-7000-8000-0000000000b1', 'other@example.com') RETURNING id),
+		     m AS (INSERT INTO memberships (tenant_id, user_id, role) SELECT t.id, u.id, 'owner' FROM t, u RETURNING tenant_id, user_id)
+		INSERT INTO sessions (id, user_id, tenant_id, token_hash, csrf_token, expires_at)
+		SELECT '01920000-0000-7000-8000-0000000000b2', user_id, tenant_id, $1, $2, now() + interval '1 hour' FROM m`, sum[:], csrf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string]string{"Cookie": api.SessionCookie + "=" + token}, csrf
+}
+
+func TestIntegrationMonitorTenantIsolation(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("apimoniso"))
+	c := newServer(t, env, auth.Options{})
+	cookie, csrf := c.login()
+	r := c.do(http.MethodPost, "/api/v1/monitors", `{"name":"Mine","url":"https://example.com"}`, withCSRF(cookie, csrf))
+	if r.code != http.StatusCreated {
+		t.Fatalf("create: %d %s", r.code, r.raw)
+	}
+	id := r.body["id"].(string)
+
+	other, otherCSRF := otherTenantSession(t, env)
+	if me := c.do(http.MethodGet, "/api/v1/auth/me", "", other); me.code != http.StatusOK {
+		t.Fatalf("other tenant session: %d %s", me.code, me.raw)
+	}
+	if l := c.do(http.MethodGet, "/api/v1/monitors", "", other); l.code != http.StatusOK || !strings.Contains(l.raw, `"items":[]`) ||
+		fmt.Sprint(l.body["summary"]) != "map[down:0 paused:0 unknown:0 up:0]" {
+		t.Fatalf("other tenant list: %d %s", l.code, l.raw)
+	}
+	unsafe := withCSRF(other, otherCSRF)
+	for _, rq := range []struct{ method, path, body string }{
+		{http.MethodGet, "/api/v1/monitors/" + id, ""},
+		{http.MethodPatch, "/api/v1/monitors/" + id, `{"name":"Hijacked"}`},
+		{http.MethodPost, "/api/v1/monitors/" + id + "/pause", ""},
+		{http.MethodPost, "/api/v1/monitors/" + id + "/resume", ""},
+		{http.MethodDelete, "/api/v1/monitors/" + id, ""},
+	} {
+		if r := c.do(rq.method, rq.path, rq.body, unsafe); r.code != http.StatusNotFound {
+			t.Errorf("other tenant %s %s: %d %s", rq.method, rq.path, r.code, r.raw)
+		}
+	}
+	g := c.do(http.MethodGet, "/api/v1/monitors/"+id, "", cookie)
+	if g.code != http.StatusOK || g.body["name"] != "Mine" || g.body["paused"] != false {
+		t.Fatalf("owner's monitor changed: %d %s", g.code, g.raw)
+	}
+}

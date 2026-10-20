@@ -12,34 +12,6 @@ import (
 // server. A task that implements an operation deletes its method here.
 type unimplemented struct{}
 
-func (unimplemented) ListMonitors(context.Context, gen.ListMonitorsRequestObject) (gen.ListMonitorsResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) CreateMonitor(context.Context, gen.CreateMonitorRequestObject) (gen.CreateMonitorResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) GetMonitor(context.Context, gen.GetMonitorRequestObject) (gen.GetMonitorResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) UpdateMonitor(context.Context, gen.UpdateMonitorRequestObject) (gen.UpdateMonitorResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) DeleteMonitor(context.Context, gen.DeleteMonitorRequestObject) (gen.DeleteMonitorResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) PauseMonitor(context.Context, gen.PauseMonitorRequestObject) (gen.PauseMonitorResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) ResumeMonitor(context.Context, gen.ResumeMonitorRequestObject) (gen.ResumeMonitorResponseObject, error) {
-	return nil, errNotImplemented
-}
-
 func (unimplemented) GetMonitorStats(context.Context, gen.GetMonitorStatsRequestObject) (gen.GetMonitorStatsResponseObject, error) {
 	return nil, errNotImplemented
 }

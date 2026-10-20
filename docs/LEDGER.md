@@ -54,6 +54,7 @@ Created 2026-10-20 from the design session.
 | R-020 | risk | open | SSRF guard blocks some legitimate targets | Whole NAT64 (`64:ff9b::/96`), 6to4, Teredo/`2001::/23` and `::/96` ranges are blocked instead of decoding the embedded IPv4, and a hostname is refused when ANY resolved address is blocked (split-horizon DNS or a stray private record fails the check as `blocked_address`) | First customer report of an unexpected `blocked_address` |
 | L-028 | deferred | open | Mixed field-name casing in the API | Auth resources (`csrf_token`, `expires_at`, `display_name`) and `request_id` in problems are snake_case; everything added in B-05 is camelCase (ADR-0017). Renaming is breaking | Before the API is offered to customers (API keys) or at the first `/api/v2` |
 | R-014 | risk | open | `oasdiff` reports B-05 as breaking | `logout` gained the required `X-CSRF-Token` header parameter (behaviour unchanged: the security requirement already needed it). The CI breaking-change job compares with the base branch and will flag it once | First CI run after B-05; accept the finding or add an oasdiff ignore entry |
+| L-027 | deferred | open | Pause and delete do not resolve open incidents yet | ADR-0016 says pause and delete resolve an open incident (reason `paused`/`deleted`, no notification). The incidents table and service arrive in B-11; hooks are marked `TODO(L-027)` in `internal/monitors/service.go` | B-11 |
 
 ## Done
 

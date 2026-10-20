@@ -4,6 +4,7 @@ package tenants
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -59,4 +60,33 @@ func notFound(err error, key string) error {
 		return fmt.Errorf("%w: %s", ErrNotFound, key)
 	}
 	return fmt.Errorf("tenants: get %s: %w", key, err)
+}
+
+// DefaultMaxMonitors applies when tenants.limits has no max_monitors key (ADR-0016).
+const DefaultMaxMonitors = 50
+
+// Limits are the per-tenant quotas stored in tenants.limits.
+type Limits struct {
+	MaxMonitors int
+}
+
+// LockLimits locks the tenant row until the end of tx and returns its limits. Callers that
+// check a quota and then insert hold this lock, so concurrent requests cannot both pass the
+// check.
+func LockLimits(ctx context.Context, tx pgx.Tx, id uuid.UUID) (Limits, error) {
+	raw, err := tenantsdb.New(tx).LockTenantLimits(ctx, id)
+	if err != nil {
+		return Limits{}, notFound(err, id.String())
+	}
+	var stored struct {
+		MaxMonitors *int `json:"max_monitors"`
+	}
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		return Limits{}, fmt.Errorf("tenants: limits of %s: %w", id, err)
+	}
+	l := Limits{MaxMonitors: DefaultMaxMonitors}
+	if stored.MaxMonitors != nil {
+		l.MaxMonitors = *stored.MaxMonitors
+	}
+	return l, nil
 }

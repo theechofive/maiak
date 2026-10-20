@@ -9,7 +9,8 @@ COMMIT  ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 
 # Paths written by `generate`; check-generated fails if they drift from what is committed.
-GENERATED := backend/internal/api/gen backend/internal/auth/authdb backend/internal/tenants/tenantsdb backend/internal/audit/auditdb
+GENERATED := backend/internal/api/gen backend/internal/auth/authdb backend/internal/tenants/tenantsdb backend/internal/audit/auditdb \
+	backend/internal/scheduler/schedulerdb backend/internal/monitors/monitorsdb
 
 .PHONY: generate check-generated lint test build tidy
 

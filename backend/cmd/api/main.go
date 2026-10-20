@@ -10,12 +10,14 @@ import (
 
 	"github.com/theechofive/maiak/backend/internal/api"
 	"github.com/theechofive/maiak/backend/internal/auth"
+	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/config"
 	"github.com/theechofive/maiak/backend/internal/platform/db"
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
 	"github.com/theechofive/maiak/backend/internal/platform/metrics"
+	"github.com/theechofive/maiak/backend/internal/scheduler"
 )
 
 // Set at build time with -ldflags "-X main.version=... -X main.commit=...".
@@ -66,7 +68,12 @@ func run() error {
 		Commit:           commit,
 		CookieSecure:     cfg.CookieSecure,
 		TrustedProxyHops: cfg.TrustedProxyHops,
-	}, api.Deps{Auth: authSvc, Logger: log, Metrics: metrics.NewHTTP(reg)})
+	}, api.Deps{
+		Auth:     authSvc,
+		Monitors: monitors.NewService(pool, scheduler.New()),
+		Logger:   log,
+		Metrics:  metrics.NewHTTP(reg),
+	})
 	if err != nil {
 		return err
 	}

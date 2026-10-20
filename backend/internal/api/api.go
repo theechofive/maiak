@@ -20,6 +20,7 @@ import (
 
 	"github.com/theechofive/maiak/backend/internal/api/gen"
 	"github.com/theechofive/maiak/backend/internal/auth"
+	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
 	"github.com/theechofive/maiak/backend/internal/platform/metrics"
 )
@@ -44,9 +45,10 @@ type Config struct {
 
 // Deps are the collaborators of the HTTP layer.
 type Deps struct {
-	Auth    *auth.Service
-	Logger  *slog.Logger
-	Metrics *metrics.HTTP
+	Auth     *auth.Service
+	Monitors *monitors.Service
+	Logger   *slog.Logger
+	Metrics  *metrics.HTTP
 }
 
 type server struct {
@@ -54,9 +56,10 @@ type server struct {
 	// an operation from it without implementing it on server is a compile error (see below).
 	unimplemented
 
-	cfg  Config
-	auth *auth.Service
-	log  *slog.Logger
+	cfg      Config
+	auth     *auth.Service
+	monitors *monitors.Service
+	log      *slog.Logger
 	// lastXFFWarn is the UnixNano time of the last missing X-Forwarded-For warning.
 	lastXFFWarn atomic.Int64
 }
@@ -69,7 +72,7 @@ func NewHandler(cfg Config, deps Deps) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("api: load embedded spec: %w", err)
 	}
-	s := &server{cfg: cfg, auth: deps.Auth, log: deps.Logger}
+	s := &server{cfg: cfg, auth: deps.Auth, monitors: deps.Monitors, log: deps.Logger}
 
 	r := chi.NewRouter()
 	r.Use(httpx.RequestID, httpx.AccessLog(deps.Logger), httpx.Recover(deps.Logger))

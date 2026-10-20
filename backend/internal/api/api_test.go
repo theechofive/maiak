@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/theechofive/maiak/backend/internal/auth"
+	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/platform/validation"
 )
 
@@ -145,6 +146,8 @@ func TestWriteErrorMapping(t *testing.T) {
 		{&badRequestError{detail: "x"}, 400, problemBadRequest},
 		{errNotFound, 404, problemNotFound},
 		{errNotImplemented, 501, problemNotImplemented},
+		{fmt.Errorf("x: %w", monitors.ErrNotFound), 404, problemNotFound},
+		{&monitors.LimitError{Limit: 5}, 409, problemLimitReached},
 		{&validation.Error{Fields: []validation.FieldError{{Field: "url", Message: "must use https"}}}, 422, problemValidation},
 		{errors.New("database exploded: password=hunter2"), 500, problemInternal},
 	}

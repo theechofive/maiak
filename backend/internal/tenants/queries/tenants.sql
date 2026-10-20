@@ -12,3 +12,9 @@ WHERE slug = @slug AND deleted_at IS NULL;
 SELECT id, slug, name, status
 FROM tenants
 WHERE id = @id AND deleted_at IS NULL;
+
+-- name: LockTenantLimits :one
+SELECT limits
+FROM tenants
+WHERE id = @id AND deleted_at IS NULL
+FOR UPDATE;

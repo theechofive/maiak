@@ -77,3 +77,17 @@ func (q *Queries) InsertTenantIfMissing(ctx context.Context, arg InsertTenantIfM
 	_, err := q.db.Exec(ctx, insertTenantIfMissing, arg.ID, arg.Slug, arg.Name)
 	return err
 }
+
+const lockTenantLimits = `-- name: LockTenantLimits :one
+SELECT limits
+FROM tenants
+WHERE id = $1 AND deleted_at IS NULL
+FOR UPDATE
+`
+
+func (q *Queries) LockTenantLimits(ctx context.Context, id uuid.UUID) ([]byte, error) {
+	row := q.db.QueryRow(ctx, lockTenantLimits, id)
+	var limits []byte
+	err := row.Scan(&limits)
+	return limits, err
+}
