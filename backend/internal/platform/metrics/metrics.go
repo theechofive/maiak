@@ -7,9 +7,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+
+	"github.com/theechofive/maiak/backend/internal/platform/httpx"
 )
 
 // NewRegistry returns a registry with Go runtime, process and build-info collectors.
@@ -59,10 +60,7 @@ func (h *HTTP) Middleware(next http.Handler) http.Handler {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
-		route := "unmatched"
-		if rc := chi.RouteContext(r.Context()); rc != nil && rc.RoutePattern() != "" {
-			route = rc.RoutePattern()
-		}
+		route := httpx.RoutePattern(r)
 		h.requests.WithLabelValues(route, r.Method, strconv.Itoa(sw.status)).Inc()
 		h.duration.WithLabelValues(route, r.Method).Observe(time.Since(start).Seconds())
 	})

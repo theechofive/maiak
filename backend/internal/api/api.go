@@ -23,6 +23,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/notify"
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
+	"github.com/theechofive/maiak/backend/internal/platform/logging"
 	"github.com/theechofive/maiak/backend/internal/platform/metrics"
 	"github.com/theechofive/maiak/backend/internal/queries"
 )
@@ -167,6 +168,10 @@ func (s *server) resolve(r *http.Request) (auth.Principal, error) {
 			return
 		}
 		slot.principal, slot.err = s.auth.Authenticate(r.Context(), c.Value)
+		if slot.err == nil {
+			// Every later log line of the request, including the access log, carries the tenant.
+			logging.SetTenantID(r.Context(), slot.principal.TenantID.String())
+		}
 	})
 	return slot.principal, slot.err
 }
@@ -230,6 +235,7 @@ func (s *server) Login(ctx context.Context, req gen.LoginRequestObject) (gen.Log
 	if err != nil {
 		return nil, err
 	}
+	logging.SetTenantID(ctx, res.Tenant.ID.String())
 	cookie := s.sessionCookie(res.Token, res.ExpiresAt).String()
 	return gen.Login200JSONResponse{
 		Body:    toSessionInfo(res.SessionInfo),

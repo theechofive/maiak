@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/sync/errgroup"
@@ -60,8 +61,8 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 
 var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
-// RequestID assigns a request id (reusing a well-formed incoming X-Request-ID from the gateway),
-// echoes it in the response and records it for logs. It also installs the request log fields,
+// RequestID assigns a request id (reusing a well-formed incoming X-Request-Id from the gateway,
+// generating a UUIDv7 otherwise), returns it as X-Request-Id and records it for logs. It also installs the request log fields,
 // so it must be the outermost middleware.
 func RequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -120,7 +121,10 @@ func peerIP(r *http.Request) netip.Addr {
 	return a.Unmap()
 }
 
-// AccessLog logs one line per request.
+// AccessLog logs one line per request: method, route template (the chi pattern, never the raw
+// path or query), status, bytes and duration in milliseconds. request_id and, once the request
+// is authenticated, tenant_id come from the context fields installed by RequestID. Nothing from
+// the URL, headers or body is logged: paths and queries can carry monitor URLs or tokens.
 func AccessLog(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -133,13 +137,23 @@ func AccessLog(log *slog.Logger) func(http.Handler) http.Handler {
 			}
 			log.LogAttrs(r.Context(), level, "http request",
 				slog.String("method", r.Method),
-				slog.String("path", r.URL.Path),
+				slog.String("route", RoutePattern(r)),
 				slog.Int("status", sw.status),
 				slog.Int64("bytes", sw.bytes),
-				slog.Duration("duration", time.Since(start)),
+				slog.Float64("duration_ms", float64(time.Since(start).Microseconds())/1000),
 			)
 		})
 	}
+}
+
+// RoutePattern returns the chi route template that matched r ("/api/v1/monitors/{monitorId}"),
+// or "unmatched". Valid after the router has served r; used for logs and metric labels so
+// neither carries ids or query strings.
+func RoutePattern(r *http.Request) string {
+	if rc := chi.RouteContext(r.Context()); rc != nil && rc.RoutePattern() != "" {
+		return rc.RoutePattern()
+	}
+	return "unmatched"
 }
 
 // Recover turns a panic into a 500 problem and logs it.

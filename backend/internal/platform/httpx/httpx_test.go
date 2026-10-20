@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,9 +9,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/theechofive/maiak/backend/internal/platform/logging"
 )
 
 func TestClientIP(t *testing.T) {
@@ -113,5 +118,30 @@ func TestAdminHandler(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("readyz with failing dependency: %d", rec.Code)
+	}
+}
+
+func TestAccessLogUsesRouteTemplate(t *testing.T) {
+	var buf bytes.Buffer
+	log := logging.New(&buf, slog.LevelInfo)
+	r := chi.NewRouter()
+	r.Use(RequestID, AccessLog(log))
+	r.Get("/api/v1/monitors/{monitorId}", func(w http.ResponseWriter, r *http.Request) {
+		logging.SetTenantID(r.Context(), "tenant-1")
+		w.WriteHeader(http.StatusTeapot)
+	})
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/monitors/0192-secret-id?token=s3cr3t", nil))
+	id := rec.Header().Get("X-Request-Id")
+	var e map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &e); err != nil {
+		t.Fatalf("%v: %s", err, buf.String())
+	}
+	if e["route"] != "/api/v1/monitors/{monitorId}" || e["method"] != "GET" || e["status"] != float64(http.StatusTeapot) ||
+		e["request_id"] != id || id == "" || e["tenant_id"] != "tenant-1" || e["duration_ms"] == nil {
+		t.Fatalf("access log = %v", e)
+	}
+	if strings.Contains(buf.String(), "secret") {
+		t.Fatalf("access log contains the raw path or query: %s", buf.String())
 	}
 }
