@@ -252,7 +252,7 @@ function Header({ monitor }: { monitor: MonitorDetail }) {
     mutationFn: () => (monitor.paused ? resumeMonitor(monitor.id) : pauseMonitor(monitor.id)),
     onSuccess: (updated) => {
       queryClient.setQueryData(queryKeys.monitor(monitor.id), updated);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.monitors });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.monitors, exact: true });
       toast(updated.paused ? "Monitor paused" : "Monitor resumed");
     },
     onError: (err) => toast(errorMessage(err), "error"),
@@ -262,7 +262,7 @@ function Header({ monitor }: { monitor: MonitorDetail }) {
     mutationFn: () => deleteMonitor(monitor.id),
     onSuccess: () => {
       queryClient.removeQueries({ queryKey: queryKeys.monitor(monitor.id) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.monitors });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.monitors, exact: true });
       toast("Monitor deleted");
       navigate("/");
     },
