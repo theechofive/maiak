@@ -93,7 +93,8 @@ func (e *SendError) Error() string {
 }
 
 // Doer sends an HTTP request. In production it is the guarded client from NewSlackClient;
-// tests use a plain client against httptest servers (the guard refuses loopback, L-041).
+// unit tests use a plain client against httptest servers (the guard refuses loopback); the
+// end-to-end test (internal/e2e, make test-e2e) sends through the guard.
 type Doer interface {
 	Do(req *http.Request) (*http.Response, error)
 }

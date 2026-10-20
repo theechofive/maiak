@@ -8,8 +8,10 @@
 // address again on the actual socket. Redirects are re-validated by the same dialer, and
 // proxies from the environment are ignored.
 //
-// Tests reach loopback servers through an unexported dial override that can only be set from
-// _test.go files of this package; TestOverrideNotSetOutsideTests enforces that.
+// Tests reach loopback servers through unexported options. Inside this package they are set
+// from _test.go files; other packages reach them only through NewLoopbackTestClient, which
+// exists only in builds with the `maiaktest` tag (testsupport_maiaktest.go, used by
+// `make test-e2e`). TestOverrideNotSetOutsideTests enforces both.
 package safehttp
 
 import (
@@ -63,6 +65,9 @@ type Options struct {
 	// from _test.go files; never assign these in production code.
 	dialOverride func(ctx context.Context, network, validatedAddr string) (net.Conn, error)
 	rootCAs      *x509.CertPool
+	// Test-only (maiaktest builds): when non-zero, loopback addresses pass validation and every
+	// validated address is dialed on this port instead of 443. URLs must still use port 443.
+	loopbackPort uint16
 }
 
 // NewClient returns an *http.Client guarded as described in the package documentation.
@@ -80,6 +85,7 @@ func NewClient(opts Options) *http.Client {
 		extra:    append([]netip.Prefix(nil), opts.BlockedPrefixes...),
 		resolver: resolver,
 		override: opts.dialOverride,
+		testPort: opts.loopbackPort,
 	}
 	g.dialer = &net.Dialer{Timeout: timeout, Control: g.control}
 
@@ -135,6 +141,24 @@ type guard struct {
 	resolver Resolver
 	dialer   *net.Dialer
 	override func(ctx context.Context, network, validatedAddr string) (net.Conn, error)
+	// testPort is the test-only Options.loopbackPort; zero in production.
+	testPort uint16
+}
+
+// dialPort is the port validated addresses are dialed on: 443, or the test-only loopback port.
+func (g *guard) dialPort() uint16 {
+	if g.testPort != 0 {
+		return g.testPort
+	}
+	return 443
+}
+
+// allowedAddr is allowed() plus the test-only loopback exception.
+func (g *guard) allowedAddr(ip netip.Addr) bool {
+	if g.testPort != 0 && ip.Unmap().IsLoopback() {
+		return true
+	}
+	return allowed(ip, g.extra)
 }
 
 // dialContext resolves the host once, requires every address to be allowed, and dials the
@@ -152,13 +176,13 @@ func (g *guard) dialContext(ctx context.Context, network, addr string) (net.Conn
 		return nil, err
 	}
 	for _, ip := range ips {
-		if !allowed(ip, g.extra) {
+		if !g.allowedAddr(ip) {
 			return nil, ErrBlockedAddress
 		}
 	}
 	var lastErr error
 	for _, ip := range ips {
-		target := netip.AddrPortFrom(ip.Unmap(), 443).String()
+		target := netip.AddrPortFrom(ip.Unmap(), g.dialPort()).String()
 		var conn net.Conn
 		if g.override != nil {
 			conn, err = g.override(ctx, network, target)
@@ -197,10 +221,10 @@ func (g *guard) control(_, address string, _ syscall.RawConn) error {
 	if err != nil {
 		return ErrBlockedAddress
 	}
-	if ap.Port() != 443 {
+	if ap.Port() != g.dialPort() {
 		return ErrBadPort
 	}
-	if !allowed(ap.Addr(), g.extra) {
+	if !g.allowedAddr(ap.Addr()) {
 		return ErrBlockedAddress
 	}
 	return nil

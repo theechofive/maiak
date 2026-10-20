@@ -10,8 +10,11 @@ import (
 	"crypto/x509/pkix"
 	"errors"
 	"go/ast"
+	"go/build"
+	"go/build/constraint"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"math/big"
 	"net"
 	"net/http"
@@ -19,6 +22,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -441,19 +446,37 @@ func TestDeadlineCoversRedirects(t *testing.T) {
 	}
 }
 
+// testOnlyFields are the unexported Options fields that relax the guard for tests.
+var testOnlyFields = map[string]bool{"dialOverride": true, "rootCAs": true, "loopbackPort": true}
+
+// tagFile is the only file built with the maiaktest tag and the only non-_test file allowed to
+// set testOnlyFields (L-030, L-041).
+const tagFile = "testsupport_maiaktest.go"
+
 // TestOverrideNotSetOutsideTests enforces that the test-only fields (unexported, so settable
-// only inside this package) are never assigned by non-test files, and that no exported
-// identifier offers an equivalent escape hatch.
+// only inside this package) are never assigned by files of a normal build, that no exported
+// identifier of a normal build offers an equivalent escape hatch, and that the maiaktest file
+// is excluded from normal builds and is the only tagged file of the backend module.
 func TestOverrideNotSetOutsideTests(t *testing.T) {
-	files, err := filepath.Glob("*.go")
+	normal, err := build.Default.ImportDir(".", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if slices.Contains(normal.GoFiles, tagFile) || !slices.Contains(normal.IgnoredGoFiles, tagFile) {
+		t.Fatalf("%s must be excluded from a normal build (GoFiles %v)", tagFile, normal.GoFiles)
+	}
+	tagged := build.Default
+	tagged.BuildTags = []string{"maiaktest"}
+	withTag, err := tagged.ImportDir(".", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(withTag.GoFiles, tagFile) {
+		t.Fatalf("%s is not part of the maiaktest build", tagFile)
+	}
+
 	fset := token.NewFileSet()
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
-			continue
-		}
+	for _, f := range normal.GoFiles {
 		src, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
@@ -466,12 +489,12 @@ func TestOverrideNotSetOutsideTests(t *testing.T) {
 			switch x := n.(type) {
 			case *ast.AssignStmt:
 				for _, lhs := range x.Lhs {
-					if sel, ok := lhs.(*ast.SelectorExpr); ok && (sel.Sel.Name == "dialOverride" || sel.Sel.Name == "rootCAs") {
+					if sel, ok := lhs.(*ast.SelectorExpr); ok && testOnlyFields[sel.Sel.Name] {
 						t.Errorf("%s: %s assigned outside tests", fset.Position(x.Pos()), sel.Sel.Name)
 					}
 				}
 			case *ast.KeyValueExpr:
-				if id, ok := x.Key.(*ast.Ident); ok && (id.Name == "dialOverride" || id.Name == "rootCAs") {
+				if id, ok := x.Key.(*ast.Ident); ok && testOnlyFields[id.Name] {
 					t.Errorf("%s: %s set outside tests", fset.Position(x.Pos()), id.Name)
 				}
 			}
@@ -483,5 +506,108 @@ func TestOverrideNotSetOutsideTests(t *testing.T) {
 				t.Errorf("%s: exported escape hatch %s (%v)", f, name, obj.Kind)
 			}
 		}
+	}
+
+	// Module-wide: the tag appears only in tagFile and in _test.go files of internal/e2e, and no
+	// other non-test file names the tagged constructor.
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	self, err := filepath.Abs(tagFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e2eDir := filepath.Join(root, "internal", "e2e") + string(filepath.Separator)
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") {
+			return err
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		af, err := parser.ParseFile(token.NewFileSet(), path, src, parser.ParseComments)
+		if err != nil {
+			return err
+		}
+		namesConstructor := false
+		ast.Inspect(af, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok && id.Name == "NewLoopbackTestClient" {
+				namesConstructor = true
+			}
+			return true
+		})
+		hasTag := false
+		for _, cg := range af.Comments {
+			for _, c := range cg.List {
+				if expr, err := constraint.Parse(c.Text); err == nil && strings.Contains(expr.String(), "maiaktest") {
+					hasTag = true
+				}
+			}
+		}
+		isTest := strings.HasSuffix(path, "_test.go")
+		switch {
+		case hasTag && path != self && !(isTest && strings.HasPrefix(path, e2eDir)):
+			t.Errorf("%s: only %s and internal/e2e tests may use the maiaktest build tag", path, tagFile)
+		case !isTest && path != self && namesConstructor:
+			t.Errorf("%s: production code names NewLoopbackTestClient", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The test-only loopback mode relaxes only the loopback range and the dial port: every other
+// rule of the guard still applies.
+func TestLoopbackModeKeepsOtherRules(t *testing.T) {
+	var hits atomic.Int32
+	ts := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		switch r.URL.Path {
+		case "/loop":
+			http.Redirect(w, r, "/loop", http.StatusFound)
+		case "/plain":
+			http.Redirect(w, r, "http://example.test/", http.StatusFound)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	port := uint16(ts.srv.Listener.Addr().(*net.TCPAddr).Port)
+	client := func(addrs ...string) *http.Client {
+		return NewClient(Options{Resolver: static(addrs...), MaxRedirects: 3, rootCAs: ts.roots, loopbackPort: port})
+	}
+
+	if resp, err := get(t, client("127.0.0.1"), "https://example.test/"); err != nil || resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("loopback in test mode: %v %v", resp, err)
+	}
+	for _, c := range []struct {
+		name, url string
+		addrs     []string
+		want      error
+	}{
+		{"private range still blocked", "https://example.test/", []string{"10.0.0.1"}, ErrBlockedAddress},
+		{"metadata still blocked", "https://example.test/", []string{"169.254.169.254"}, ErrBlockedAddress},
+		{"mixed answer still blocked", "https://example.test/", []string{"127.0.0.1", "192.168.1.1"}, ErrBlockedAddress},
+		{"url port must stay 443", "https://example.test:" + strconv.Itoa(int(port)) + "/", []string{"127.0.0.1"}, ErrBadPort},
+		{"http refused", "http://example.test/", []string{"127.0.0.1"}, ErrNotHTTPS},
+		{"redirect limit", "https://example.test/loop", []string{"127.0.0.1"}, ErrTooManyRedirects},
+		{"redirect to http", "https://example.test/plain", []string{"127.0.0.1"}, ErrRedirectNotHTTPS},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := get(t, client(c.addrs...), c.url); !errors.Is(err, c.want) {
+				t.Fatalf("got %v, want %v", err, c.want)
+			}
+		})
+	}
+	// Without the test option the same loopback target is refused before any connection.
+	before := hits.Load()
+	if _, err := get(t, NewClient(Options{Resolver: static("127.0.0.1"), rootCAs: ts.roots}), "https://example.test/"); !errors.Is(err, ErrBlockedAddress) {
+		t.Fatalf("normal client reached loopback: %v", err)
+	}
+	if hits.Load() != before {
+		t.Fatal("normal client connected to the loopback server")
 	}
 }

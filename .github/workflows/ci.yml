@@ -142,6 +142,9 @@ jobs:
           working-directory: backend
       - name: Test
         run: make test
+      # TEST_DATABASE_ADMIN_URL comes from the job env above, like the normal tests.
+      - name: End-to-end test (maiaktest build tag)
+        run: make test-e2e
 
   api-contract:
     needs: changes

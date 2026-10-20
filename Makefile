@@ -13,7 +13,7 @@ GENERATED := backend/internal/api/gen backend/internal/auth/authdb backend/inter
 	backend/internal/scheduler/schedulerdb backend/internal/monitors/monitorsdb backend/internal/incidents/incidentsdb backend/internal/results/resultsdb \
 	backend/internal/notify/notifydb
 
-.PHONY: generate check-generated lint test build tidy
+.PHONY: generate check-generated lint test test-e2e build tidy
 
 generate:
 	$(TOOLS) sqlc generate -f $(ROOT)/sqlc.yaml
@@ -31,6 +31,12 @@ check-generated: generate
 # Integration tests run when TEST_DATABASE_ADMIN_URL points at a scratch Postgres superuser.
 test:
 	cd $(BACKEND) && go test -race -count=1 ./...
+
+# End-to-end test (B-16): api, worker and jobs against real Postgres and loopback TLS servers
+# through the real SSRF guard. Only this target sets the maiaktest tag, which compiles
+# safehttp.NewLoopbackTestClient; release builds never do. Skipped without TEST_DATABASE_ADMIN_URL.
+test-e2e:
+	cd $(BACKEND) && go test -tags maiaktest -race -count=1 ./internal/e2e/...
 
 lint:
 	cd $(BACKEND) && golangci-lint run ./...

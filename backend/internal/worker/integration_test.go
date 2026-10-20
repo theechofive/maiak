@@ -310,8 +310,9 @@ func TestIntegrationTenantLimitDefersWithoutBlocking(t *testing.T) {
 
 // TestIntegrationWorkerIterationAgainstTLSServer runs real HTTPS checks against a loopback TLS
 // server. The production client from safehttp refuses loopback by design, so the prober uses
-// the test server's client here (L-030, L-041): this covers the worker, the prober, the result
-// write, the state machine and the outbox, not the guard.
+// the test server's client here: this covers the worker, the prober, the result write, the
+// state machine and the outbox, not the guard. The guard is covered end to end by
+// internal/e2e (make test-e2e).
 func TestIntegrationWorkerIterationAgainstTLSServer(t *testing.T) {
 	e := newEnv(t, "workere2e")
 	var status atomic.Int32

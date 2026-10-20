@@ -54,7 +54,8 @@ func TestValidateWebhookURL(t *testing.T) {
 }
 
 // rewriteDoer sends every request to a local test server instead of hooks.slack.com and records
-// what the notifier asked for. The production guard refuses loopback (L-041).
+// what the notifier asked for. The production guard refuses loopback;
+// internal/e2e (make test-e2e) covers the notifier through the guard.
 type rewriteDoer struct {
 	target *url.URL
 	client *http.Client
