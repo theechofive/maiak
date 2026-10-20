@@ -1,5 +1,5 @@
-import type { MonitorList, MonitorListItem } from "../api/endpoints";
-import { formatDuration, secondsBetween } from "./format";
+import type { Check, MonitorDetail, MonitorList, MonitorListItem } from "../api/endpoints";
+import { describeErrorKind, formatDuration, formatSince, secondsBetween } from "./format";
 
 type StatusFields = Pick<MonitorListItem, "paused" | "status" | "statusSince">;
 
@@ -33,4 +33,25 @@ export function filterMonitors<T extends Pick<MonitorListItem, "name" | "url">>(
   const q = query.trim().toLowerCase();
   if (!q) return items;
   return items.filter((m) => m.name.toLowerCase().includes(q) || m.url.toLowerCase().includes(q));
+}
+
+/**
+ * The status line of the details page, e.g. "Down for 12 min · HTTP 503 · since 14:02". The HTTP
+ * code comes from the latest check when it failed with one; otherwise the error kind is shown.
+ */
+export function statusLine(
+  monitor: Pick<MonitorDetail, "paused" | "status" | "statusSince" | "lastErrorKind">,
+  latestCheck: Check | undefined,
+  now: number,
+): string {
+  if (monitor.paused) return "Paused. Checks are stopped until you resume the monitor.";
+  if (monitor.status === "unknown") return "Waiting for the first check";
+  const duration = formatDuration(secondsBetween(monitor.statusSince, now));
+  const since = `since ${formatSince(monitor.statusSince, now)}`;
+  if (monitor.status === "up") return `Up for ${duration} · ${since}`;
+  const reason =
+    latestCheck && !latestCheck.ok && latestCheck.httpStatus != null
+      ? `HTTP ${latestCheck.httpStatus}`
+      : describeErrorKind(monitor.lastErrorKind);
+  return `Down for ${duration} · ${reason} · ${since}`;
 }

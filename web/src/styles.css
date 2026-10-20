@@ -89,3 +89,44 @@ td.url {
 .actions > [role="button"] {
   width: auto;
 }
+
+.metric {
+  margin-bottom: var(--pico-spacing);
+}
+
+.metric p {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.chart {
+  width: 100%;
+  height: auto;
+}
+
+.chart .grid-line {
+  stroke: var(--pico-muted-border-color);
+}
+
+.chart .axis-label {
+  fill: var(--pico-muted-color);
+  font-size: 11px;
+}
+
+.chart .chart-line {
+  fill: none;
+  stroke: var(--pico-primary);
+  stroke-width: 1.5;
+}
+
+.chart circle.chart-line {
+  fill: var(--pico-primary);
+}
+
+.chart .chart-area {
+  fill: var(--pico-primary-focus);
+}
+
+[role="group"] {
+  width: auto;
+}
