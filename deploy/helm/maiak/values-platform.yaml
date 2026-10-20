@@ -3,7 +3,7 @@
 image:
   # CI-MANAGED: rewritten by .github/workflows/release.yml on every backend image build.
   # Do not edit by hand and keep this key at exactly `image.tag` (2-space indent, double quotes).
-  tag: "ece8102"
+  tag: "49e33c1"
 
 config:
   publicUrl: https://maiak.klr-ops.net
