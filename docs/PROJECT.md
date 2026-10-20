@@ -46,14 +46,14 @@ MVP work is tracked in [tasks/backend.md](tasks/backend.md), [tasks/frontend.md]
 Unit tests for pure logic (incident state machine first, written test-first); integration tests against real Postgres in CI (migrations from scratch, RLS isolation, schema-lint); handler tests against the generated server; OpenAPI lint and `oasdiff` for breaking changes; a smoke test after deploy. There is no local development environment: CI is the safety net. Every slice is deployed to the cluster.
 
 ## Delivery plan (vertical slices)
-| # | Slice | Status |
-|---|---|---|
-| 1 | Walking skeleton: monorepo, CI, image, Helm, ArgoCD, `/api/v1/health`, database bootstrap and migrations, admin login | in progress |
-| 2 | Monitors CRUD, locations model | planned |
-| 3 | Worker: scheduler, HTTPS prober with SSRF guard, results, rollups, partitions | planned |
-| 4 | Incidents, outbox, Slack delivery in `jobs` | planned |
-| 5 | Dashboard (web) | planned |
-| 6 | Hardening and the load test before any open registration (L-010, L-011, L-012) | planned |
+| # | Slice | Status | Verified (as of 2026-10-20) |
+|---|---|---|---|
+| 1 | Walking skeleton: monorepo, CI, image, Helm, ArgoCD, `/api/v1/health`, database bootstrap and migrations, admin login | implemented (B-01..B-06, D-01..D-06) | locally only: Go tests against PostgreSQL 16, chart lint/template/kubeconform. Not verified: CI has never run on this work, no image has been built by the release pipeline (L-102, L-023), nothing deployed (blocked by L-002; L-022, L-103, R-009) |
+| 2 | Monitors CRUD, locations model | implemented (B-07, B-08, B-19) | locally only: integration tests on PostgreSQL 16 (CI uses 15, R-011) |
+| 3 | Worker: scheduler, HTTPS prober with SSRF guard, results, rollups, partitions | implemented (B-09..B-12, B-20) | locally only, including the end-to-end test through the real guard (B-16, `make test-e2e`); never against real targets from the cluster egress |
+| 4 | Incidents, outbox, Slack delivery in `jobs` | implemented (B-11, B-13, B-14, B-20) | locally only, against a fake Slack over TLS; never posted to a real Slack webhook |
+| 5 | Dashboard (web) and read API | implemented (B-15, F-01..F-09, F-11, F-12); production packaging F-10 in progress | read API by integration tests; web only in jsdom with mocked fetch, never in a browser against the real api (L-052); web image never built (L-023) |
+| 6 | Hardening and the load test before any open registration (L-010, L-011, L-012) | not started; observability groundwork done (B-17) | metrics and alert rules are not scraped or deployed (L-003) |
 
 Each slice ends with: lint and tests green, generated code up to date, `helm lint` green, deployed to `klr-platform`, docs and ledger updated, an ADR for any architectural decision.
 
