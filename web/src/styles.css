@@ -125,3 +125,8 @@ td.url {
 [role="group"] {
   width: auto;
 }
+
+/* The webhook URL is a secret: masked like a password, without password-manager prompts. */
+.secret-input {
+  -webkit-text-security: disc;
+}

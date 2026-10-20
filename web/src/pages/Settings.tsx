@@ -37,6 +37,8 @@ function SlackSettings() {
       queryClient.setQueryData(queryKeys.slack, data);
       // The URL is a secret: it is never shown again after saving.
       setWebhookUrl("");
+      // Drop the URL from the mutation variables too.
+      save.reset();
       toast("Webhook saved");
     },
     onError: (err) => {
@@ -88,7 +90,8 @@ function SlackSettings() {
         <input
           id="webhookUrl"
           name="webhookUrl"
-          type="password"
+          type="text"
+          className="secret-input"
           autoComplete="off"
           spellCheck={false}
           placeholder={configured ? "Configured, hidden" : "https://hooks.slack.com/services/…"}

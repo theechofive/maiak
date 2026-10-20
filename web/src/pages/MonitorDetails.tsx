@@ -16,6 +16,7 @@ import {
   type StatsRange,
 } from "../api/endpoints";
 import ResponseChart from "../components/ResponseChart";
+import MonitorNotFound from "../components/MonitorNotFound";
 import { ErrorState, Loading } from "../components/QueryState";
 import { useToast } from "../components/Toasts";
 import {
@@ -46,28 +47,38 @@ export default function MonitorDetails() {
   });
 
   if (monitor.isPending) return <Loading label="Loading the monitor…" />;
-  if (monitor.isError && !monitor.data) {
+  if (monitor.isError) {
     if (monitor.error instanceof ApiError && monitor.error.status === 404) {
+      return <MonitorNotFound />;
+    }
+    if (!monitor.data) {
       return (
-        <section>
-          <h1>Monitor not found</h1>
-          <p>It may have been deleted.</p>
-          <Link to="/">Go to monitors</Link>
-        </section>
+        <ErrorState
+          title="Cannot load the monitor"
+          error={monitor.error}
+          onRetry={() => void monitor.refetch()}
+        />
       );
     }
-    return (
-      <ErrorState
-        title="Cannot load the monitor"
-        error={monitor.error}
-        onRetry={() => void monitor.refetch()}
-      />
-    );
   }
-  return <Details monitor={monitor.data} updatedAt={monitor.dataUpdatedAt} />;
+  return (
+    <Details
+      monitor={monitor.data}
+      updatedAt={monitor.dataUpdatedAt}
+      updateFailed={monitor.isError}
+    />
+  );
 }
 
-function Details({ monitor, updatedAt }: { monitor: MonitorDetail; updatedAt: number }) {
+function Details({
+  monitor,
+  updatedAt,
+  updateFailed,
+}: {
+  monitor: MonitorDetail;
+  updatedAt: number;
+  updateFailed: boolean;
+}) {
   const now = useNow();
   const [range, setRange] = useState<StatsRange>("24h");
   const stats = useQuery({
@@ -225,7 +236,17 @@ function Details({ monitor, updatedAt }: { monitor: MonitorDetail; updatedAt: nu
       </section>
 
       <p>
-        <small>Last updated {formatClock(updatedAt)}</small>
+        <small>
+          Last updated {formatClock(updatedAt)}
+          {updateFailed && (
+            <>
+              {" · "}
+              <span role="status" className="error">
+                Last update failed
+              </span>
+            </>
+          )}
+        </small>
       </p>
     </section>
   );

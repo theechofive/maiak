@@ -23,6 +23,10 @@ export type MonitorFormErrors = Partial<Record<FormField, string>>;
 export const NAME_MAX = 80;
 export const URL_MAX = 2048;
 
+/** ADR-0018: `2xx`, an exact code 200-299, or an exact code 400-599 (1xx and 3xx are rejected). */
+export const EXPECTED_STATUS_PATTERN = /^(2xx|2[0-9]{2}|[45][0-9]{2})$/;
+export const EXPECTED_STATUS_MESSAGE = "Use 2xx, a code from 200 to 299, or a code from 400 to 599";
+
 export const emptyMonitorForm: MonitorFormValues = {
   name: "",
   url: "",
@@ -70,8 +74,8 @@ export function validateMonitorForm(v: MonitorFormValues): MonitorFormErrors {
   else if (name.length > NAME_MAX) errors.name = `Use ${NAME_MAX} characters or fewer.`;
   const urlError = validateMonitorUrl(v.url);
   if (urlError) errors.url = urlError;
-  if (v.expectedMode === "exact" && !/^[1-5][0-9][0-9]$/.test(v.expectedCode.trim())) {
-    errors.expectedStatus = "Enter a status code from 100 to 599.";
+  if (v.expectedMode === "exact" && !EXPECTED_STATUS_PATTERN.test(v.expectedCode.trim())) {
+    errors.expectedStatus = EXPECTED_STATUS_MESSAGE;
   }
   if (![1, 2, 3].includes(v.failureThreshold)) {
     errors.failureThreshold = "Choose 1, 2 or 3 failed checks.";
