@@ -8,6 +8,7 @@ import {
   formatPercent,
   formatSince,
   formatTime,
+  formatTlsExpiry,
 } from "./format";
 
 // vite.config.ts pins TZ=UTC for tests, so "local time" is UTC here.
@@ -88,5 +89,32 @@ describe("numbers", () => {
     expect(describeErrorKind("timeout")).toBe("Timeout");
     expect(describeErrorKind("something_new")).toBe("something_new");
     expect(describeErrorKind(null)).toBe("—");
+  });
+});
+
+describe("formatTlsExpiry", () => {
+  const at = (hours: number) => new Date(now + hours * 3_600_000).toISOString();
+  it.each([
+    [-1, "Expired"],
+    [0.5, "today"],
+    [23.9, "today"],
+    [24, "in 24 h"],
+    [30.5, "in 30 h"],
+    [47.9, "in 47 h"],
+    [48, "in 2 days"],
+    [492, "in 20 days"],
+  ])("%s h from now -> %s", (hours, expected) => {
+    expect(formatTlsExpiry(at(hours), now)).toBe(expected);
+  });
+});
+
+describe("incident reason labels", () => {
+  it.each([
+    ["recovered", "Recovered"],
+    ["url_changed", "URL changed"],
+    ["paused", "Paused"],
+    ["deleted", "Deleted"],
+  ])("%s", (kind, expected) => {
+    expect(describeErrorKind(kind)).toBe(expected);
   });
 });

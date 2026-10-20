@@ -1,6 +1,7 @@
 import {
   ApiError,
   apiFetch,
+  CSRF_PROBLEM_TYPE,
   client,
   errorMessage,
   setCsrfToken,
@@ -76,6 +77,36 @@ describe("generated client through the wrapper", () => {
     await unwrap(client.POST("/api/v1/settings/slack/test"));
     expect(lastRequest().method).toBe("POST");
     expect(lastRequest().headers.get("X-CSRF-Token")).toBe("token-123");
+  });
+
+  it("sends no CSRF header on a GET even with a token", async () => {
+    fetchMock.mockResolvedValue(Response.json({ configured: true }));
+    await unwrap(client.GET("/api/v1/settings/slack"));
+    expect(lastRequest().method).toBe("GET");
+    expect(lastRequest().headers.has("X-CSRF-Token")).toBe(false);
+  });
+
+  it("asks for a reload only when a 403 is the CSRF problem", () => {
+    const csrf = new ApiError({ type: CSRF_PROBLEM_TYPE, title: "Forbidden", status: 403 });
+    expect(errorMessage(csrf)).toMatch(/reload the page/i);
+    const other = new ApiError({
+      type: "urn:maiak:problem:forbidden",
+      title: "Forbidden",
+      status: 403,
+      detail: "Your role cannot change settings.",
+    });
+    expect(errorMessage(other)).toBe("Your role cannot change settings.");
+  });
+
+  it("reads Retry-After seconds into the ApiError", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ title: "Slow down", status: 429 }), {
+        status: 429,
+        headers: { "Content-Type": "application/problem+json", "Retry-After": "30" },
+      }),
+    );
+    const err = (await unwrap(client.GET("/api/v1/monitors")).catch((e: unknown) => e)) as ApiError;
+    expect(err.retryAfter).toBe(30);
   });
 
   it("returns the parsed body on success", async () => {

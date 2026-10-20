@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { MonitorDetail, MonitorListItem } from "../api/endpoints";
 import { json, mockApi, problem, renderApp, signedIn } from "../test/utils";
@@ -174,6 +174,29 @@ describe("monitor form", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Monitor created");
   });
 
+  it("rejects 1xx and 3xx expected status codes before calling the API", async () => {
+    const fetchMock = mockApi({ ...signedIn });
+    renderApp("/monitors/new");
+    await userEvent.type(await screen.findByLabelText("Name"), "Website");
+    await userEvent.type(screen.getByLabelText("URL"), "https://example.com/");
+    await userEvent.click(screen.getByLabelText("Exact code"));
+    for (const code of ["101", "301"]) {
+      await userEvent.clear(screen.getByLabelText("Status code"));
+      await userEvent.type(screen.getByLabelText("Status code"), code);
+      await userEvent.click(screen.getByRole("button", { name: "Create monitor" }));
+      expect(screen.getByLabelText("Status code")).toHaveAccessibleDescription(
+        "Use 2xx, a code from 200 to 299, or a code from 400 to 599",
+      );
+    }
+    expect(fetchMock.mock.calls.some(([r]) => (r as Request).method === "POST")).toBe(false);
+  });
+
+  it("shows the not-found view when the monitor to edit does not exist", async () => {
+    mockApi({ ...signedIn, "GET /api/v1/monitors/gone": () => problem(404, "Not found") });
+    renderApp("/monitors/gone/edit");
+    expect(await screen.findByRole("heading", { name: "Monitor not found" })).toBeInTheDocument();
+  });
+
   it("loads the monitor for editing", async () => {
     mockApi({
       ...signedIn,
@@ -299,6 +322,74 @@ describe("monitor details", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Monitor paused");
   });
 
+  it("keeps the data and notes a failed refresh", async () => {
+    let fail = false;
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/monitors/m1": () => (fail ? problem(500, "Boom") : json(detail())),
+    });
+    renderApp("/monitors/m1");
+    expect(await screen.findByRole("heading", { name: "Website", level: 1 })).toBeInTheDocument();
+    expect(screen.queryByText("Last update failed")).not.toBeInTheDocument();
+
+    fail = true;
+    act(() => {
+      window.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(await screen.findByText("Last update failed")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Website", level: 1 })).toBeInTheDocument();
+    expect(screen.getByText(/Last updated/)).toBeInTheDocument();
+  });
+
+  it("switches to the not-found view when a refresh answers 404 after data existed", async () => {
+    let gone = false;
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/monitors/m1": () => (gone ? problem(404, "Not found") : json(detail())),
+    });
+    renderApp("/monitors/m1");
+    expect(await screen.findByRole("heading", { name: "Website", level: 1 })).toBeInTheDocument();
+
+    gone = true;
+    act(() => {
+      window.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(await screen.findByRole("heading", { name: "Monitor not found" })).toBeInTheDocument();
+  });
+
+  it("refreshes the monitor list after a pause", async () => {
+    let paused = false;
+    const fetchMock = mockApi({
+      ...signedIn,
+      "GET /api/v1/monitors": () =>
+        json({
+          summary: { up: paused ? 0 : 1, down: 0, paused: paused ? 1 : 0, unknown: 0 },
+          items: [listItem({ id: "m1", paused })],
+        }),
+      "GET /api/v1/monitors/m1": () => json(detail({ paused })),
+      "POST /api/v1/monitors/m1/pause": () => {
+        paused = true;
+        return json(detail({ paused }));
+      },
+    });
+    const listCalls = () =>
+      fetchMock.mock.calls.filter(
+        ([r]) =>
+          (r as Request).method === "GET" &&
+          new URL((r as Request).url).pathname === "/api/v1/monitors",
+      ).length;
+    renderApp("/");
+    expect(await screen.findByText("1 monitor · 1 up · 0 down · 0 paused")).toBeInTheDocument();
+    await userEvent.click(screen.getByText("https://example.com/"));
+    await userEvent.click(await screen.findByRole("button", { name: "Pause" }));
+    expect(await screen.findByRole("button", { name: "Resume" })).toBeInTheDocument();
+
+    const before = listCalls();
+    await userEvent.click(screen.getByRole("link", { name: "Monitors" }));
+    expect(await screen.findByText("1 monitor · 0 up · 0 down · 1 paused")).toBeInTheDocument();
+    expect(listCalls()).toBeGreaterThan(before);
+  });
+
   it("says when the monitor does not exist", async () => {
     mockApi({ ...signedIn, "GET /api/v1/monitors/gone": () => problem(404, "Not found") });
     renderApp("/monitors/gone");
@@ -343,6 +434,42 @@ describe("settings", () => {
     await userEvent.type(await screen.findByLabelText("Slack webhook URL"), "https://example.com");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(screen.getByLabelText("Slack webhook URL")).toHaveAttribute("aria-invalid", "true");
+  });
+
+  it("sends no PUT for a rejected URL", async () => {
+    const fetchMock = mockApi({
+      ...signedIn,
+      "GET /api/v1/settings/slack": () => json({ configured: false }),
+    });
+    renderApp("/settings");
+    await userEvent.type(await screen.findByLabelText("Slack webhook URL"), "https://example.com");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(screen.getByLabelText("Slack webhook URL")).toHaveAttribute("aria-invalid", "true");
+    expect(fetchMock.mock.calls.some(([r]) => (r as Request).method === "PUT")).toBe(false);
+  });
+
+  it("masks the webhook as text without autofill", async () => {
+    mockApi({ ...signedIn, "GET /api/v1/settings/slack": () => json({ configured: false }) });
+    renderApp("/settings");
+    const input = await screen.findByLabelText("Slack webhook URL");
+    expect(input).toHaveAttribute("type", "text");
+    expect(input).toHaveAttribute("autocomplete", "off");
+    expect(input).toHaveAttribute("spellcheck", "false");
+    expect(input).toHaveClass("secret-input");
+  });
+
+  it("shows an error toast when the Slack test answers 409", async () => {
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/settings/slack": () => json({ configured: true }),
+      "POST /api/v1/settings/slack/test": () =>
+        problem(409, "Conflict", { detail: "No Slack webhook is configured." }),
+    });
+    renderApp("/settings");
+    await userEvent.click(await screen.findByRole("button", { name: "Send test message" }));
+    expect(await screen.findByText(/Test message failed/)).toHaveTextContent(
+      "No Slack webhook is configured.",
+    );
   });
 
   it("reports a failed test message in a toast", async () => {

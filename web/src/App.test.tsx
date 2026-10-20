@@ -99,9 +99,48 @@ describe("redirectTarget", () => {
     [{ from: "//evil.example" }, "/"],
     [{ from: "https://evil.example" }, "/"],
     [{ from: "/login" }, "/"],
+    [{ from: "/\\evil.example" }, "/"],
+    [{ from: "/monitors\\42" }, "/"],
     [null, "/"],
     [undefined, "/"],
   ])("maps %j to %s", (state, expected) => {
     expect(redirectTarget(state)).toBe(expected);
+  });
+});
+
+describe("login rate limit", () => {
+  const tooMany = (headers: Record<string, string>) => () =>
+    new Response(JSON.stringify({ type: "about:blank", title: "Too many requests", status: 429 }), {
+      status: 429,
+      headers: { "Content-Type": "application/problem+json", ...headers },
+    });
+
+  const submit = async () => {
+    renderApp("/login");
+    await userEvent.type(await screen.findByLabelText("Email"), "admin@example.com");
+    await userEvent.type(screen.getByLabelText("Password"), "wrong");
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+  };
+
+  it("shows the Retry-After seconds", async () => {
+    mockApi({
+      "GET /api/v1/auth/me": () => problem(401, "No session"),
+      "POST /api/v1/auth/login": tooMany({ "Retry-After": "45" }),
+    });
+    await submit();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Too many attempts. Try again in 45 s.",
+    );
+  });
+
+  it("falls back to a generic message without a usable Retry-After", async () => {
+    mockApi({
+      "GET /api/v1/auth/me": () => problem(401, "No session"),
+      "POST /api/v1/auth/login": tooMany({ "Retry-After": "soon" }),
+    });
+    await submit();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Too many attempts. Try again later.",
+    );
   });
 });

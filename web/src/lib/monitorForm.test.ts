@@ -45,8 +45,34 @@ describe("validateMonitorForm", () => {
     const exact = { ...valid, expectedMode: "exact" as const };
     expect(validateMonitorForm({ ...exact, expectedCode: "204" })).toEqual({});
     expect(validateMonitorForm({ ...exact, expectedCode: "99" }).expectedStatus).toBeDefined();
+    expect(validateMonitorForm({ ...exact, expectedCode: "301" }).expectedStatus).toBeDefined();
     expect(validateMonitorForm({ ...exact, expectedCode: "600" }).expectedStatus).toBeDefined();
     expect(validateMonitorForm({ ...valid, expectedCode: "x" })).toEqual({});
+  });
+
+  it.each(["2xx", "200", "204", "299", "400", "404", "599"])(
+    "accepts expected status %s",
+    (code) => {
+      const exact = { ...valid, expectedMode: "exact" as const, expectedCode: code };
+      expect(validateMonitorForm(exact)).toEqual({});
+    },
+  );
+
+  it.each(["100", "101", "199", "300", "301", "399", "600", "20", "2000", "abc", ""])(
+    "rejects expected status %j",
+    (code) => {
+      const exact = { ...valid, expectedMode: "exact" as const, expectedCode: code };
+      expect(validateMonitorForm(exact).expectedStatus).toBe(
+        "Use 2xx, a code from 200 to 299, or a code from 400 to 599",
+      );
+    },
+  );
+
+  it("counts the name in code points", () => {
+    expect(validateMonitorForm({ ...valid, name: "😀".repeat(80) }).name).toBeUndefined();
+    expect(validateMonitorForm({ ...valid, name: "😀".repeat(81) }).name).toBe(
+      "Use 80 characters or fewer.",
+    );
   });
 
   it("builds the request body", () => {

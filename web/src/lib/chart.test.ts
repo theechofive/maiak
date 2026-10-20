@@ -91,3 +91,11 @@ describe("buildChart", () => {
     expect(areaPoints(points, 110)).toBe("10,110 10,60 100,10 100,110");
   });
 });
+
+describe("buildChart with one point", () => {
+  it("centers the point and labels only its time", () => {
+    const model = buildChart([{ t: "2026-10-20T10:00:00Z", avgMs: 100, okRatio: 1 }], "24h", size);
+    expect(model.segments).toEqual([[{ x: 100, y: 10 }]]);
+    expect(model.xTicks).toEqual([{ pos: 100, label: "10:00" }]);
+  });
+});
