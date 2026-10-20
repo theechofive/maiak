@@ -129,6 +129,8 @@ CREATE POLICY tenant_isolation ON audit_log
 -- cannot run under the tenant policy. SECURITY DEFINER makes it run as maiak_owner (allowed by
 -- owner_session_lookup); search_path is pinned so a caller cannot shadow objects; it returns
 -- only a live session for an exact 32-byte hash, so it cannot be used to enumerate sessions.
+-- Sessions of disabled users and of suspended or deleted tenants are not returned, so disabling
+-- either takes effect on the next request (users and tenants have no RLS; the owner reads them).
 -- +goose StatementBegin
 CREATE FUNCTION auth_lookup_session(p_token_hash bytea)
 RETURNS TABLE (
@@ -147,8 +149,13 @@ SET search_path = public, pg_temp
 AS $$
     SELECT s.id, s.user_id, s.tenant_id, s.csrf_token, s.created_at, s.expires_at, s.last_seen_at
     FROM sessions AS s
+    JOIN users AS u ON u.id = s.user_id
+    JOIN tenants AS t ON t.id = s.tenant_id
     WHERE s.token_hash = p_token_hash
       AND s.expires_at > now()
+      AND u.status = 'active'
+      AND t.status = 'active'
+      AND t.deleted_at IS NULL
 $$;
 -- +goose StatementEnd
 REVOKE ALL ON FUNCTION auth_lookup_session(bytea) FROM PUBLIC;
