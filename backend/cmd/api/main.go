@@ -10,6 +10,7 @@ import (
 
 	"github.com/theechofive/maiak/backend/internal/api"
 	"github.com/theechofive/maiak/backend/internal/auth"
+	"github.com/theechofive/maiak/backend/internal/incidents"
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/config"
@@ -63,6 +64,7 @@ func run() error {
 	}
 	log.Info("admin bootstrap done")
 
+	sched := scheduler.New()
 	handler, err := api.NewHandler(api.Config{
 		Version:          version,
 		Commit:           commit,
@@ -70,7 +72,7 @@ func run() error {
 		TrustedProxyHops: cfg.TrustedProxyHops,
 	}, api.Deps{
 		Auth:     authSvc,
-		Monitors: monitors.NewService(pool, scheduler.New()),
+		Monitors: monitors.NewService(pool, sched, incidents.NewService(sched)),
 		Logger:   log,
 		Metrics:  metrics.NewHTTP(reg),
 	})

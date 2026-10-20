@@ -16,3 +16,14 @@ SET status = 'unknown',
     lease_until = NULL,
     next_run_at = now() + make_interval(secs => @jitter_seconds::float8)
 WHERE tenant_id = @tenant_id AND monitor_id = @monitor_id;
+
+-- name: ListLocationStates :many
+SELECT location_id, status, consecutive_failures, last_checked_at
+FROM monitor_location_state
+WHERE tenant_id = @tenant_id AND monitor_id = @monitor_id
+ORDER BY location_id;
+
+-- name: UpdateLocationState :exec
+UPDATE monitor_location_state
+SET status = @status, consecutive_failures = @consecutive_failures, last_checked_at = @last_checked_at
+WHERE tenant_id = @tenant_id AND monitor_id = @monitor_id AND location_id = @location_id;

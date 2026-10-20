@@ -14,6 +14,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/api"
 	"github.com/theechofive/maiak/backend/internal/api/gen"
 	"github.com/theechofive/maiak/backend/internal/auth"
+	"github.com/theechofive/maiak/backend/internal/incidents"
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
@@ -93,8 +94,9 @@ func newServer(t *testing.T, env *pgtest.Env, opts auth.Options) *client {
 	if err := svc.BootstrapAdmin(ctx, adminEmail, hash); err != nil {
 		t.Fatal(err)
 	}
+	sched := scheduler.New()
 	h, err := api.NewHandler(api.Config{Version: "test", Commit: "test", CookieSecure: true, TrustedProxyHops: 1},
-		api.Deps{Auth: svc, Monitors: monitors.NewService(pool, scheduler.New()), Logger: log})
+		api.Deps{Auth: svc, Monitors: monitors.NewService(pool, sched, incidents.NewService(sched)), Logger: log})
 	if err != nil {
 		t.Fatal(err)
 	}

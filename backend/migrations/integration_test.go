@@ -29,7 +29,8 @@ func TestIntegrationMigrateFromScratchAndRerun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "audit_log,auth_identities,check_results,memberships,monitor_location_state,monitor_locations,monitor_state,monitors,probe_locations,result_rollups_hourly,sessions,tenants,users"
+	want := "audit_log,auth_identities,check_results,incident_monitors,incidents,memberships,monitor_channels,monitor_location_state," +
+		"monitor_locations,monitor_state,monitors,notification_channels,notification_deliveries,probe_locations,result_rollups_hourly,sessions,tenants,users"
 	if got := strings.Join(tables, ","); got != want {
 		t.Fatalf("tables = %s, want %s", got, want)
 	}
@@ -44,6 +45,8 @@ var definerAllowList = map[string][]string{
 	"compute_rollups":         {"maiak_worker"},
 	"drop_expired_partitions": {"maiak_worker"},
 	"purge_expired_sessions":  {"maiak_worker"},
+	"claim_deliveries":        {"maiak_worker"},
+	"finish_delivery":         {"maiak_worker"},
 }
 
 // extraPolicies are the permissive policies on tenant tables that are not tenant isolation
@@ -61,6 +64,9 @@ var extraPolicies = map[string]struct {
 	"monitor_location_state.owner_claim_lease": {cmd: "w", roles: []string{"maiak_owner"}},
 	"check_results.owner_rollup_read":          {cmd: "r", roles: []string{"maiak_owner"}},
 	"result_rollups_hourly.owner_rollup_write": {cmd: "*", roles: []string{"maiak_owner"}},
+	// claim_deliveries and finish_delivery (incidents_outbox migration).
+	"notification_deliveries.owner_delivery_read":   {cmd: "r", roles: []string{"maiak_owner"}},
+	"notification_deliveries.owner_delivery_update": {cmd: "w", roles: []string{"maiak_owner"}},
 }
 
 var runtimeRoles = []string{"maiak_api", "maiak_worker"}

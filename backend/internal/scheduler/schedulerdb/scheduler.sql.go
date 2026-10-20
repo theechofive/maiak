@@ -7,6 +7,7 @@ package schedulerdb
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -46,6 +47,50 @@ func (q *Queries) InsertLocationState(ctx context.Context, arg InsertLocationSta
 	return err
 }
 
+const listLocationStates = `-- name: ListLocationStates :many
+SELECT location_id, status, consecutive_failures, last_checked_at
+FROM monitor_location_state
+WHERE tenant_id = $1 AND monitor_id = $2
+ORDER BY location_id
+`
+
+type ListLocationStatesParams struct {
+	TenantID  uuid.UUID
+	MonitorID uuid.UUID
+}
+
+type ListLocationStatesRow struct {
+	LocationID          uuid.UUID
+	Status              string
+	ConsecutiveFailures int32
+	LastCheckedAt       *time.Time
+}
+
+func (q *Queries) ListLocationStates(ctx context.Context, arg ListLocationStatesParams) ([]ListLocationStatesRow, error) {
+	rows, err := q.db.Query(ctx, listLocationStates, arg.TenantID, arg.MonitorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListLocationStatesRow
+	for rows.Next() {
+		var i ListLocationStatesRow
+		if err := rows.Scan(
+			&i.LocationID,
+			&i.Status,
+			&i.ConsecutiveFailures,
+			&i.LastCheckedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const restartMonitorLocations = `-- name: RestartMonitorLocations :execrows
 UPDATE monitor_location_state
 SET status = 'unknown',
@@ -69,4 +114,31 @@ func (q *Queries) RestartMonitorLocations(ctx context.Context, arg RestartMonito
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const updateLocationState = `-- name: UpdateLocationState :exec
+UPDATE monitor_location_state
+SET status = $1, consecutive_failures = $2, last_checked_at = $3
+WHERE tenant_id = $4 AND monitor_id = $5 AND location_id = $6
+`
+
+type UpdateLocationStateParams struct {
+	Status              string
+	ConsecutiveFailures int32
+	LastCheckedAt       *time.Time
+	TenantID            uuid.UUID
+	MonitorID           uuid.UUID
+	LocationID          uuid.UUID
+}
+
+func (q *Queries) UpdateLocationState(ctx context.Context, arg UpdateLocationStateParams) error {
+	_, err := q.db.Exec(ctx, updateLocationState,
+		arg.Status,
+		arg.ConsecutiveFailures,
+		arg.LastCheckedAt,
+		arg.TenantID,
+		arg.MonitorID,
+		arg.LocationID,
+	)
+	return err
 }

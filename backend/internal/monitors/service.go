@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/theechofive/maiak/backend/internal/audit"
+	"github.com/theechofive/maiak/backend/internal/incidents"
 	"github.com/theechofive/maiak/backend/internal/monitors/monitorsdb"
 	"github.com/theechofive/maiak/backend/internal/platform/db"
 	"github.com/theechofive/maiak/backend/internal/platform/uuidv7"
@@ -115,13 +116,14 @@ type httpConfig struct {
 
 // Service implements the monitor lifecycle.
 type Service struct {
-	pool  *db.Pool
-	sched *scheduler.Service
+	pool      *db.Pool
+	sched     *scheduler.Service
+	incidents *incidents.Service
 }
 
 // NewService returns a Service.
-func NewService(pool *db.Pool, sched *scheduler.Service) *Service {
-	return &Service{pool: pool, sched: sched}
+func NewService(pool *db.Pool, sched *scheduler.Service, inc *incidents.Service) *Service {
+	return &Service{pool: pool, sched: sched, incidents: inc}
 }
 
 // Create validates in, enforces the tenant's monitor limit and creates the monitor with its
@@ -338,8 +340,9 @@ func (s *Service) Delete(ctx context.Context, a Actor, id uuid.UUID) error {
 		} else if err != nil {
 			return fmt.Errorf("lock monitor: %w", err)
 		}
-		// TODO(L-027): resolve the open incident with reason "deleted" and no notification
-		// through the incidents service, once it exists (B-11).
+		if err := s.incidents.ResolveOpen(ctx, tx, a.TenantID, id, incidents.ReasonDeleted); err != nil {
+			return err
+		}
 		if err := q.SoftDeleteMonitor(ctx, monitorsdb.SoftDeleteMonitorParams{TenantID: a.TenantID, ID: id}); err != nil {
 			return fmt.Errorf("delete monitor: %w", err)
 		}
@@ -377,8 +380,9 @@ func (s *Service) setPaused(ctx context.Context, a Actor, id uuid.UUID, paused b
 			action := ActionResumed
 			if paused {
 				action = ActionPaused
-				// TODO(L-027): resolve the open incident with reason "paused" and no
-				// notification through the incidents service, once it exists (B-11).
+				if err := s.incidents.ResolveOpen(ctx, tx, a.TenantID, id, incidents.ReasonPaused); err != nil {
+					return err
+				}
 			} else {
 				if err := s.sched.Restart(ctx, tx, a.TenantID, id); err != nil {
 					return err

@@ -74,3 +74,37 @@ func (s *Service) Restart(ctx context.Context, tx pgx.Tx, tenantID, monitorID uu
 	}
 	return nil
 }
+
+// LocationState is the check state of one (monitor, location).
+type LocationState struct {
+	LocationID          uuid.UUID
+	Status              string
+	ConsecutiveFailures int
+	LastCheckedAt       *time.Time
+}
+
+// LocationStates returns the state of every location of a monitor. The incidents service reads
+// them in the result transaction to apply the quorum rule.
+func (s *Service) LocationStates(ctx context.Context, tx pgx.Tx, tenantID, monitorID uuid.UUID) ([]LocationState, error) {
+	rows, err := schedulerdb.New(tx).ListLocationStates(ctx, schedulerdb.ListLocationStatesParams{TenantID: tenantID, MonitorID: monitorID})
+	if err != nil {
+		return nil, fmt.Errorf("scheduler: location states: %w", err)
+	}
+	out := make([]LocationState, len(rows))
+	for i, r := range rows {
+		out[i] = LocationState{LocationID: r.LocationID, Status: r.Status, ConsecutiveFailures: int(r.ConsecutiveFailures), LastCheckedAt: r.LastCheckedAt}
+	}
+	return out, nil
+}
+
+// SaveLocationState stores the state computed by the incident state machine.
+func (s *Service) SaveLocationState(ctx context.Context, tx pgx.Tx, tenantID, monitorID uuid.UUID, st LocationState) error {
+	err := schedulerdb.New(tx).UpdateLocationState(ctx, schedulerdb.UpdateLocationStateParams{
+		TenantID: tenantID, MonitorID: monitorID, LocationID: st.LocationID,
+		Status: st.Status, ConsecutiveFailures: int32(st.ConsecutiveFailures), LastCheckedAt: st.LastCheckedAt, //nolint:gosec // small counter
+	})
+	if err != nil {
+		return fmt.Errorf("scheduler: save location state: %w", err)
+	}
+	return nil
+}
