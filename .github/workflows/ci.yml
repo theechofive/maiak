@@ -22,7 +22,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
+      - uses: actions/checkout@v7 # TODO(L-019) pin to SHA
         with:
           persist-credentials: false
       - name: Open items reference the ledger
@@ -68,7 +68,7 @@ jobs:
       helm: ${{ github.event_name != 'pull_request' || steps.filter.outputs.helm == 'true' }}
       web: ${{ github.event_name != 'pull_request' || steps.filter.outputs.web == 'true' }}
     steps:
-      - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
+      - uses: actions/checkout@v7 # TODO(L-019) pin to SHA
         with:
           persist-credentials: false
       # On push to main everything runs: the "before" commit can be unreachable after a force push,
@@ -125,7 +125,7 @@ jobs:
       # SUPERUSER on a scratch Postgres: integration tests create and drop their own databases/roles.
       TEST_DATABASE_ADMIN_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
     steps:
-      - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
+      - uses: actions/checkout@v7 # TODO(L-019) pin to SHA
         with:
           persist-credentials: false
       - uses: actions/setup-go@v7 # TODO(L-019) pin to SHA
@@ -149,7 +149,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
+      - uses: actions/checkout@v7 # TODO(L-019) pin to SHA
         with:
           persist-credentials: false
       - uses: actions/setup-go@v7 # TODO(L-019) pin to SHA
@@ -171,7 +171,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
+      - uses: actions/checkout@v7 # TODO(L-019) pin to SHA
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -207,7 +207,7 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
+      - uses: actions/checkout@v7 # TODO(L-019) pin to SHA
         with:
           persist-credentials: false
       - uses: actions/setup-node@v4 # TODO(L-019) pin to SHA
@@ -243,7 +243,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
+      - uses: actions/checkout@v7 # TODO(L-019) pin to SHA
         with:
           persist-credentials: false
       - uses: azure/setup-helm@v5 # TODO(L-019) pin to SHA

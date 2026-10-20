@@ -34,7 +34,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
+      - uses: actions/checkout@v7 # TODO(L-019) pin to SHA
       - name: Compute short SHA
         id: vars
         run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
@@ -72,7 +72,7 @@ jobs:
     env:
       WEB_IMAGE: ghcr.io/theechofive/maiak-web
     steps:
-      - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
+      - uses: actions/checkout@v7 # TODO(L-019) pin to SHA
       - name: Compute short SHA
         id: vars
         run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
@@ -112,7 +112,7 @@ jobs:
       contents: write
     steps:
       # Credentials stay persisted on purpose: the script pushes with them.
-      - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
+      - uses: actions/checkout@v7 # TODO(L-019) pin to SHA
       - name: Bump image.tag in values-platform.yaml
         run: |
           git config user.name "github-actions[bot]"
@@ -130,7 +130,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
+      - uses: actions/checkout@v7 # TODO(L-019) pin to SHA
       - name: Bump web.image.tag in values-platform.yaml
         run: |
           git config user.name "github-actions[bot]"
