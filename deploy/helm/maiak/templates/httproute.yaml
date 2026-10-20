@@ -22,8 +22,12 @@ spec:
       timeouts:
         request: {{ .Values.httpRoute.apiRequestTimeout }}
       backendRefs:
-        - name: {{ include "maiak.componentName" (dict "ctx" . "component" "api") }}
+        {{- /* group, kind and weight are the API server defaults, set explicitly so ArgoCD shows no drift. */}}
+        - group: ""
+          kind: Service
+          name: {{ include "maiak.componentName" (dict "ctx" . "component" "api") }}
           port: {{ .Values.api.service.port }}
+          weight: 1
     {{- /* Catch-all only when the frontend is deployed; otherwise unmatched paths 404 at the gateway. */}}
     {{- if .Values.web.enabled }}
     - matches:
@@ -31,7 +35,10 @@ spec:
             type: PathPrefix
             value: /
       backendRefs:
-        - name: {{ include "maiak.componentName" (dict "ctx" . "component" "web") }}
+        - group: ""
+          kind: Service
+          name: {{ include "maiak.componentName" (dict "ctx" . "component" "web") }}
           port: {{ .Values.web.service.port }}
+          weight: 1
     {{- end }}
 {{- end }}
