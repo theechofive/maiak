@@ -32,7 +32,14 @@ export default function RequireAuth() {
 export function redirectTarget(state: unknown): string {
   const from =
     typeof state === "object" && state !== null ? (state as { from?: unknown }).from : undefined;
-  if (typeof from !== "string" || !from.startsWith("/") || from.startsWith("//")) return "/";
+  if (
+    typeof from !== "string" ||
+    !from.startsWith("/") ||
+    from.startsWith("//") ||
+    from.includes("\\")
+  ) {
+    return "/";
+  }
   if (from === "/login" || from.startsWith("/login?")) return "/";
   return from;
 }

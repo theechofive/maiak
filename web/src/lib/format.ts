@@ -93,6 +93,16 @@ export function daysUntil(iso: string, now: number): number {
   return Math.floor(secondsBetween(now, iso) / DAY);
 }
 
+/** TLS expiry card text: "Expired", "today" under 24 h, "in N h" under 48 h, then whole days. */
+export function formatTlsExpiry(iso: string, now: number): string {
+  const s = secondsBetween(now, iso);
+  if (s < 0) return "Expired";
+  if (s < DAY) return "today";
+  if (s < 2 * DAY) return `in ${Math.floor(s / HOUR)} h`;
+  const days = Math.floor(s / DAY);
+  return `in ${days} ${days === 1 ? "day" : "days"}`;
+}
+
 const errorKinds: Record<string, string> = {
   dns: "DNS lookup failed",
   connect: "Connection failed",
@@ -103,6 +113,8 @@ const errorKinds: Record<string, string> = {
   redirect: "Redirect error",
   unexpected_status: "Unexpected status",
   other: "Other error",
+  recovered: "Recovered",
+  url_changed: "URL changed",
   paused: "Paused",
   deleted: "Deleted",
 };

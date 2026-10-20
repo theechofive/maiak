@@ -49,7 +49,10 @@ export function buildChart(series: LatencyPoint[], range: StatsRange, size = CHA
   const values = series.flatMap((p) => (p.okRatio != null && p.avgMs != null ? [p.avgMs] : []));
   const yMax = niceCeiling(values.length ? Math.max(...values) : 0);
 
-  const x = (t: number) => round(plot.left + ((t - t0) / span) * (plot.right - plot.left));
+  const center = round((plot.left + plot.right) / 2);
+  // A single time (or none) has no span: the point sits in the middle of the plot.
+  const x = (t: number) =>
+    t1 > t0 ? round(plot.left + ((t - t0) / span) * (plot.right - plot.left)) : center;
   const y = (v: number) => round(plot.bottom - (v / yMax) * (plot.bottom - plot.top));
 
   const segments: Point[][] = [];
@@ -65,9 +68,12 @@ export function buildChart(series: LatencyPoint[], range: StatsRange, size = CHA
   if (current.length) segments.push(current);
 
   const label = range === "24h" ? formatTime : formatDate;
-  const xTicks: Tick[] = series.length
-    ? [0, 0.25, 0.5, 0.75, 1].map((f) => ({ pos: x(t0 + f * span), label: label(t0 + f * span) }))
-    : [];
+  const xTicks: Tick[] =
+    t1 > t0
+      ? [0, 0.25, 0.5, 0.75, 1].map((f) => ({ pos: x(t0 + f * span), label: label(t0 + f * span) }))
+      : series.length
+        ? [{ pos: center, label: label(t0) }]
+        : [];
   const yTicks: Tick[] = [0, yMax / 2, yMax].map((v) => ({ pos: y(v), label: `${v} ms` }));
 
   return { segments, xTicks, yTicks, yMax, plot };

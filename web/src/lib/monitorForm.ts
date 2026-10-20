@@ -71,7 +71,7 @@ export function validateMonitorForm(v: MonitorFormValues): MonitorFormErrors {
   const errors: MonitorFormErrors = {};
   const name = v.name.trim();
   if (!name) errors.name = "Enter a name.";
-  else if (name.length > NAME_MAX) errors.name = `Use ${NAME_MAX} characters or fewer.`;
+  else if ([...name].length > NAME_MAX) errors.name = `Use ${NAME_MAX} characters or fewer.`;
   const urlError = validateMonitorUrl(v.url);
   if (urlError) errors.url = urlError;
   if (v.expectedMode === "exact" && !EXPECTED_STATUS_PATTERN.test(v.expectedCode.trim())) {

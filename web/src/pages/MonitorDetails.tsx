@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, errorMessage } from "../api/client";
@@ -20,13 +20,13 @@ import MonitorNotFound from "../components/MonitorNotFound";
 import { ErrorState, Loading } from "../components/QueryState";
 import { useToast } from "../components/Toasts";
 import {
-  daysUntil,
   describeErrorKind,
   formatClock,
   formatDateTime,
   formatDuration,
   formatMs,
   formatPercent,
+  formatTlsExpiry,
   secondsBetween,
 } from "../lib/format";
 import { statusLine } from "../lib/monitors";
@@ -84,6 +84,7 @@ function Details({
   const stats = useQuery({
     queryKey: queryKeys.stats(monitor.id, range),
     queryFn: () => getMonitorStats(monitor.id, range),
+    placeholderData: keepPreviousData,
     refetchInterval: POLL_MS,
   });
   const checks = useQuery({
@@ -96,8 +97,6 @@ function Details({
     queryFn: () => listIncidents(monitor.id),
     refetchInterval: POLL_MS,
   });
-
-  const tls = monitor.tlsExpiresAt ? daysUntil(monitor.tlsExpiresAt, now) : null;
 
   return (
     <section>
@@ -112,9 +111,7 @@ function Details({
         <Metric label="Uptime 30d" value={formatPercent(monitor.uptime.d30)} />
         <Metric
           label="TLS expires"
-          value={
-            tls == null ? "—" : tls < 0 ? "Expired" : `in ${tls} ${tls === 1 ? "day" : "days"}`
-          }
+          value={monitor.tlsExpiresAt ? formatTlsExpiry(monitor.tlsExpiresAt, now) : "—"}
         />
       </div>
 

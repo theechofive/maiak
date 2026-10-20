@@ -40,7 +40,15 @@ export default function ResponseChart({ stats }: { stats: MonitorStats }) {
           className="axis-label"
           x={t.pos}
           y={plot.bottom + 18}
-          textAnchor={i === 0 ? "start" : i === model.xTicks.length - 1 ? "end" : "middle"}
+          textAnchor={
+            model.xTicks.length === 1
+              ? "middle"
+              : i === 0
+                ? "start"
+                : i === model.xTicks.length - 1
+                  ? "end"
+                  : "middle"
+          }
         >
           {t.label}
         </text>

@@ -6,6 +6,8 @@ export type FieldError = Schemas["FieldError"];
 export type Problem = Schemas["Problem"];
 
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+/** Problem type of a rejected CSRF token (backend `urn:maiak:problem:csrf`). */
+export const CSRF_PROBLEM_TYPE = "urn:maiak:problem:csrf";
 const LOGIN_PATH = "/api/v1/auth/login";
 
 // The CSRF token lives only in memory (ADR-0015): it is fetched again from /auth/me after a reload.
@@ -37,8 +39,10 @@ export class ApiError extends Error {
   readonly detail?: string;
   readonly requestId?: string;
   readonly fieldErrors: FieldError[];
+  /** Seconds from the Retry-After header (429), when present and valid. */
+  readonly retryAfter?: number;
 
-  constructor(problem: Problem) {
+  constructor(problem: Problem, retryAfter?: number) {
     super(problem.detail ?? problem.title);
     this.name = "ApiError";
     this.status = problem.status;
@@ -47,6 +51,7 @@ export class ApiError extends Error {
     this.detail = problem.detail;
     this.requestId = problem.request_id;
     this.fieldErrors = problem.fieldErrors ?? [];
+    this.retryAfter = retryAfter;
   }
 
   /** Field errors keyed by field name; the first message wins. */
@@ -71,22 +76,30 @@ function isFieldError(value: unknown): value is FieldError {
 
 /** Builds an ApiError from an error response and its parsed body (whatever shape it has). */
 export function toApiError(response: Response, body: unknown): ApiError {
+  const header = response.headers.get("Retry-After");
+  const seconds = header !== null && /^\d+$/.test(header.trim()) ? Number(header) : undefined;
   if (isProblem(body)) {
     const fieldErrors = Array.isArray(body.fieldErrors)
       ? body.fieldErrors.filter(isFieldError)
       : [];
-    return new ApiError({
-      ...body,
-      type: typeof body.type === "string" ? body.type : "about:blank",
-      status: response.status,
-      fieldErrors,
-    });
+    return new ApiError(
+      {
+        ...body,
+        type: typeof body.type === "string" ? body.type : "about:blank",
+        status: response.status,
+        fieldErrors,
+      },
+      seconds,
+    );
   }
-  return new ApiError({
-    type: "about:blank",
-    title: response.statusText || `HTTP ${response.status}`,
-    status: response.status,
-  });
+  return new ApiError(
+    {
+      type: "about:blank",
+      title: response.statusText || `HTTP ${response.status}`,
+      status: response.status,
+    },
+    seconds,
+  );
 }
 
 /**
@@ -150,7 +163,9 @@ export function errorMessage(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.status === 0) return "Cannot reach the server. Check your connection and try again.";
     if (err.status === 501) return "This feature is not available yet.";
-    if (err.status === 403) return "The request was refused. Reload the page and try again.";
+    if (err.status === 403 && err.type === CSRF_PROBLEM_TYPE) {
+      return "The request was refused. Reload the page and try again.";
+    }
     if (err.status >= 500) return "The server failed to answer. Try again later.";
     return err.detail ?? err.title;
   }

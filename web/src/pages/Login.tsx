@@ -3,13 +3,16 @@ import { Navigate, useLocation } from "react-router-dom";
 import { ApiError, errorMessage } from "../api/client";
 import { useAuth } from "../auth/AuthProvider";
 import { redirectTarget } from "../auth/RequireAuth";
+import { formatDuration } from "../lib/format";
 
 function loginErrorMessage(err: unknown): string {
   if (err instanceof ApiError && (err.status === 401 || err.status === 400)) {
     return "Wrong email or password. Try again.";
   }
   if (err instanceof ApiError && err.status === 429) {
-    return "Too many attempts. Wait a minute and try again.";
+    return err.retryAfter
+      ? `Too many attempts. Try again in ${formatDuration(err.retryAfter)}.`
+      : "Too many attempts. Try again later.";
   }
   return errorMessage(err);
 }

@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { ApiError } from "../api/client";
 import { createMonitor, getMonitor, queryKeys, updateMonitor } from "../api/endpoints";
+import MonitorNotFound from "../components/MonitorNotFound";
 import { ErrorState, Loading } from "../components/QueryState";
 import { useToast } from "../components/Toasts";
 import {
@@ -38,6 +40,8 @@ export default function MonitorForm({ mode }: { mode: "create" | "edit" }) {
       <h1>Edit monitor</h1>
       {monitor.isPending ? (
         <Loading label="Loading the monitor…" />
+      ) : monitor.isError && monitor.error instanceof ApiError && monitor.error.status === 404 ? (
+        <MonitorNotFound />
       ) : monitor.isError ? (
         <ErrorState
           title="Cannot load the monitor"
@@ -125,7 +129,7 @@ function MonitorFormBody({
       <input
         id="name"
         name="name"
-        maxLength={NAME_MAX}
+        maxLength={NAME_MAX * 2}
         value={values.name}
         onChange={(e) => update("name", e.target.value)}
         aria-invalid={invalid("name")}
