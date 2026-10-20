@@ -6,11 +6,6 @@ main.container {
   max-width: 960px;
 }
 
-.placeholder {
-  border: 1px dashed var(--pico-muted-border-color);
-  padding: 1rem;
-}
-
 header.container nav {
   margin-bottom: 0;
 }
