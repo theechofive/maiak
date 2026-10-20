@@ -188,11 +188,27 @@ func TestProbeTimeout(t *testing.T) {
 	p := NewHTTPSProber(routingClient(t, map[string]*tlsServer{"slow.test": s}))
 	start := time.Now()
 	r := p.Probe(context.Background(), Request{URL: "https://slow.test/", Timeout: 200 * time.Millisecond})
-	if r.OK || r.ErrorKind != KindTimeout {
+	if r.OK || r.ErrorKind != KindTimeout || r.Cancelled { // its own deadline is not a cancellation
 		t.Fatalf("got %+v", r)
 	}
 	if time.Since(start) > 2*time.Second {
 		t.Fatal("timeout not enforced")
+	}
+}
+
+// A cancelled parent context (worker shutdown) is not a failed check (ADR-0018).
+func TestProbeCancelledParent(t *testing.T) {
+	started := make(chan struct{})
+	s := newTLSServer(t, "hang.test", time.Now().Add(time.Hour), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	p := NewHTTPSProber(routingClient(t, map[string]*tlsServer{"hang.test": s}))
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { <-started; cancel() }()
+	r := p.Probe(ctx, Request{URL: "https://hang.test/", Timeout: 5 * time.Second})
+	if !r.Cancelled || r.OK || r.ErrorKind != "" || r.CheckedAt.IsZero() {
+		t.Fatalf("got %+v, want a cancelled marker", r)
 	}
 }
 

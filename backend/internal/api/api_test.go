@@ -16,6 +16,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/auth"
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/platform/validation"
+	"github.com/theechofive/maiak/backend/internal/scheduler"
 )
 
 func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -148,6 +149,7 @@ func TestWriteErrorMapping(t *testing.T) {
 		{errNotImplemented, 501, problemNotImplemented},
 		{fmt.Errorf("x: %w", monitors.ErrNotFound), 404, problemNotFound},
 		{&monitors.LimitError{Limit: 5}, 409, problemLimitReached},
+		{fmt.Errorf("monitors: create: %w", scheduler.ErrNoLocation), 503, problemUnavailable},
 		{&validation.Error{Fields: []validation.FieldError{{Field: "url", Message: "must use https"}}}, 422, problemValidation},
 		{errors.New("database exploded: password=hunter2"), 500, problemInternal},
 	}

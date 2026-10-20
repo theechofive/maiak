@@ -299,3 +299,118 @@ func TestIntegrationMonitorTenantIsolation(t *testing.T) {
 		t.Fatalf("owner's monitor changed: %d %s", g.code, g.raw)
 	}
 }
+
+// A monitorId that is not a UUID is a contract violation (400) on every {monitorId} operation.
+func TestIntegrationMonitorIDMustBeUUID(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("apimonid"))
+	c := newServer(t, env, auth.Options{})
+	cookie, csrf := c.login()
+	for _, rq := range []struct{ method, path, body string }{
+		{http.MethodGet, "/api/v1/monitors/nope", ""},
+		{http.MethodPatch, "/api/v1/monitors/nope", "{}"},
+		{http.MethodDelete, "/api/v1/monitors/nope", ""},
+		{http.MethodPost, "/api/v1/monitors/nope/pause", ""},
+		{http.MethodPost, "/api/v1/monitors/nope/resume", ""},
+		{http.MethodGet, "/api/v1/monitors/nope/stats", ""},
+		{http.MethodGet, "/api/v1/monitors/nope/checks", ""},
+		{http.MethodGet, "/api/v1/monitors/nope/incidents", ""},
+	} {
+		if r := c.do(rq.method, rq.path, rq.body, withCSRF(cookie, csrf)); r.code != http.StatusBadRequest || r.body["type"] != "urn:maiak:problem:bad-request" {
+			t.Errorf("%s %s: %d %s", rq.method, rq.path, r.code, r.raw)
+		}
+	}
+}
+
+// Without an active home location a create answers 503 problem+json (ADR-0018).
+func TestIntegrationCreateWithoutLocationIs503(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("apimonnoloc"))
+	c := newServer(t, env, auth.Options{})
+	cookie, csrf := c.login()
+	pgtest.MustExec(t, env.AdminConn(t), `UPDATE probe_locations SET status = 'disabled'`)
+	r := c.do(http.MethodPost, "/api/v1/monitors", `{"name":"x","url":"https://example.com"}`, withCSRF(cookie, csrf))
+	if r.code != http.StatusServiceUnavailable || r.body["type"] != "urn:maiak:problem:unavailable" {
+		t.Fatalf("create without location: %d %s", r.code, r.raw)
+	}
+}
+
+// Pause drops the lease (fencing a check in flight) and a URL change restarts the monitor like
+// resume, clears the TLS fields and resolves an open incident as url_changed without a
+// notification (ADR-0018).
+func TestIntegrationPauseFencesAndURLChangeRestarts(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("apimonrestart"))
+	c := newServer(t, env, auth.Options{})
+	cookie, csrf := c.login()
+	unsafe := withCSRF(cookie, csrf)
+	admin := env.AdminConn(t)
+	ctx := context.Background()
+
+	r := c.do(http.MethodPost, "/api/v1/monitors", `{"name":"Site","url":"https://example.com/a"}`, unsafe)
+	if r.code != http.StatusCreated {
+		t.Fatalf("create: %d %s", r.code, r.raw)
+	}
+	id := r.body["id"].(string)
+	const incident = "01920000-0000-7000-8000-0000000000c1"
+	down := func() {
+		pgtest.MustExec(t, admin,
+			`UPDATE monitor_location_state SET status = 'down', consecutive_failures = 3, lease_token = gen_random_uuid(),
+				lease_until = now() + interval '30 seconds', next_run_at = now() + interval '1 hour' WHERE monitor_id = '`+id+`'`,
+			`UPDATE monitor_state SET status = 'down', last_error_kind = 'timeout', status_changed_at = now() - interval '1 day',
+				tls_expires_at = now() + interval '10 days', tls_warned_not_after = now() + interval '10 days' WHERE monitor_id = '`+id+`'`)
+	}
+	type row struct {
+		lsStatus, msStatus string
+		failures           int
+		leased, tls        bool
+		delay              time.Duration
+	}
+	read := func() row {
+		var x row
+		if err := admin.QueryRow(ctx, `
+			SELECT s.status, ms.status, s.consecutive_failures, s.lease_token IS NOT NULL,
+			       ms.tls_expires_at IS NOT NULL OR ms.tls_warned_not_after IS NOT NULL, s.next_run_at - now()
+			FROM monitor_location_state s JOIN monitor_state ms ON ms.monitor_id = s.monitor_id
+			WHERE s.monitor_id = $1`, id).Scan(&x.lsStatus, &x.msStatus, &x.failures, &x.leased, &x.tls, &x.delay); err != nil {
+			t.Fatal(err)
+		}
+		return x
+	}
+
+	// Pause with a check in flight: the lease goes, the status reads unknown, TLS stays.
+	down()
+	if p := c.do(http.MethodPost, "/api/v1/monitors/"+id+"/pause", "", unsafe); p.code != http.StatusOK || p.body["status"] != "unknown" {
+		t.Fatalf("pause: %d %s", p.code, p.raw)
+	}
+	if x := read(); x.leased || x.lsStatus != "unknown" || x.msStatus != "unknown" || !x.tls {
+		t.Fatalf("after pause: %+v", x)
+	}
+	if res := c.do(http.MethodPost, "/api/v1/monitors/"+id+"/resume", "", unsafe); res.code != http.StatusOK {
+		t.Fatalf("resume: %d %s", res.code, res.raw)
+	}
+
+	// URL change with an open incident.
+	down()
+	pgtest.MustExec(t, admin,
+		`INSERT INTO incidents (id, tenant_id, started_at, reason) SELECT '`+incident+`', tenant_id, now() - interval '1 hour', 'timeout' FROM monitors WHERE id = '`+id+`'`,
+		`INSERT INTO incident_monitors (tenant_id, incident_id, monitor_id) SELECT tenant_id, '`+incident+`', id FROM monitors WHERE id = '`+id+`'`,
+		`UPDATE monitor_state SET current_incident_id = '`+incident+`' WHERE monitor_id = '`+id+`'`)
+	// A change of other fields only leaves the runtime state alone.
+	if p := c.do(http.MethodPatch, "/api/v1/monitors/"+id, `{"name":"Renamed","url":"https://example.com/a"}`, unsafe); p.code != http.StatusOK {
+		t.Fatalf("rename: %d %s", p.code, p.raw)
+	}
+	if x := read(); !x.leased || x.msStatus != "down" {
+		t.Fatalf("rename restarted the monitor: %+v", x)
+	}
+	p := c.do(http.MethodPatch, "/api/v1/monitors/"+id, `{"url":"https://example.org/b"}`, unsafe)
+	if p.code != http.StatusOK || p.body["status"] != "unknown" || p.body["lastErrorKind"] != nil || p.body["tlsExpiresAt"] != nil || p.body["ongoingIncident"] != nil {
+		t.Fatalf("url change: %d %s", p.code, p.raw)
+	}
+	if x := read(); x.leased || x.lsStatus != "unknown" || x.msStatus != "unknown" || x.failures != 0 || x.tls || x.delay > 30*time.Second {
+		t.Fatalf("after url change: %+v", x)
+	}
+	var reason string
+	var deliveries int
+	if err := admin.QueryRow(ctx, `SELECT resolve_reason, (SELECT count(*) FROM notification_deliveries) FROM incidents WHERE id = $1`, incident).
+		Scan(&reason, &deliveries); err != nil || reason != "url_changed" || deliveries != 0 {
+		t.Fatalf("incident: reason=%q deliveries=%d err=%v", reason, deliveries, err)
+	}
+}

@@ -254,17 +254,23 @@ func (q *Queries) LockMonitor(ctx context.Context, arg LockMonitorParams) (LockM
 
 const resetMonitorState = `-- name: ResetMonitorState :exec
 UPDATE monitor_state
-SET status = 'unknown', status_changed_at = now(), last_error_kind = NULL
-WHERE tenant_id = $1 AND monitor_id = $2
+SET status = 'unknown', status_changed_at = now(), last_error_kind = NULL,
+    tls_expires_at = CASE WHEN $1::boolean THEN NULL ELSE tls_expires_at END,
+    tls_warned_not_after = CASE WHEN $1::boolean THEN NULL ELSE tls_warned_not_after END
+WHERE tenant_id = $2 AND monitor_id = $3
 `
 
 type ResetMonitorStateParams struct {
+	ClearTls  bool
 	TenantID  uuid.UUID
 	MonitorID uuid.UUID
 }
 
+// Pause, resume and URL change. A new URL may be a different certificate, so its TLS fields go
+// too (clear_tls); on pause and resume they stay, so an already warned certificate is not warned
+// about again. maiak_api has column grants for exactly these columns (ADR-0018).
 func (q *Queries) ResetMonitorState(ctx context.Context, arg ResetMonitorStateParams) error {
-	_, err := q.db.Exec(ctx, resetMonitorState, arg.TenantID, arg.MonitorID)
+	_, err := q.db.Exec(ctx, resetMonitorState, arg.ClearTls, arg.TenantID, arg.MonitorID)
 	return err
 }
 

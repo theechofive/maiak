@@ -64,15 +64,29 @@ type Server struct {
 	Base
 	AdminAddr        string
 	DatabaseURL      Secret
-	EncryptionKeys   EncryptionKeys
-	EncryptionKeyID  string
 	ShutdownTimeout  time.Duration
 	DatabaseMaxConns int32
+}
+
+// Encryption holds the keys of the secrets stored in the database. Only api and jobs load it;
+// the worker never gets the keys (ADR-0016, L-042).
+type Encryption struct {
+	EncryptionKeys  EncryptionKeys
+	EncryptionKeyID string
+}
+
+// Guard is the SSRF guard configuration shared by every process that uses the guarded client.
+type Guard struct {
+	// BlockedCIDRs are blocked by the SSRF guard in addition to its built-in ranges
+	// (MAIAK_BLOCKED_CIDRS, comma-separated, ADR-0016, ADR-0018).
+	BlockedCIDRs []netip.Prefix
 }
 
 // API is the configuration of cmd/api.
 type API struct {
 	Server
+	Encryption
+	Guard
 	HTTPAddr          string
 	AdminEmail        string
 	AdminPasswordHash Secret
@@ -81,12 +95,10 @@ type API struct {
 	TrustedProxyHops  int
 }
 
-// Worker is the configuration of cmd/worker and cmd/jobs.
+// Worker is the configuration of cmd/worker. It has no encryption keys (L-042).
 type Worker struct {
 	Server
-	// BlockedCIDRs are blocked by the SSRF guard in addition to its built-in ranges
-	// (MAIAK_BLOCKED_CIDRS, comma-separated, ADR-0016).
-	BlockedCIDRs []netip.Prefix
+	Guard
 	// ClaimBatch is the most (monitor, location) jobs one scheduler tick claims
 	// (MAIAK_WORKER_CLAIM_BATCH, default 100).
 	ClaimBatch int
@@ -96,6 +108,13 @@ type Worker struct {
 	Concurrency       int
 	TenantConcurrency int
 	HostConcurrency   int
+}
+
+// Jobs is the configuration of cmd/jobs.
+type Jobs struct {
+	Server
+	Encryption
+	Guard
 }
 
 // Migrate is the configuration of cmd/migrate.
@@ -127,6 +146,8 @@ func LoadAPI(lookup LookupFunc) (API, error) {
 	l := &loader{lookup: lookup}
 	cfg := API{
 		Server:            l.server(10),
+		Encryption:        l.encryption(),
+		Guard:             l.guard(),
 		HTTPAddr:          l.addr("MAIAK_HTTP_ADDR", ":8080"),
 		AdminEmail:        l.email("MAIAK_ADMIN_EMAIL"),
 		AdminPasswordHash: l.passwordHash("MAIAK_ADMIN_PASSWORD_HASH"),
@@ -140,17 +161,24 @@ func LoadAPI(lookup LookupFunc) (API, error) {
 	return cfg, l.err()
 }
 
-// LoadWorker loads the worker (and jobs) configuration.
+// LoadWorker loads the worker configuration.
 func LoadWorker(lookup LookupFunc) (Worker, error) {
 	l := &loader{lookup: lookup}
 	cfg := Worker{
 		Server:            l.server(5),
-		BlockedCIDRs:      l.cidrs("MAIAK_BLOCKED_CIDRS"),
+		Guard:             l.guard(),
 		ClaimBatch:        l.integer("MAIAK_WORKER_CLAIM_BATCH", 100, 1, 1000),
 		Concurrency:       l.integer("MAIAK_WORKER_CONCURRENCY", 50, 1, 1000),
 		TenantConcurrency: l.integer("MAIAK_WORKER_TENANT_CONCURRENCY", 5, 1, 1000),
 		HostConcurrency:   l.integer("MAIAK_WORKER_HOST_CONCURRENCY", 2, 1, 1000),
 	}
+	return cfg, l.err()
+}
+
+// LoadJobs loads the jobs configuration.
+func LoadJobs(lookup LookupFunc) (Jobs, error) {
+	l := &loader{lookup: lookup}
+	cfg := Jobs{Server: l.server(5), Encryption: l.encryption(), Guard: l.guard()}
 	return cfg, l.err()
 }
 
@@ -239,8 +267,17 @@ func (l *loader) server(defaultMaxConns int32) Server {
 		ShutdownTimeout:  shutdownTimeout,
 		DatabaseMaxConns: defaultMaxConns,
 	}
-	s.EncryptionKeys, s.EncryptionKeyID = l.encryptionKeys()
 	return s
+}
+
+func (l *loader) encryption() Encryption {
+	var e Encryption
+	e.EncryptionKeys, e.EncryptionKeyID = l.encryptionKeys()
+	return e
+}
+
+func (l *loader) guard() Guard {
+	return Guard{BlockedCIDRs: l.cidrs("MAIAK_BLOCKED_CIDRS")}
 }
 
 func (l *loader) addr(name, def string) string {

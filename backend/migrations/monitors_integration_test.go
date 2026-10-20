@@ -107,13 +107,14 @@ INSERT INTO monitor_state (tenant_id, monitor_id) VALUES ('` + tenantA + `', '` 
 
 	// MVP limits and value checks.
 	for stmt, want := range map[string]string{
-		`UPDATE monitors SET interval_seconds = 30`:                         "monitors_mvp_interval",
-		`UPDATE monitors SET timeout_seconds = 5`:                           "monitors_mvp_timeout",
-		`UPDATE monitors SET failure_threshold = 4`:                         "check constraint",
-		`UPDATE monitors SET type = 'tcp'`:                                  "check constraint",
-		`UPDATE monitor_state SET status = 'degraded'`:                      "check constraint",
-		`UPDATE monitor_location_state SET lease_token = gen_random_uuid()`: "check constraint",
+		`UPDATE monitors SET interval_seconds = 30`:    "monitors_mvp_interval",
+		`UPDATE monitors SET timeout_seconds = 5`:      "monitors_mvp_timeout",
+		`UPDATE monitors SET failure_threshold = 4`:    "check constraint",
+		`UPDATE monitors SET type = 'tcp'`:             "check constraint",
+		`UPDATE monitor_state SET status = 'degraded'`: "check constraint",
 	} {
 		mustFail(inTenant(api, tenantA, stmt, false), want)
 	}
+	// The schedule belongs to the worker (the api resets it only through reset_monitor_runtime).
+	mustFail(inTenant(worker, tenantA, `UPDATE monitor_location_state SET lease_token = gen_random_uuid()`, false), "check constraint")
 }

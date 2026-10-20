@@ -1,8 +1,11 @@
 package monitors
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
+
+	"github.com/theechofive/maiak/backend/internal/safehttp"
 )
 
 func TestValidateURL(t *testing.T) {
@@ -82,6 +85,13 @@ func TestValidateURL(t *testing.T) {
 		{"https://[64:ff9b::a00:1]/", false, ""}, // NAT64 of 10.0.0.1
 		{"https://[ff02::1]/", false, ""},
 		{"https://[::1]:443/", false, ""},
+		// Ranges the validator now shares with the connect-time guard (safehttp.Allowed, ADR-0018).
+		{"https://192.0.2.1/", false, ""},         // documentation
+		{"https://198.18.0.1/", false, ""},        // benchmarking
+		{"https://[2001:db8::1]/", false, ""},     // documentation
+		{"https://[2002:808:808::1]/", false, ""}, // 6to4
+		{"https://[4000::1]/", false, ""},         // IPv6 outside 2000::/3
+		{"https://[2606:4700:4700::1111]/", true, "https://[2606:4700:4700::1111]/"},
 
 		// Unicode hosts (homographs, fullwidth digits) must use their xn-- form.
 		{"https://exämple.com/", false, ""},
@@ -95,6 +105,22 @@ func TestValidateURL(t *testing.T) {
 		}
 		if !c.ok && msg == "" {
 			t.Errorf("ValidateURL(%q) = %q accepted; want rejected", c.in, got)
+		}
+	}
+}
+
+// The validator and the guard must agree on every literal address (ADR-0018).
+func TestValidateURLAgreesWithGuard(t *testing.T) {
+	for _, a := range []string{"8.8.8.8", "10.0.0.1", "192.0.2.1", "203.0.113.9", "100.64.1.1", "240.0.0.1",
+		"2606:4700:4700::1111", "2001:db8::1", "64:ff9b::808:808", "fc00::1", "4000::1", "2002::1"} {
+		addr := netip.MustParseAddr(a)
+		host := a
+		if addr.Is6() {
+			host = "[" + a + "]"
+		}
+		_, msg := ValidateURL("https://" + host + "/")
+		if (msg == "") != safehttp.Allowed(addr) {
+			t.Errorf("%s: validator accepted=%v, guard allowed=%v", a, msg == "", safehttp.Allowed(addr))
 		}
 	}
 }
@@ -114,12 +140,12 @@ func TestValidateName(t *testing.T) {
 }
 
 func TestValidateExpectedStatus(t *testing.T) {
-	for _, ok := range []string{"2xx", "100", "200", "204", "301", "418", "599"} {
+	for _, ok := range []string{"2xx", "200", "204", "299", "400", "418", "503", "599"} {
 		if msg := ValidateExpectedStatus(ok); msg != "" {
 			t.Errorf("%q rejected: %s", ok, msg)
 		}
 	}
-	for _, bad := range []string{"", "2XX", "3xx", "99", "600", "099", "20", "2000", " 200", "200 "} {
+	for _, bad := range []string{"", "2XX", "3xx", "99", "600", "099", "20", "2000", " 200", "200 ", "100", "101", "199", "300", "301", "304", "399", "4xx"} {
 		if msg := ValidateExpectedStatus(bad); msg == "" {
 			t.Errorf("%q accepted", bad)
 		}

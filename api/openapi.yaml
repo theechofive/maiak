@@ -154,7 +154,8 @@ paths:
       summary: Create a monitor
       description: |
         Creates an HTTPS monitor. It starts with status `unknown` and is first checked within
-        about 30 seconds. Fails with 409 when the tenant's monitor limit (50 by default) is reached.
+        about 30 seconds. Fails with 409 when the tenant's monitor limit (50 by default) is reached
+        and with 503 when the probe location that runs new monitors is unavailable.
       tags: [monitors]
       security:
         - cookieAuth: []
@@ -184,6 +185,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
         default:
           $ref: "#/components/responses/Error"
   /api/v1/monitors/{monitorId}:
@@ -201,6 +204,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MonitorDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -260,6 +265,8 @@ paths:
       responses:
         "204":
           description: Deleted
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -288,6 +295,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MonitorDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -316,6 +325,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MonitorDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -402,6 +413,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/IncidentList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -497,7 +510,7 @@ components:
       name: monitorId
       in: path
       required: true
-      description: Monitor id
+      description: Monitor id; a value that is not a UUID is answered with 400
       schema:
         type: string
         format: uuid
@@ -554,6 +567,12 @@ components:
           description: Seconds until a new attempt may succeed
           schema:
             type: integer
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ServiceUnavailable:
+      description: A dependency of the operation is temporarily unavailable; retry later
       content:
         application/problem+json:
           schema:
@@ -644,8 +663,11 @@ components:
       enum: [unknown, up, down]
     ExpectedStatus:
       type: string
-      description: "`2xx` (any 200-299) or one exact HTTP status code from 100 to 599, as a string"
-      pattern: "^(2xx|[1-5][0-9][0-9])$"
+      description: |
+        `2xx` (any 200-299), or one exact HTTP status code from 200 to 299 or from 400 to 599, as a
+        string. 1xx and 3xx cannot be observed (the client consumes 1xx and follows redirects) and
+        are rejected.
+      pattern: "^(2xx|2[0-9]{2}|[45][0-9]{2})$"
       example: 2xx
     MonitorCreate:
       type: object

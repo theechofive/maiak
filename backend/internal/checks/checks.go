@@ -51,6 +51,10 @@ type Result struct {
 	// TLSNotAfter is the leaf certificate expiry of the final hop, when a TLS handshake completed.
 	TLSNotAfter *time.Time
 	CheckedAt   time.Time
+	// Cancelled means the caller's context was cancelled before the check finished (shutdown).
+	// It is not a check outcome: OK is false and ErrorKind empty, the caller must discard the
+	// result (ADR-0018). The check's own deadline is a timeout, not a cancellation.
+	Cancelled bool
 }
 
 // Prober runs one check. It is the seam the worker consumes (ADR-0003); tests substitute it.
@@ -71,13 +75,13 @@ func NewHTTPSProber(client *http.Client) *HTTPSProber {
 }
 
 // Probe issues a GET and reports the result. It never returns an error: failures are kinds.
-func (p *HTTPSProber) Probe(ctx context.Context, req Request) Result {
+func (p *HTTPSProber) Probe(parent context.Context, req Request) Result {
 	res := Result{CheckedAt: p.now()}
 	timeout := req.Timeout
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	// Cancelling right after the headers abandons the body without reading it.
 	defer cancel()
 
@@ -92,6 +96,9 @@ func (p *HTTPSProber) Probe(ctx context.Context, req Request) Result {
 	resp, err := p.client.Do(httpReq)
 	latency := time.Since(start)
 	if err != nil {
+		if errors.Is(parent.Err(), context.Canceled) {
+			return Result{CheckedAt: res.CheckedAt, Cancelled: true}
+		}
 		res.ErrorKind = classify(ctx, err)
 		return res
 	}

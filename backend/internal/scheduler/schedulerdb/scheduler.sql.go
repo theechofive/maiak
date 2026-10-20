@@ -156,29 +156,17 @@ func (q *Queries) ReleaseLease(ctx context.Context, arg ReleaseLeaseParams) (int
 	return result.RowsAffected(), nil
 }
 
-const restartMonitorLocations = `-- name: RestartMonitorLocations :execrows
-UPDATE monitor_location_state
-SET status = 'unknown',
-    consecutive_failures = 0,
-    lease_token = NULL,
-    lease_until = NULL,
-    next_run_at = now() + make_interval(secs => $1::float8)
-WHERE tenant_id = $2 AND monitor_id = $3
+const resetMonitorRuntime = `-- name: ResetMonitorRuntime :one
+SELECT reset_monitor_runtime($1::uuid)
 `
 
-type RestartMonitorLocationsParams struct {
-	JitterSeconds float64
-	TenantID      uuid.UUID
-	MonitorID     uuid.UUID
-}
-
-// Clearing the lease fences off a check that is still in flight from before the pause.
-func (q *Queries) RestartMonitorLocations(ctx context.Context, arg RestartMonitorLocationsParams) (int64, error) {
-	result, err := q.db.Exec(ctx, restartMonitorLocations, arg.JitterSeconds, arg.TenantID, arg.MonitorID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// Pause, resume and URL change: maiak_api may not write the schedule directly (ADR-0018), the
+// SECURITY DEFINER function resets it within the caller's tenant.
+func (q *Queries) ResetMonitorRuntime(ctx context.Context, monitorID uuid.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, resetMonitorRuntime, monitorID)
+	var reset_monitor_runtime int32
+	err := row.Scan(&reset_monitor_runtime)
+	return reset_monitor_runtime, err
 }
 
 const updateLocationState = `-- name: UpdateLocationState :exec

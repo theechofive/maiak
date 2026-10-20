@@ -64,13 +64,13 @@ func (s *Service) InitMonitorLocation(ctx context.Context, tx pgx.Tx, tenantID, 
 	return nil
 }
 
-// Restart resets every location of a resumed monitor: counters to zero, status unknown, any
-// lease dropped and the next run after a random jitter.
-func (s *Service) Restart(ctx context.Context, tx pgx.Tx, tenantID, monitorID uuid.UUID) error {
-	_, err := schedulerdb.New(tx).RestartMonitorLocations(ctx, schedulerdb.RestartMonitorLocationsParams{
-		TenantID: tenantID, MonitorID: monitorID, JitterSeconds: s.jitter().Seconds(),
-	})
-	if err != nil {
+// Restart resets every location of a monitor on pause, resume and URL change: counters to
+// zero, status unknown, any lease dropped (a check in flight is then discarded at its lease
+// check) and the next run after a random jitter of up to MaxStartJitter. It goes through the
+// SECURITY DEFINER function reset_monitor_runtime, which works only inside the tenant of tx
+// (ADR-0018, ADR-0040).
+func (s *Service) Restart(ctx context.Context, tx pgx.Tx, monitorID uuid.UUID) error {
+	if _, err := schedulerdb.New(tx).ResetMonitorRuntime(ctx, monitorID); err != nil {
 		return fmt.Errorf("scheduler: restart monitor: %w", err)
 	}
 	return nil

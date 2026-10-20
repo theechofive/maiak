@@ -49,8 +49,20 @@ func mustPrefixes(ss ...string) []netip.Prefix {
 	return out
 }
 
+// globalUnicast6 is the only IPv6 space with assigned global unicast addresses; everything
+// outside it is denied by default (ADR-0018), so a range missing from builtinBlocked cannot
+// open a hole.
+var globalUnicast6 = netip.MustParsePrefix("2000::/3")
+
+// Allowed reports whether addr may be a monitor target under the built-in rules: the same
+// decision the connect-time guard makes (without the operator's MAIAK_BLOCKED_CIDRS). The
+// create-time URL validator uses it so both layers agree (ADR-0018).
+func Allowed(addr netip.Addr) bool {
+	return allowed(addr, nil)
+}
+
 // allowed reports whether the guard may connect to addr. Only global unicast addresses outside
-// the built-in and extra ranges pass.
+// the built-in and extra ranges pass; IPv6 must also be inside 2000::/3.
 func allowed(addr netip.Addr, extra []netip.Prefix) bool {
 	if !addr.IsValid() {
 		return false
@@ -60,6 +72,9 @@ func allowed(addr netip.Addr, extra []netip.Prefix) bool {
 		addr = addr.Unmap()
 	}
 	if !addr.IsGlobalUnicast() || addr.IsPrivate() {
+		return false
+	}
+	if addr.Is6() && !globalUnicast6.Contains(addr) {
 		return false
 	}
 	for _, p := range builtinBlocked {

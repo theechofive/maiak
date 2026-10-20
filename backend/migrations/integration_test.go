@@ -47,6 +47,8 @@ var definerAllowList = map[string][]string{
 	"purge_expired_sessions":  {"maiak_worker"},
 	"claim_deliveries":        {"maiak_worker"},
 	"finish_delivery":         {"maiak_worker"},
+	// Pause, resume and URL change reset the schedule within the caller's tenant (ADR-0018).
+	"reset_monitor_runtime": {"maiak_api"},
 }
 
 // extraPolicies are the permissive policies on tenant tables that are not tenant isolation

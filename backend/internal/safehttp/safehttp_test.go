@@ -159,6 +159,21 @@ func TestAllowed(t *testing.T) {
 	}
 }
 
+// IPv6 is default-deny outside 2000::/3 (ADR-0018): unassigned space such as 4000::/3 or
+// 1000::/4 is refused although no built-in range names it.
+func TestAllowedIPv6DefaultDeny(t *testing.T) {
+	for _, s := range []string{"4000::1", "1000::1", "3fff::1" /* documentation, in 2000::/3 but blocked */, "e000::1", "8000::1", "100:1::1"} {
+		if Allowed(netip.MustParseAddr(s)) {
+			t.Errorf("%s must be blocked", s)
+		}
+	}
+	for _, s := range []string{"2000::1", "2606:4700:4700::1111", "3ffe:ffff::1", "::ffff:8.8.8.8"} {
+		if !Allowed(netip.MustParseAddr(s)) {
+			t.Errorf("%s must be allowed", s)
+		}
+	}
+}
+
 func TestResolutionRules(t *testing.T) {
 	cases := []struct {
 		name     string

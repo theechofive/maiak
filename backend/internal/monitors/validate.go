@@ -7,6 +7,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/theechofive/maiak/backend/internal/safehttp"
 )
 
 const (
@@ -23,24 +25,15 @@ const (
 	DefaultExpectedStatus   = "2xx"
 )
 
-// blockedPrefixes are address ranges no monitor may target by literal. netip's predicates
-// cover loopback, private (RFC 1918, fc00::/7), link-local, multicast and unspecified.
-var blockedPrefixes = []netip.Prefix{
-	netip.MustParsePrefix("0.0.0.0/8"),
-	netip.MustParsePrefix("100.64.0.0/10"), // CGNAT
-	netip.MustParsePrefix("240.0.0.0/4"),   // reserved, includes the broadcast address
-	netip.MustParsePrefix("::/96"),         // IPv4-compatible (deprecated), ::, ::1
-	netip.MustParsePrefix("64:ff9b::/96"),  // NAT64: embeds an IPv4 address
-}
-
 // Host names that only resolve inside private networks or the cluster (single-label names are
 // rejected separately: inside Kubernetes they resolve through the search domains).
 var blockedSuffixes = []string{".localhost", ".internal", ".local", ".svc"}
 
 var (
-	hostPattern   = regexp.MustCompile(`^[a-z0-9_-]+(\.[a-z0-9_-]+)*$`)
-	numericLabel  = regexp.MustCompile(`^(0x[0-9a-f]*|[0-9]+)$`)
-	expectedRegex = regexp.MustCompile(`^(2xx|[1-5][0-9][0-9])$`)
+	hostPattern  = regexp.MustCompile(`^[a-z0-9_-]+(\.[a-z0-9_-]+)*$`)
+	numericLabel = regexp.MustCompile(`^(0x[0-9a-f]*|[0-9]+)$`)
+	// 1xx is consumed by the HTTP client and 3xx is followed, so neither can be observed (ADR-0018).
+	expectedRegex = regexp.MustCompile(`^(2xx|2[0-9]{2}|[45][0-9]{2})$`)
 )
 
 // ValidateURL checks a monitor target and returns it normalised (lowercase scheme and host),
@@ -139,14 +132,9 @@ func checkAddr(a netip.Addr) string {
 	if a.Is4In6() {
 		return "IPv4-mapped IPv6 addresses are not allowed"
 	}
-	if a.IsLoopback() || a.IsPrivate() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() ||
-		a.IsInterfaceLocalMulticast() || a.IsMulticast() || a.IsUnspecified() {
+	// The same decision as the connect-time guard, so both layers agree (ADR-0018).
+	if !safehttp.Allowed(a) {
 		return "host must be a public address"
-	}
-	for _, p := range blockedPrefixes {
-		if p.Contains(a) {
-			return "host must be a public address"
-		}
 	}
 	return ""
 }
@@ -168,10 +156,10 @@ func ValidateName(raw string) (string, string) {
 	return name, ""
 }
 
-// ValidateExpectedStatus accepts "2xx" or one status code from 100 to 599.
+// ValidateExpectedStatus accepts "2xx", one status code from 200 to 299 or one from 400 to 599.
 func ValidateExpectedStatus(s string) string {
 	if !expectedRegex.MatchString(s) {
-		return `must be "2xx" or a status code from 100 to 599`
+		return `must be "2xx", a status code from 200 to 299 or one from 400 to 599`
 	}
 	return ""
 }

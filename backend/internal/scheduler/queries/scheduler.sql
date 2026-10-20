@@ -7,15 +7,10 @@ WHERE code = @code AND status = 'active';
 INSERT INTO monitor_location_state (tenant_id, monitor_id, location_id, next_run_at)
 VALUES (@tenant_id, @monitor_id, @location_id, now() + make_interval(secs => @jitter_seconds::float8));
 
--- name: RestartMonitorLocations :execrows
--- Clearing the lease fences off a check that is still in flight from before the pause.
-UPDATE monitor_location_state
-SET status = 'unknown',
-    consecutive_failures = 0,
-    lease_token = NULL,
-    lease_until = NULL,
-    next_run_at = now() + make_interval(secs => @jitter_seconds::float8)
-WHERE tenant_id = @tenant_id AND monitor_id = @monitor_id;
+-- name: ResetMonitorRuntime :one
+-- Pause, resume and URL change: maiak_api may not write the schedule directly (ADR-0018), the
+-- SECURITY DEFINER function resets it within the caller's tenant.
+SELECT reset_monitor_runtime(@monitor_id::uuid);
 
 -- name: ListLocationStates :many
 SELECT location_id, status, consecutive_failures, last_checked_at

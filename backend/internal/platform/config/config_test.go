@@ -139,6 +139,12 @@ func TestLoadWorkerAndMigrate(t *testing.T) {
 	if _, err := LoadWorker(env(e)); err != nil {
 		t.Fatalf("worker: %v", err)
 	}
+	// The worker never needs the encryption keys (ADR-0016, L-042).
+	delete(e, "MAIAK_ENCRYPTION_KEYS")
+	delete(e, "MAIAK_ENCRYPTION_ACTIVE_KEY_ID")
+	if _, err := LoadWorker(env(e)); err != nil {
+		t.Fatalf("worker without encryption keys: %v", err)
+	}
 	if _, err := LoadMigrate(env(map[string]string{})); err == nil || !strings.Contains(err.Error(), "MAIAK_MIGRATE_DATABASE_URL") {
 		t.Fatalf("migrate without URL: %v", err)
 	}
@@ -148,19 +154,47 @@ func TestLoadWorkerAndMigrate(t *testing.T) {
 	}
 }
 
-func TestLoadWorkerBlockedCIDRs(t *testing.T) {
+func TestLoadJobs(t *testing.T) {
 	e := apiEnv(t)
-	e["MAIAK_BLOCKED_CIDRS"] = " 203.0.113.7/24, ,2001:db8::/32 "
-	cfg, err := LoadWorker(env(e))
+	cfg, err := LoadJobs(env(e))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.BlockedCIDRs) != 2 || cfg.BlockedCIDRs[0].String() != "203.0.113.0/24" || cfg.BlockedCIDRs[1].String() != "2001:db8::/32" {
-		t.Fatalf("blocked cidrs = %v", cfg.BlockedCIDRs)
+	if len(cfg.EncryptionKeys["k1"]) != 32 || cfg.EncryptionKeyID != "k1" || cfg.DatabaseMaxConns != 5 {
+		t.Fatalf("jobs config = %+v", cfg)
 	}
-	e["MAIAK_BLOCKED_CIDRS"] = "10.0.0.0/8,not-a-cidr"
-	if _, err := LoadWorker(env(e)); err == nil || !strings.Contains(err.Error(), "MAIAK_BLOCKED_CIDRS") {
-		t.Fatalf("invalid cidr accepted: %v", err)
+	delete(e, "MAIAK_ENCRYPTION_KEYS")
+	if _, err := LoadJobs(env(e)); err == nil || !strings.Contains(err.Error(), "MAIAK_ENCRYPTION_KEYS") {
+		t.Fatalf("jobs without encryption keys: %v", err)
+	}
+}
+
+// Every process using the guarded client reads MAIAK_BLOCKED_CIDRS (ADR-0018).
+func TestBlockedCIDRsInEveryGuardedProcess(t *testing.T) {
+	loaders := map[string]func(LookupFunc) (Guard, error){
+		"api": func(l LookupFunc) (Guard, error) { c, err := LoadAPI(l); return c.Guard, err },
+		"worker": func(l LookupFunc) (Guard, error) {
+			c, err := LoadWorker(l)
+			return c.Guard, err
+		},
+		"jobs": func(l LookupFunc) (Guard, error) { c, err := LoadJobs(l); return c.Guard, err },
+	}
+	for name, load := range loaders {
+		t.Run(name, func(t *testing.T) {
+			e := apiEnv(t)
+			e["MAIAK_BLOCKED_CIDRS"] = " 203.0.113.7/24, ,2001:db8::/32 "
+			cfg, err := load(env(e))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cfg.BlockedCIDRs) != 2 || cfg.BlockedCIDRs[0].String() != "203.0.113.0/24" || cfg.BlockedCIDRs[1].String() != "2001:db8::/32" {
+				t.Fatalf("blocked cidrs = %v", cfg.BlockedCIDRs)
+			}
+			e["MAIAK_BLOCKED_CIDRS"] = "10.0.0.0/8,not-a-cidr"
+			if _, err := load(env(e)); err == nil || !strings.Contains(err.Error(), "MAIAK_BLOCKED_CIDRS") {
+				t.Fatalf("invalid cidr accepted: %v", err)
+			}
+		})
 	}
 }
 

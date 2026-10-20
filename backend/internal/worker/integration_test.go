@@ -352,7 +352,34 @@ func (p *ctxProber) Probe(ctx context.Context, _ checks.Request) checks.Result {
 	case <-p.release:
 		return checks.Result{OK: true, StatusCode: 200, LatencyMs: 5, CheckedAt: time.Now().UTC()}
 	case <-ctx.Done():
-		return checks.Result{ErrorKind: checks.KindTimeout, CheckedAt: time.Now().UTC()}
+		return checks.Result{Cancelled: true, CheckedAt: time.Now().UTC()}
+	}
+}
+
+// cancelledProber reports every check as cancelled, as the real prober does when its parent
+// context is cancelled, without the worker's own context being cancelled.
+type cancelledProber struct{}
+
+func (cancelledProber) Probe(context.Context, checks.Request) checks.Result {
+	return checks.Result{Cancelled: true, CheckedAt: time.Now().UTC()}
+}
+
+// A cancelled result is discarded: no result row, no state change, and the lease is released
+// so the job is due again at once (ADR-0018).
+func TestIntegrationCancelledResultDiscarded(t *testing.T) {
+	e := newEnv(t, "workercancelled")
+	m := e.monitor(tenantA, "https://cancelled.example.com/", 1)
+	w, reg := e.worker(cancelledProber{}, worker.Config{ClaimBatch: 10, Concurrency: 5, TenantConcurrency: 5, HostConcurrency: 2})
+	w.RunOnce(e.ctx)
+	if n := e.count(`SELECT count(*) FROM check_results WHERE monitor_id = $1`, m); n != 0 {
+		t.Fatalf("cancelled check was recorded (%d rows)", n)
+	}
+	if n := e.count(`SELECT count(*) FROM monitor_location_state WHERE monitor_id = $1 AND lease_token IS NULL
+		AND status = 'unknown' AND last_checked_at IS NULL AND next_run_at <= now()`, m); n != 1 {
+		t.Fatal("lease not released or state changed")
+	}
+	if got := metric(t, reg, "maiak_worker_cancelled_checks_total"); got != 1 {
+		t.Fatalf("cancelled metric = %v", got)
 	}
 }
 
@@ -401,6 +428,9 @@ func TestIntegrationGracefulShutdown(t *testing.T) {
 		}
 		if n := e.count(`SELECT count(*) FROM incidents`); n != 0 {
 			t.Fatal("abandoned check opened an incident")
+		}
+		if n := e.count(`SELECT count(*) FROM monitor_location_state WHERE monitor_id = $1 AND lease_token IS NULL`, m); n != 1 {
+			t.Fatal("abandoned check kept its lease")
 		}
 	})
 }

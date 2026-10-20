@@ -187,7 +187,7 @@ func (w *Worker) tick(ctx, checkCtx context.Context) {
 	}
 	if len(deferred) > 0 {
 		w.d.Metrics.deferred.Add(float64(len(deferred)))
-		w.release(ctx, deferred)
+		w.release(ctx, deferred, DeferDelay)
 	}
 }
 
@@ -196,8 +196,12 @@ func (w *Worker) check(ctx context.Context, j scheduler.Job, host string) {
 	start := time.Now()
 	res := w.d.Prober.Probe(ctx, checks.Request{URL: j.URL, Timeout: j.Timeout, ExpectedStatus: j.ExpectedStatus})
 	w.limiter.Release(j.TenantID, host)
-	if ctx.Err() != nil {
-		return // abandoned at shutdown: not a real result
+	if res.Cancelled || ctx.Err() != nil {
+		// Abandoned at shutdown: not a real result (ADR-0018). Give the job back so another
+		// worker runs it now instead of after the lease expires.
+		w.d.Metrics.cancelled.Inc()
+		w.release(context.WithoutCancel(ctx), []scheduler.Lease{j.Lease}, 0)
+		return
 	}
 	w.d.Metrics.duration.Observe(time.Since(start).Seconds())
 	label := "ok"
@@ -289,8 +293,8 @@ func (w *Worker) write(ctx context.Context, tx pgx.Tx, o outcome) (bool, error) 
 	return err == nil, err
 }
 
-// release gives deferred jobs back, one transaction per tenant.
-func (w *Worker) release(ctx context.Context, leases []scheduler.Lease) {
+// release gives claimed jobs back unchecked, due again after delay, one transaction per tenant.
+func (w *Worker) release(ctx context.Context, leases []scheduler.Lease, delay time.Duration) {
 	byTenant := map[uuid.UUID][]scheduler.Lease{}
 	for _, l := range leases {
 		byTenant[l.TenantID] = append(byTenant[l.TenantID], l)
@@ -298,7 +302,7 @@ func (w *Worker) release(ctx context.Context, leases []scheduler.Lease) {
 	for tenant, ls := range byTenant {
 		err := db.WithTenantTx(ctx, w.d.Pool, tenant, func(tx pgx.Tx) error {
 			for _, l := range ls {
-				if err := w.d.Scheduler.Release(ctx, tx, l, DeferDelay); err != nil {
+				if err := w.d.Scheduler.Release(ctx, tx, l, delay); err != nil {
 					return err
 				}
 			}
@@ -306,7 +310,7 @@ func (w *Worker) release(ctx context.Context, leases []scheduler.Lease) {
 		})
 		if err != nil {
 			// The leases expire on their own after 30 s.
-			w.d.Log.WarnContext(ctx, "releasing deferred jobs failed", "jobs", len(ls), "error", err)
+			w.d.Log.WarnContext(ctx, "releasing jobs failed", "jobs", len(ls), "error", err)
 		}
 	}
 }
@@ -336,6 +340,7 @@ type Metrics struct {
 	claimErrors prometheus.Counter
 	writeErrors prometheus.Counter
 	deferred    prometheus.Counter
+	cancelled   prometheus.Counter
 }
 
 // NewMetrics registers the worker metrics.
@@ -364,9 +369,12 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		deferred: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "maiak_worker_deferred_jobs_total", Help: "Claimed jobs given back because their tenant or host was at its limit.",
 		}),
+		cancelled: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "maiak_worker_cancelled_checks_total", Help: "Checks abandoned at shutdown; discarded and given back.",
+		}),
 	}
 	m.checks.WithLabelValues("ok")
 	m.checks.WithLabelValues("failed")
-	reg.MustRegister(m.checks, m.duration, m.lag, m.stale, m.claimErrors, m.writeErrors, m.deferred)
+	reg.MustRegister(m.checks, m.duration, m.lag, m.stale, m.claimErrors, m.writeErrors, m.deferred, m.cancelled)
 	return m
 }

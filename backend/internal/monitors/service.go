@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -305,6 +306,16 @@ func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateIn
 		if err := verr.Err(); err != nil {
 			return err
 		}
+		if slices.Contains(changed, "url") {
+			// A new URL is a new target: its history says nothing about it. Restart like resume
+			// and end an open incident without a notification (ADR-0018).
+			if err := s.restart(ctx, tx, q, a.TenantID, id, true); err != nil {
+				return err
+			}
+			if err := s.incidents.ResolveOpen(ctx, tx, a.TenantID, id, incidents.ReasonURLChanged); err != nil {
+				return err
+			}
+		}
 		if len(changed) > 0 {
 			config, err := json.Marshal(cfg)
 			if err != nil {
@@ -351,7 +362,8 @@ func (s *Service) Delete(ctx context.Context, a Actor, id uuid.UUID) error {
 	return wrap("delete", err)
 }
 
-// Pause stops checking a monitor. Pausing a paused monitor changes nothing.
+// Pause stops checking a monitor: an open incident is resolved without a notification, a check
+// in flight is discarded and the status becomes unknown. Pausing a paused monitor changes nothing.
 func (s *Service) Pause(ctx context.Context, a Actor, id uuid.UUID) (Monitor, error) {
 	return s.setPaused(ctx, a, id, true)
 }
@@ -377,18 +389,17 @@ func (s *Service) setPaused(ctx context.Context, a Actor, id uuid.UUID, paused b
 			if err := q.SetMonitorPaused(ctx, monitorsdb.SetMonitorPausedParams{TenantID: a.TenantID, ID: id, Paused: paused}); err != nil {
 				return fmt.Errorf("set paused: %w", err)
 			}
+			// Both directions restart the runtime state. On pause this drops the lease, which
+			// fences off a check still in flight, and the status becomes unknown (a paused monitor
+			// reports unknown); on resume the first check comes after a random jitter (ADR-0040).
+			if err := s.restart(ctx, tx, q, a.TenantID, id, false); err != nil {
+				return err
+			}
 			action := ActionResumed
 			if paused {
 				action = ActionPaused
 				if err := s.incidents.ResolveOpen(ctx, tx, a.TenantID, id, incidents.ReasonPaused); err != nil {
 					return err
-				}
-			} else {
-				if err := s.sched.Restart(ctx, tx, a.TenantID, id); err != nil {
-					return err
-				}
-				if err := q.ResetMonitorState(ctx, monitorsdb.ResetMonitorStateParams{TenantID: a.TenantID, MonitorID: id}); err != nil {
-					return fmt.Errorf("reset monitor state: %w", err)
 				}
 			}
 			if err := s.audit(ctx, tx, a, action, id, nil); err != nil {
@@ -402,6 +413,18 @@ func (s *Service) setPaused(ctx context.Context, a Actor, id uuid.UUID, paused b
 		return Monitor{}, wrap("set paused", err)
 	}
 	return m, nil
+}
+
+// restart resets the schedule (through the scheduler) and the aggregated state of a monitor;
+// clearTLS also forgets the certificate seen so far (URL change).
+func (s *Service) restart(ctx context.Context, tx pgx.Tx, q *monitorsdb.Queries, tenantID, id uuid.UUID, clearTLS bool) error {
+	if err := s.sched.Restart(ctx, tx, id); err != nil {
+		return err
+	}
+	if err := q.ResetMonitorState(ctx, monitorsdb.ResetMonitorStateParams{TenantID: tenantID, MonitorID: id, ClearTls: clearTLS}); err != nil {
+		return fmt.Errorf("reset monitor state: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) audit(ctx context.Context, tx pgx.Tx, a Actor, action string, id uuid.UUID, meta map[string]any) error {

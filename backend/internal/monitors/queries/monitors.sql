@@ -57,6 +57,11 @@ SET deleted_at = now(), updated_at = now()
 WHERE tenant_id = @tenant_id AND id = @id;
 
 -- name: ResetMonitorState :exec
+-- Pause, resume and URL change. A new URL may be a different certificate, so its TLS fields go
+-- too (clear_tls); on pause and resume they stay, so an already warned certificate is not warned
+-- about again. maiak_api has column grants for exactly these columns (ADR-0018).
 UPDATE monitor_state
-SET status = 'unknown', status_changed_at = now(), last_error_kind = NULL
+SET status = 'unknown', status_changed_at = now(), last_error_kind = NULL,
+    tls_expires_at = CASE WHEN @clear_tls::boolean THEN NULL ELSE tls_expires_at END,
+    tls_warned_not_after = CASE WHEN @clear_tls::boolean THEN NULL ELSE tls_warned_not_after END
 WHERE tenant_id = @tenant_id AND monitor_id = @monitor_id;

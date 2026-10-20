@@ -19,6 +19,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
 	"github.com/theechofive/maiak/backend/internal/platform/validation"
+	"github.com/theechofive/maiak/backend/internal/scheduler"
 )
 
 // Problem types (RFC 9457 "type" members).
@@ -33,6 +34,7 @@ const (
 	problemValidation         = "urn:maiak:problem:validation"
 	problemNotImplemented     = "urn:maiak:problem:not-implemented"
 	problemLimitReached       = "urn:maiak:problem:limit-reached"
+	problemUnavailable        = "urn:maiak:problem:unavailable"
 	problemInternal           = "urn:maiak:problem:internal"
 )
 
@@ -81,6 +83,11 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 	case errors.As(err, &limitErr):
 		p.Type, p.Title, p.Status = problemLimitReached, "Monitor limit reached", http.StatusConflict
 		p.Detail = fmt.Sprintf("This tenant can have at most %d monitors.", limitErr.Limit)
+	case errors.Is(err, scheduler.ErrNoLocation):
+		// Operational, not the caller's fault: the location that runs new monitors is missing or
+		// disabled (ADR-0018).
+		log.ErrorContext(r.Context(), "request failed", "error", err)
+		p.Type, p.Title, p.Status = problemUnavailable, "Monitoring location unavailable, try again later", http.StatusServiceUnavailable
 	case errors.Is(err, errNotFound), errors.Is(err, routers.ErrPathNotFound), errors.Is(err, monitors.ErrNotFound):
 		p.Type, p.Title, p.Status = problemNotFound, "Not found", http.StatusNotFound
 	case errors.Is(err, errMethodNotAllowed), errors.Is(err, routers.ErrMethodNotAllowed):
