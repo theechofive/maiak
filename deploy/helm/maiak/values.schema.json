@@ -90,7 +90,7 @@
         "concurrency": {"type": "integer", "minimum": 1, "maximum": 1000},
         "tenantConcurrency": {"type": "integer", "minimum": 1, "maximum": 1000},
         "hostConcurrency": {"type": "integer", "minimum": 1, "maximum": 1000},
-        "location": {"type": "string", "description": "MAIAK_WORKER_LOCATION, rendered only when set (L-101)"},
+        "location": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", "maxLength": 63, "description": "MAIAK_WORKER_LOCATION: DNS label"},
         "resources": {"$ref": "#/definitions/resources"}
       }
     },

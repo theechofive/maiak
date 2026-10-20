@@ -128,7 +128,7 @@ def check(path):
         fail("no worker Deployment")
     if ADMIN_ENV & set(worker) or any(n.startswith("MAIAK_ENCRYPTION_") for n in worker):
         fail("worker has admin credentials or encryption keys")
-    for n in ("MAIAK_WORKER_CLAIM_BATCH", "MAIAK_WORKER_CONCURRENCY", "MAIAK_WORKER_TENANT_CONCURRENCY", "MAIAK_WORKER_HOST_CONCURRENCY"):
+    for n in ("MAIAK_WORKER_CLAIM_BATCH", "MAIAK_WORKER_CONCURRENCY", "MAIAK_WORKER_TENANT_CONCURRENCY", "MAIAK_WORKER_HOST_CONCURRENCY", "MAIAK_WORKER_LOCATION"):
         if n not in worker:
             fail(f"worker lacks {n}")
     api, jobs = env_of("api"), env_of("jobs")

@@ -37,7 +37,7 @@ Source of truth: `backend/internal/platform/config/config.go`.
 | `MAIAK_PUBLIC_URL` (`config.publicUrl`, default `https://maiak.klr-ops.net`) | x | | x | | |
 | `MAIAK_BLOCKED_CIDRS` (`config.blockedCIDRs`, only rendered when non-empty) | x | x | x | | |
 | `MAIAK_WORKER_CLAIM_BATCH`, `_CONCURRENCY`, `_TENANT_CONCURRENCY`, `_HOST_CONCURRENCY` | | x | | | |
-| `MAIAK_WORKER_LOCATION` (only when `worker.location` is set, L-101) | | x | | | |
+| `MAIAK_WORKER_LOCATION` (`worker.location`, default `home-eu-central-1`) | | x | | | |
 | `MAIAK_MIGRATE_DATABASE_URL` (`owner_url`) | | | | x | |
 | `MAIAK_BOOTSTRAP_*` (admin login from the hook ExternalSecret) | | | | | x |
 

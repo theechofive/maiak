@@ -91,6 +91,8 @@ jobs:
               - '.github/workflows/ci.yml'
             helm:
               - 'deploy/helm/**'
+              - 'scripts/validate-chart.sh'
+              - 'scripts/check-rendered-chart.py'
               - '.github/workflows/ci.yml'
             web:
               - 'web/**'
@@ -225,14 +227,24 @@ jobs:
         with:
           persist-credentials: false
       - uses: azure/setup-helm@v4 # TODO(L-019) pin to SHA
-      - name: Lint
+      - name: Install PyYAML (chart invariant checks)
         run: |
-          helm lint deploy/helm/maiak
-          helm lint deploy/helm/maiak -f deploy/helm/maiak/values-platform.yaml
-          helm lint deploy/helm/maiak -f deploy/helm/maiak/values-platform.yaml --set web.enabled=true
-          helm lint deploy/helm/maiak -f deploy/helm/maiak/values-platform.yaml --set dbBootstrap.enabled=false
-      - name: Template
+          python3 -m venv "${RUNNER_TEMP}/venv"
+          "${RUNNER_TEMP}/venv/bin/pip" install --quiet pyyaml==6.0.2
+          echo "${RUNNER_TEMP}/venv/bin" >> "$GITHUB_PATH"
+      - name: Install kubeconform (pinned, checksum verified)
+        env:
+          KUBECONFORM_VERSION: v0.8.0
+          # linux-amd64 line of the CHECKSUMS file of the release above.
+          KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
         run: |
-          helm template maiak deploy/helm/maiak -n maiak -f deploy/helm/maiak/values-platform.yaml > /dev/null
-          helm template maiak deploy/helm/maiak -n maiak -f deploy/helm/maiak/values-platform.yaml --set web.enabled=true > /dev/null
-          helm template maiak deploy/helm/maiak -n maiak -f deploy/helm/maiak/values-platform.yaml --set dbBootstrap.enabled=false > /dev/null
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/kubeconform"
+          mkdir -p "$dir"
+          curl -fsSL -o "$dir/kubeconform.tar.gz" \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  $dir/kubeconform.tar.gz" | sha256sum --check --strict
+          tar -xzf "$dir/kubeconform.tar.gz" -C "$dir" kubeconform
+          echo "$dir" >> "$GITHUB_PATH"
+      - name: Validate chart (helm lint, helm template, invariants, kubeconform)
+        run: bash scripts/validate-chart.sh

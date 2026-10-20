@@ -137,10 +137,8 @@ keys (ADR-0016, L-042). Arg: root context
   value: {{ $w.tenantConcurrency | quote }}
 - name: MAIAK_WORKER_HOST_CONCURRENCY
   value: {{ $w.hostConcurrency | quote }}
-{{- with $w.location }}
 - name: MAIAK_WORKER_LOCATION
-  value: {{ . | quote }}
-{{- end }}
+  value: {{ required "worker.location is required" $w.location | quote }}
 {{- end }}
 
 {{/*

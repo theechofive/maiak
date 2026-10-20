@@ -113,8 +113,8 @@ worker:
   concurrency: 50
   tenantConcurrency: 5
   hostConcurrency: 2
-  # MAIAK_WORKER_LOCATION: rendered only when set (L-101: the backend does not read it yet).
-  location: ""
+  # MAIAK_WORKER_LOCATION: probe_locations code whose checks this worker runs (a DNS label).
+  location: home-eu-central-1
   resources:
     requests: {cpu: 50m, memory: 96Mi}
     limits: {cpu: 500m, memory: 384Mi}
