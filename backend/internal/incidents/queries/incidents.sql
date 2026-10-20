@@ -28,8 +28,9 @@ SET current_incident_id = NULL
 WHERE tenant_id = @tenant_id AND monitor_id = @monitor_id;
 
 -- name: InsertIncident :exec
-INSERT INTO incidents (id, tenant_id, started_at, reason)
-VALUES (@id, @tenant_id, @started_at, @reason);
+-- monitor_id carries the partial unique index that allows one open incident per monitor.
+INSERT INTO incidents (id, tenant_id, monitor_id, started_at, reason)
+VALUES (@id, @tenant_id, @monitor_id, @started_at, @reason);
 
 -- name: InsertIncidentMonitor :exec
 INSERT INTO incident_monitors (tenant_id, incident_id, monitor_id)

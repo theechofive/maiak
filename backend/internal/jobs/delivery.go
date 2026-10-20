@@ -82,6 +82,8 @@ type delivery struct {
 	ChannelID uuid.UUID
 	Payload   []byte
 	Attempts  int
+	// Token fences finish_delivery: only the holder of this claim can record its outcome.
+	Token uuid.UUID
 }
 
 // NewDeliverer returns a Deliverer.
@@ -177,14 +179,14 @@ func (r *Deliverer) claim(ctx context.Context, n int) ([]delivery, error) {
 	defer cancel()
 	var out []delivery
 	err := db.WithTx(ctx, r.d.Pool, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT id, tenant_id, kind, monitor_id, channel_id, payload, attempts FROM claim_deliveries($1)`, n)
+		rows, err := tx.Query(ctx, `SELECT id, tenant_id, kind, monitor_id, channel_id, payload, attempts, claim_token FROM claim_deliveries($1)`, n)
 		if err != nil {
 			return err
 		}
 		out, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (delivery, error) {
 			var dl delivery
 			var attempts int32
-			err := row.Scan(&dl.ID, &dl.TenantID, &dl.Kind, &dl.MonitorID, &dl.ChannelID, &dl.Payload, &attempts)
+			err := row.Scan(&dl.ID, &dl.TenantID, &dl.Kind, &dl.MonitorID, &dl.ChannelID, &dl.Payload, &attempts, &dl.Token)
 			dl.Attempts = int(attempts)
 			return dl, err
 		})
@@ -258,7 +260,7 @@ func (r *Deliverer) finish(ctx context.Context, log *slog.Logger, dl delivery, o
 	}
 	var recorded bool
 	err := r.tenantTx(ctx, dl.TenantID, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `SELECT finish_delivery($1, $2, $3, $4)`, dl.ID, o.status, errText, retryAt).Scan(&recorded); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT finish_delivery($1, $2, $3, $4, $5)`, dl.ID, dl.Token, o.status, errText, retryAt).Scan(&recorded); err != nil {
 			return err
 		}
 		if recorded && o.failChannel {
@@ -275,7 +277,7 @@ func (r *Deliverer) finish(ctx context.Context, log *slog.Logger, dl delivery, o
 		return
 	}
 	if !recorded {
-		log.WarnContext(ctx, "delivery lease was lost before finishing")
+		log.WarnContext(ctx, "delivery claim was lost before finishing (lease expired or claimed again)")
 		return
 	}
 	label := o.status

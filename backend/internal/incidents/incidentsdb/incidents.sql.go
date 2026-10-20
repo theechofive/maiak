@@ -104,21 +104,24 @@ func (q *Queries) InsertDelivery(ctx context.Context, arg InsertDeliveryParams) 
 }
 
 const insertIncident = `-- name: InsertIncident :exec
-INSERT INTO incidents (id, tenant_id, started_at, reason)
-VALUES ($1, $2, $3, $4)
+INSERT INTO incidents (id, tenant_id, monitor_id, started_at, reason)
+VALUES ($1, $2, $3, $4, $5)
 `
 
 type InsertIncidentParams struct {
 	ID        uuid.UUID
 	TenantID  uuid.UUID
+	MonitorID *uuid.UUID
 	StartedAt time.Time
 	Reason    *string
 }
 
+// monitor_id carries the partial unique index that allows one open incident per monitor.
 func (q *Queries) InsertIncident(ctx context.Context, arg InsertIncidentParams) error {
 	_, err := q.db.Exec(ctx, insertIncident,
 		arg.ID,
 		arg.TenantID,
+		arg.MonitorID,
 		arg.StartedAt,
 		arg.Reason,
 	)

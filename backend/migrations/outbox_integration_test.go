@@ -46,18 +46,23 @@ func TestIntegrationOutbox(t *testing.T) {
 	resolved1 := deliver(tenantA, m1, channelA, "resolved", &incident)
 	tls2 := deliver(tenantB, m2, channelB, "tls_expiring", nil)
 
-	type claimed struct{ id, monitor, kind string }
+	type claimed struct{ id, monitor, kind, token string }
+	// tokens holds the claim token of the latest claim of each row.
+	tokens := map[string]string{}
 	claimOn := func(q interface {
 		Query(context.Context, string, ...any) (pgx.Rows, error)
 	}, n int) []claimed {
 		t.Helper()
-		rows, _ := q.Query(ctx, `SELECT id::text, monitor_id::text, kind FROM claim_deliveries($1) ORDER BY created_at, id`, n)
+		rows, _ := q.Query(ctx, `SELECT id::text, monitor_id::text, kind, claim_token::text FROM claim_deliveries($1) ORDER BY created_at, id`, n)
 		out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (claimed, error) {
 			var c claimed
-			return c, r.Scan(&c.id, &c.monitor, &c.kind)
+			return c, r.Scan(&c.id, &c.monitor, &c.kind, &c.token)
 		})
 		if err != nil {
 			t.Fatalf("claim: %v", err)
+		}
+		for _, c := range out {
+			tokens[c.id] = c.token
 		}
 		return out
 	}
@@ -71,7 +76,7 @@ func TestIntegrationOutbox(t *testing.T) {
 	finish := func(id, status, errText, retry string) bool {
 		t.Helper()
 		var ok bool
-		if err := worker.QueryRow(ctx, `SELECT finish_delivery($1, $2, $3, `+retry+`)`, id, status, errText).Scan(&ok); err != nil {
+		if err := worker.QueryRow(ctx, `SELECT finish_delivery($1, $2, $3, $4, `+retry+`)`, id, tokens[id], status, errText).Scan(&ok); err != nil {
 			t.Fatalf("finish %s: %v", status, err)
 		}
 		return ok
@@ -131,7 +136,7 @@ func TestIntegrationOutbox(t *testing.T) {
 	})
 
 	t.Run("concurrent claimers get disjoint rows", func(t *testing.T) {
-		pgtest.MustExec(t, admin, `UPDATE notification_deliveries SET status = 'sent', sent_at = now(), lease_until = NULL WHERE status = 'in_progress'`)
+		pgtest.MustExec(t, admin, `UPDATE notification_deliveries SET status = 'sent', sent_at = now(), lease_until = NULL, claim_token = NULL WHERE status = 'in_progress'`)
 		var want []string
 		for range 5 {
 			want = append(want, deliver(tenantA, seedMonitor(t, admin, tenantA, "now()", false, false), channelA, "tls_expiring", nil))
@@ -157,12 +162,12 @@ func TestIntegrationOutbox(t *testing.T) {
 	})
 
 	t.Run("grants and arguments", func(t *testing.T) {
-		for _, stmt := range []string{`SELECT * FROM claim_deliveries(1)`, `SELECT finish_delivery(gen_random_uuid(), 'sent', '', NULL)`} {
+		for _, stmt := range []string{`SELECT * FROM claim_deliveries(1)`, `SELECT finish_delivery(gen_random_uuid(), gen_random_uuid(), 'sent', '', NULL)`} {
 			if _, err := api.Exec(ctx, stmt); err == nil || !strings.Contains(err.Error(), "permission denied") {
 				t.Errorf("api %s: err = %v, want permission denied", stmt, err)
 			}
 		}
-		for _, stmt := range []string{`SELECT finish_delivery(gen_random_uuid(), 'bogus', '', NULL)`, `SELECT finish_delivery(gen_random_uuid(), 'pending', '', NULL)`} {
+		for _, stmt := range []string{`SELECT finish_delivery(gen_random_uuid(), gen_random_uuid(), 'bogus', '', NULL)`, `SELECT finish_delivery(gen_random_uuid(), gen_random_uuid(), 'pending', '', NULL)`} {
 			if _, err := worker.Exec(ctx, stmt); err == nil || !strings.Contains(err.Error(), "finish_delivery") {
 				t.Errorf("worker %s: err = %v, want an argument error", stmt, err)
 			}

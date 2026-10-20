@@ -131,13 +131,14 @@ type Job struct {
 	NextRunAt time.Time
 }
 
-// Claim leases up to n due jobs across all tenants through claim_due_monitors (a SECURITY
-// DEFINER function, so it runs outside a tenant transaction).
-func (s *Service) Claim(ctx context.Context, pool *db.Pool, n int) ([]Job, error) {
+// Claim leases up to n due jobs of location (a probe_locations code) across all active tenants
+// through claim_due_monitors (a SECURITY DEFINER function, so it runs outside a tenant
+// transaction).
+func (s *Service) Claim(ctx context.Context, pool *db.Pool, n int, location string) ([]Job, error) {
 	var jobs []Job
 	err := db.WithTx(ctx, pool, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `SELECT tenant_id, monitor_id, location_id, lease_token, lease_until, url, expected_status,
-			failure_threshold, interval_seconds, timeout_seconds, next_run_at FROM claim_due_monitors($1)`, n)
+			failure_threshold, interval_seconds, timeout_seconds, next_run_at FROM claim_due_monitors($1, $2)`, n, location)
 		if err != nil {
 			return err
 		}

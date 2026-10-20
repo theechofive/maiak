@@ -126,7 +126,7 @@ func (s *Service) ApplyResult(ctx context.Context, tx pgx.Tx, in ResultInput) (m
 		id := uuidv7.New()
 		incidentID, startedAt = &id, in.Result.CheckedAt.UTC()
 		if err := q.InsertIncident(ctx, incidentsdb.InsertIncidentParams{
-			ID: id, TenantID: in.TenantID, StartedAt: startedAt, Reason: nonEmpty(in.Result.ErrorKind),
+			ID: id, TenantID: in.TenantID, MonitorID: &in.MonitorID, StartedAt: startedAt, Reason: nonEmpty(in.Result.ErrorKind),
 		}); err != nil {
 			return machine.Output{}, fmt.Errorf("incidents: open: %w", err)
 		}

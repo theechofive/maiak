@@ -112,6 +112,9 @@ type Worker struct {
 	Concurrency       int
 	TenantConcurrency int
 	HostConcurrency   int
+	// Location is the probe_locations code whose checks this worker runs
+	// (MAIAK_WORKER_LOCATION, default home-eu-central-1).
+	Location string
 }
 
 // Jobs is the configuration of cmd/jobs.
@@ -178,6 +181,7 @@ func LoadWorker(lookup LookupFunc) (Worker, error) {
 		Concurrency:       l.integer("MAIAK_WORKER_CONCURRENCY", 50, 1, 1000),
 		TenantConcurrency: l.integer("MAIAK_WORKER_TENANT_CONCURRENCY", 5, 1, 1000),
 		HostConcurrency:   l.integer("MAIAK_WORKER_HOST_CONCURRENCY", 2, 1, 1000),
+		Location:          l.dnsLabel("MAIAK_WORKER_LOCATION", "home-eu-central-1"),
 	}
 	return cfg, l.err()
 }

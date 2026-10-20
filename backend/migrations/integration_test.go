@@ -39,14 +39,17 @@ func TestIntegrationMigrateFromScratchAndRerun(t *testing.T) {
 // definerAllowList names every SECURITY DEFINER function and the roles allowed to execute it.
 // A new definer function fails the lint until it is reviewed and added here (ADR-0016).
 var definerAllowList = map[string][]string{
-	"auth_lookup_session":     {"maiak_api"},
-	"ensure_partitions":       {"maiak_worker"},
-	"claim_due_monitors":      {"maiak_worker"},
-	"compute_rollups":         {"maiak_worker"},
-	"drop_expired_partitions": {"maiak_worker"},
-	"purge_expired_sessions":  {"maiak_worker"},
-	"claim_deliveries":        {"maiak_worker"},
-	"finish_delivery":         {"maiak_worker"},
+	"auth_lookup_session": {"maiak_api"},
+	"ensure_partitions":   {"maiak_worker"},
+	"claim_due_monitors":  {"maiak_worker"},
+	"compute_rollups":     {"maiak_worker"},
+	// Retention in three steps driven by jobs (ADR-0060).
+	"list_droppable_partitions": {"maiak_worker"},
+	"detach_expired_partition":  {"maiak_worker"},
+	"drop_detached_partition":   {"maiak_worker"},
+	"purge_expired_sessions":    {"maiak_worker"},
+	"claim_deliveries":          {"maiak_worker"},
+	"finish_delivery":           {"maiak_worker"},
 	// Outbox backlog gauge of jobs (ADR-0051).
 	"outbox_pending": {"maiak_worker"},
 	// Pause, resume and URL change reset the schedule within the caller's tenant (ADR-0018).

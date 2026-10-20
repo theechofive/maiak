@@ -180,7 +180,7 @@ func TestIntegrationCrashedWorkerLeaseExpires(t *testing.T) {
 	e := newEnv(t, "workercrash")
 	m := e.monitor(tenantA, "https://crash.example.com/", 2)
 	// A worker claims the job and dies without writing anything.
-	jobs, err := scheduler.New().Claim(e.ctx, e.Pool(t, e.WorkerURL, 1), 10)
+	jobs, err := scheduler.New().Claim(e.ctx, e.Pool(t, e.WorkerURL, 1), 10, scheduler.HomeLocationCode)
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("claim: %v %v", jobs, err)
 	}

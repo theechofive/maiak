@@ -2,6 +2,8 @@ package jobs
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -20,6 +22,9 @@ type Task struct {
 	// LockKey is the pg_try_advisory_xact_lock key; unique per task.
 	LockKey int64
 	Run     func(ctx context.Context, tx pgx.Tx, now time.Time) (int, error)
+	// RunOutsideTx, when set, replaces Run for tasks whose steps need their own transactions. It
+	// runs on other pool connections while the advisory lock transaction stays open.
+	RunOutsideTx func(ctx context.Context, pool *db.Pool, now time.Time) (int, error)
 }
 
 // Advisory lock keys of the tasks. Constants in their own range, so they cannot collide with
@@ -40,7 +45,7 @@ func DefaultTasks() []Task {
 	return []Task{
 		{Name: "ensure_partitions", Every: 24 * time.Hour, LockKey: lockEnsurePartitions, Run: scalar(`SELECT ensure_partitions()`)},
 		{Name: "compute_rollups", Every: 5 * time.Minute, LockKey: lockComputeRollups, Run: computeRollups},
-		{Name: "drop_expired_partitions", Every: 24 * time.Hour, LockKey: lockDropPartitions, Run: scalar(`SELECT drop_expired_partitions()`)},
+		{Name: "drop_expired_partitions", Every: 24 * time.Hour, LockKey: lockDropPartitions, RunOutsideTx: dropExpiredPartitions},
 		{Name: "purge_expired_sessions", Every: time.Hour, LockKey: lockPurgeSessions, Run: scalar(`SELECT purge_expired_sessions()`)},
 	}
 }
@@ -60,6 +65,61 @@ func computeRollups(ctx context.Context, tx pgx.Tx, now time.Time) (int, error) 
 	var n int32
 	err := tx.QueryRow(ctx, `SELECT compute_rollups($1, $2)`, to.Add(-RollupLookback), to).Scan(&n)
 	return int(n), err
+}
+
+// dropExpiredPartitions is the retention of ADR-0060: list the expired partitions, then detach
+// and drop each in its own short transaction, so the ACCESS EXCLUSIVE lock the detach needs on
+// check_results is held only for that one catalog change. A partition whose rollups are not
+// complete is kept; one detached by an interrupted run is listed again and dropped. Errors of
+// one partition do not stop the others.
+func dropExpiredPartitions(ctx context.Context, pool *db.Pool, _ time.Time) (int, error) {
+	type candidate struct {
+		name     string
+		detached bool
+	}
+	var cands []candidate
+	err := db.WithTx(ctx, pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT name, detached FROM list_droppable_partitions()`)
+		if err != nil {
+			return err
+		}
+		cands, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (candidate, error) {
+			var c candidate
+			return c, r.Scan(&c.name, &c.detached)
+		})
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("list droppable partitions: %w", err)
+	}
+	call := func(sql, name string) (bool, error) {
+		var ok bool
+		err := db.WithTx(ctx, pool, func(tx pgx.Tx) error { return tx.QueryRow(ctx, sql, name).Scan(&ok) })
+		return ok, err
+	}
+	dropped := 0
+	var errs []error
+	for _, c := range cands {
+		if !c.detached {
+			ok, err := call(`SELECT detach_expired_partition($1)`, c.name)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("detach %s: %w", c.name, err))
+				continue
+			}
+			if !ok {
+				continue // rollups incomplete: kept until compute_rollups covers it
+			}
+		}
+		ok, err := call(`SELECT drop_detached_partition($1)`, c.name)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("drop %s: %w", c.name, err))
+			continue
+		}
+		if ok {
+			dropped++
+		}
+	}
+	return dropped, errors.Join(errs...)
 }
 
 // Housekeeper runs the tasks: each once at start, then every Task.Every.
@@ -138,7 +198,11 @@ func (h *Housekeeper) RunTask(parent context.Context, t Task) string {
 			return err
 		}
 		var err error
-		n, err = t.Run(ctx, tx, start)
+		if t.RunOutsideTx != nil {
+			n, err = t.RunOutsideTx(ctx, h.pool, start)
+		} else {
+			n, err = t.Run(ctx, tx, start)
+		}
 		return err
 	})
 	result := resultOK

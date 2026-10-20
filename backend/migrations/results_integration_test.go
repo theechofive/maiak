@@ -289,13 +289,7 @@ func TestIntegrationResults(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		drop := func() int {
-			var n int
-			if err := worker.QueryRow(ctx, `SELECT drop_expired_partitions()`).Scan(&n); err != nil {
-				t.Fatal(err)
-			}
-			return n
-		}
+		drop := func() int { return retention(t, worker) }
 		m4, m3 := monthStart(dbNow, -4), monthStart(dbNow, -3)
 		for i := range 3 {
 			insertAt(m4, 3600*i)
@@ -379,7 +373,7 @@ func TestIntegrationClaimDueMonitors(t *testing.T) {
 		Query(context.Context, string, ...any) (pgx.Rows, error)
 	}, n int) []claim {
 		rows, _ := q.Query(ctx, `SELECT tenant_id::text, monitor_id::text, lease_token::text, url, expected_status, failure_threshold,
-			interval_seconds, timeout_seconds, lease_until, next_run_at FROM claim_due_monitors($1)`, n)
+			interval_seconds, timeout_seconds, lease_until, next_run_at FROM claim_due_monitors($1, 'home-eu-central-1')`, n)
 		out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (claim, error) {
 			var c claim
 			err := r.Scan(&c.tenant, &c.monitor, &c.token, &c.url, &c.expected, &c.threshold, &c.interval, &c.timeout, &c.leaseUntil, &c.nextRun)
@@ -504,10 +498,48 @@ func TestIntegrationClaimDueMonitors(t *testing.T) {
 
 	t.Run("api may not claim", func(t *testing.T) {
 		api := env.Conn(t, env.APIURL)
-		if _, err := api.Exec(ctx, `SELECT * FROM claim_due_monitors(1)`); err == nil || !strings.Contains(err.Error(), "permission denied") {
+		if _, err := api.Exec(ctx, `SELECT * FROM claim_due_monitors(1, 'home-eu-central-1')`); err == nil || !strings.Contains(err.Error(), "permission denied") {
 			t.Fatalf("api claim: err = %v, want permission denied", err)
 		}
 	})
+}
+
+// retention runs the three retention steps the way jobs does (ADR-0060) and returns the number
+// of partitions dropped.
+func retention(t *testing.T, worker *pgx.Conn) int {
+	t.Helper()
+	ctx := context.Background()
+	rows, _ := worker.Query(ctx, `SELECT name, detached FROM list_droppable_partitions()`)
+	type cand struct {
+		name     string
+		detached bool
+	}
+	cands, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (cand, error) {
+		var c cand
+		return c, r.Scan(&c.name, &c.detached)
+	})
+	if err != nil {
+		t.Fatalf("list_droppable_partitions: %v", err)
+	}
+	n := 0
+	for _, c := range cands {
+		var ok bool
+		if !c.detached {
+			if err := worker.QueryRow(ctx, `SELECT detach_expired_partition($1)`, c.name).Scan(&ok); err != nil {
+				t.Fatalf("detach %s: %v", c.name, err)
+			}
+			if !ok {
+				continue
+			}
+		}
+		if err := worker.QueryRow(ctx, `SELECT drop_detached_partition($1)`, c.name).Scan(&ok); err != nil {
+			t.Fatalf("drop %s: %v", c.name, err)
+		}
+		if ok {
+			n++
+		}
+	}
+	return n
 }
 
 func execInTenant(t *testing.T, conn *pgx.Conn, tenant, stmt string) (int64, error) {

@@ -53,6 +53,9 @@ type Config struct {
 	// DrainTimeout is how long shutdown waits for checks in flight before abandoning them
 	// (their leases expire and another worker repeats them).
 	DrainTimeout time.Duration
+	// Location is the probe_locations code this worker claims for (default
+	// scheduler.HomeLocationCode).
+	Location string
 }
 
 // Deps are the worker's collaborators.
@@ -89,6 +92,7 @@ func New(cfg Config, d Deps) *Worker {
 	cfg.DrainTimeout = orDefault(cfg.DrainTimeout, DefaultDrainTimeout)
 	cfg.FlushSize = orDefault(cfg.FlushSize, DefaultFlushSize)
 	cfg.ClaimBatch = max(cfg.ClaimBatch, 1)
+	cfg.Location = orDefault(cfg.Location, scheduler.HomeLocationCode)
 	if d.Clock == nil {
 		d.Clock = clock.System{}
 	}
@@ -120,7 +124,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		w.batch.loop(flushCtx, w.cfg.FlushInterval, func(items []outcome) { w.flush(base, items) })
 	}()
 
-	w.d.Log.Info("worker started", "concurrency", w.cfg.Concurrency, "claim_batch", w.cfg.ClaimBatch)
+	w.d.Log.Info("worker started", "concurrency", w.cfg.Concurrency, "claim_batch", w.cfg.ClaimBatch, "location", w.cfg.Location)
 	tick := time.NewTicker(w.cfg.PollInterval)
 	defer tick.Stop()
 	for {
@@ -167,7 +171,7 @@ func (w *Worker) tick(ctx, checkCtx context.Context) {
 	if free <= 0 || ctx.Err() != nil {
 		return
 	}
-	jobs, err := w.d.Scheduler.Claim(ctx, w.d.Pool, min(w.cfg.ClaimBatch, free))
+	jobs, err := w.d.Scheduler.Claim(ctx, w.d.Pool, min(w.cfg.ClaimBatch, free), w.cfg.Location)
 	if err != nil {
 		w.d.Metrics.claimErrors.Inc()
 		w.d.Log.ErrorContext(ctx, "claim failed", "error", err)

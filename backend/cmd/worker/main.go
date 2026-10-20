@@ -58,7 +58,7 @@ func run() error {
 	w := worker.New(worker.Config{
 		ClaimBatch: cfg.ClaimBatch, Concurrency: cfg.Concurrency,
 		TenantConcurrency: cfg.TenantConcurrency, HostConcurrency: cfg.HostConcurrency,
-		DrainTimeout: cfg.ShutdownTimeout,
+		DrainTimeout: cfg.ShutdownTimeout, Location: cfg.Location,
 	}, worker.Deps{
 		Pool: pool, Scheduler: sched, Incidents: incidents.NewService(sched),
 		Prober: checks.NewHTTPSProber(client), Metrics: worker.NewMetrics(reg), Log: log,

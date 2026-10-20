@@ -205,8 +205,16 @@ func TestLoadWorkerLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ClaimBatch != 100 || cfg.Concurrency != 50 || cfg.TenantConcurrency != 5 || cfg.HostConcurrency != 2 {
-		t.Fatalf("defaults = %d %d %d %d", cfg.ClaimBatch, cfg.Concurrency, cfg.TenantConcurrency, cfg.HostConcurrency)
+	if cfg.ClaimBatch != 100 || cfg.Concurrency != 50 || cfg.TenantConcurrency != 5 || cfg.HostConcurrency != 2 || cfg.Location != "home-eu-central-1" {
+		t.Fatalf("defaults = %d %d %d %d %q", cfg.ClaimBatch, cfg.Concurrency, cfg.TenantConcurrency, cfg.HostConcurrency, cfg.Location)
+	}
+	e["MAIAK_WORKER_LOCATION"] = "Home_EU"
+	if _, err := LoadWorker(env(e)); err == nil || !strings.Contains(err.Error(), "MAIAK_WORKER_LOCATION") {
+		t.Fatalf("invalid location accepted: %v", err)
+	}
+	e["MAIAK_WORKER_LOCATION"] = "aws-us-east-1"
+	if cfg, err := LoadWorker(env(e)); err != nil || cfg.Location != "aws-us-east-1" {
+		t.Fatalf("location = %q, err %v", cfg.Location, err)
 	}
 	e["MAIAK_WORKER_CONCURRENCY"] = "20"
 	e["MAIAK_WORKER_HOST_CONCURRENCY"] = "0"
