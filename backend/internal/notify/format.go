@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -61,8 +62,8 @@ func Format(kind string, raw []byte, publicURL string) (string, error) {
 func FormatOpened(p Payload, publicURL string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, ":red_circle: *%s* is down", Escape(p.MonitorName))
-	if p.URL != "" {
-		b.WriteString("\n" + Escape(p.URL))
+	if u := DisplayURL(p.URL); u != "" {
+		b.WriteString("\n" + Escape(u))
 	}
 	reason := p.Reason
 	if reason == "" {
@@ -74,6 +75,20 @@ func FormatOpened(p Payload, publicURL string) string {
 	}
 	fmt.Fprintf(&b, "\n<%s/monitors/%s|Open in Maiak>", Escape(publicURL), p.MonitorID)
 	return b.String()
+}
+
+// DisplayURL is the monitor URL as shown in Slack: scheme, host and path only. The query string
+// and fragment often carry tokens or API keys, and a Slack channel is a wider audience than the
+// dashboard. An unparsable URL is not shown at all.
+func DisplayURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path, RawPath: u.RawPath}).String()
 }
 
 // FormatResolved: `:large_green_circle: *{name}* is back up after {duration}`.

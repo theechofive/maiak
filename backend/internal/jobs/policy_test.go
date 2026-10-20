@@ -43,8 +43,10 @@ func TestDecide(t *testing.T) {
 			outcome{status: statusPending, errKind: "rate_limited", retryAt: now.Add(30 * time.Second)}},
 		{"404 permanent, channel failed", 0, &notify.SendError{Kind: notify.KindNotFound, Status: 404, Permanent: true},
 			outcome{status: statusFailed, errKind: "webhook_not_found", failChannel: true}},
-		{"invalid url permanent, channel kept", 0, &notify.SendError{Kind: notify.KindInvalidURL, Permanent: true},
-			outcome{status: statusFailed, errKind: "invalid_url"}},
+		{"invalid url permanent, channel failed", 0, &notify.SendError{Kind: notify.KindInvalidURL, Permanent: true},
+			outcome{status: statusFailed, errKind: "invalid_url", failChannel: true}},
+		{"another permanent kind keeps the channel", 0, &notify.SendError{Kind: notify.KindOther, Permanent: true},
+			outcome{status: statusFailed, errKind: "other"}},
 		{"foreign error is other, never its text", 0, errors.New("dial tcp 10.0.0.1:443: https://hooks.slack.com/services/x"),
 			outcome{status: statusPending, errKind: "other", retryAt: now.Add(time.Second)}},
 	}

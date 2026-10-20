@@ -16,6 +16,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/incidents"
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/notify"
+	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
 	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
@@ -54,7 +55,7 @@ func (f *fakeSlack) Send(_ context.Context, u, _ string) error {
 }
 
 // newSlackServer is newServer with the Slack settings wired and the log captured.
-func newSlackServer(t *testing.T, env *pgtest.Env, sender *fakeSlack, logs *lockedBuffer) *client {
+func newSlackServer(t *testing.T, env *pgtest.Env, sender *fakeSlack, logs *lockedBuffer, clk clock.Clock) *client {
 	t.Helper()
 	ctx := context.Background()
 	pool := env.Pool(t, env.APIURL, 4)
@@ -77,7 +78,7 @@ func newSlackServer(t *testing.T, env *pgtest.Env, sender *fakeSlack, logs *lock
 	sched := scheduler.New()
 	h, err := api.NewHandler(api.Config{Version: "test", Commit: "test", CookieSecure: true, TrustedProxyHops: 1}, api.Deps{
 		Auth: svc, Monitors: monitors.NewService(pool, sched, incidents.NewService(sched)),
-		Slack: notify.NewService(pool, keys, sender, "https://maiak.example.com"), Logger: log,
+		Slack: notify.NewService(pool, keys, sender, "https://maiak.example.com"), Logger: log, Clock: clk,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -91,11 +92,13 @@ func TestIntegrationSlackSettingsAPI(t *testing.T) {
 	env := pgtest.New(t, pgtest.DBName("apislack"))
 	sender := &fakeSlack{}
 	logs := &lockedBuffer{}
-	c := newSlackServer(t, env, sender, logs)
+	clk := clock.NewFake(time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	c := newSlackServer(t, env, sender, logs, clk)
 	cookie, csrf := c.login()
 	unsafe := withCSRF(cookie, csrf)
 	var bodies []string
-	record := func(r response) response { bodies = append(bodies, r.raw); return r }
+	// Every call of the test endpoint first waits out the per-tenant limit of one per 5 s.
+	record := func(r response) response { bodies = append(bodies, r.raw); clk.Advance(5 * time.Second); return r }
 
 	if r := record(c.do(http.MethodGet, "/api/v1/settings/slack", "", nil)); r.code != http.StatusUnauthorized {
 		t.Fatalf("get without session: %d", r.code)
@@ -171,5 +174,42 @@ func TestIntegrationSlackSettingsAPI(t *testing.T) {
 	}
 	if logs.String() == "" {
 		t.Fatal("no log output captured")
+	}
+}
+
+// POST /settings/slack/test is limited to one call per 5 s per tenant, whatever the outcome.
+func TestIntegrationSlackTestRateLimit(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("apislacklimit"))
+	sender := &fakeSlack{}
+	clk := clock.NewFake(time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	c := newSlackServer(t, env, sender, &lockedBuffer{}, clk)
+	cookie, csrf := c.login()
+	unsafe := withCSRF(cookie, csrf)
+	if r := c.do(http.MethodPut, "/api/v1/settings/slack", `{"webhookUrl":"`+slackURL+`"}`, unsafe); r.code != 200 {
+		t.Fatalf("put: %d %s", r.code, r.raw)
+	}
+	test := func(hdr map[string]string) response {
+		return c.do(http.MethodPost, "/api/v1/settings/slack/test", "", hdr)
+	}
+	if r := test(unsafe); r.code != http.StatusNoContent {
+		t.Fatalf("first test: %d %s", r.code, r.raw)
+	}
+	clk.Advance(2 * time.Second)
+	r := test(unsafe)
+	if r.code != http.StatusTooManyRequests || r.body["type"] != "urn:maiak:problem:rate-limited" || r.header.Get("Retry-After") != "3" ||
+		!strings.HasPrefix(r.header.Get("Content-Type"), "application/problem+json") {
+		t.Fatalf("second test within 5 s: %d %v %s", r.code, r.header, r.raw)
+	}
+	if len(sender.urls) != 1 {
+		t.Fatalf("limited call reached Slack: %d sends", len(sender.urls))
+	}
+	// Another tenant has its own budget (its call reaches the handler: 409, not configured).
+	other, otherCSRF := otherTenantSession(t, env)
+	if r := test(withCSRF(other, otherCSRF)); r.code != http.StatusConflict {
+		t.Fatalf("other tenant: %d %s", r.code, r.raw)
+	}
+	clk.Advance(3 * time.Second)
+	if r := test(unsafe); r.code != http.StatusNoContent || len(sender.urls) != 2 {
+		t.Fatalf("after 5 s: %d %s, %d sends", r.code, r.raw, len(sender.urls))
 	}
 }

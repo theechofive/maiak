@@ -61,9 +61,20 @@ func (h *HTTP) Middleware(next http.Handler) http.Handler {
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
 		route := httpx.RoutePattern(r)
-		h.requests.WithLabelValues(route, r.Method, strconv.Itoa(sw.status)).Inc()
-		h.duration.WithLabelValues(route, r.Method).Observe(time.Since(start).Seconds())
+		method := MethodLabel(r.Method)
+		h.requests.WithLabelValues(route, method, strconv.Itoa(sw.status)).Inc()
+		h.duration.WithLabelValues(route, method).Observe(time.Since(start).Seconds())
 	})
+}
+
+// MethodLabel bounds the method label: the method is client-chosen (any token is valid HTTP),
+// so anything but the standard methods becomes "other".
+func MethodLabel(m string) string {
+	switch m {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions:
+		return m
+	}
+	return "other"
 }
 
 type statusWriter struct {

@@ -152,6 +152,12 @@ func ValidateName(raw string) (string, string) {
 		if unicode.IsControl(r) {
 			return "", "must not contain control characters"
 		}
+		// Format characters (bidi overrides, zero-width joiners and spaces, the BOM) let a name
+		// render differently from what it contains, in the dashboard and in Slack. This also
+		// rejects emoji joined with U+200D.
+		if unicode.Is(unicode.Cf, r) {
+			return "", "must not contain invisible formatting characters"
+		}
 	}
 	return name, ""
 }

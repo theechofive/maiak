@@ -80,6 +80,34 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+// Every API response, success or problem, carries nosniff and no-store.
+func TestAPIResponsesCarrySecurityHeaders(t *testing.T) {
+	h := newTestHandler(t)
+	jsonCT := map[string]string{"Content-Type": "application/json"}
+	for _, c := range []struct {
+		method, path, body string
+		hdr                map[string]string
+		code               int
+	}{
+		{http.MethodGet, "/api/v1/health", "", nil, http.StatusOK},
+		{http.MethodGet, "/api/v1/nope", "", nil, http.StatusNotFound},
+		{http.MethodDelete, "/api/v1/health", "", nil, http.StatusMethodNotAllowed},
+		{http.MethodGet, "/api/v1/auth/me", "", nil, http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/auth/login", `{"email":1}`, jsonCT, http.StatusBadRequest},
+	} {
+		rec, _ := do(t, h, c.method, c.path, c.body, c.hdr)
+		if rec.Code != c.code {
+			t.Errorf("%s %s: code %d, want %d", c.method, c.path, rec.Code, c.code)
+		}
+		if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("%s %s: X-Content-Type-Options = %q", c.method, c.path, got)
+		}
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("%s %s: Cache-Control = %q", c.method, c.path, got)
+		}
+	}
+}
+
 func TestUnknownRouteIsProblem(t *testing.T) {
 	rec, p := do(t, newTestHandler(t), http.MethodGet, "/api/v1/nope", "", nil)
 	if rec.Code != http.StatusNotFound || p.Type != problemNotFound || p.RequestID == "" {

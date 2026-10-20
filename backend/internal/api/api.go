@@ -22,6 +22,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/auth"
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/notify"
+	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
 	"github.com/theechofive/maiak/backend/internal/platform/metrics"
@@ -36,6 +37,9 @@ const (
 	maxBodyBytes = 64 << 10
 	// xffWarnInterval rate-limits the missing X-Forwarded-For warning.
 	xffWarnInterval = time.Minute
+	// slackTestInterval is the minimum spacing of POST /settings/slack/test per tenant: each call
+	// makes an outbound request to Slack and writes an audit row.
+	slackTestInterval = 5 * time.Second
 )
 
 // Config holds the HTTP-layer settings.
@@ -54,6 +58,8 @@ type Deps struct {
 	Slack    *notify.Service
 	Logger   *slog.Logger
 	Metrics  *metrics.HTTP
+	// Clock drives the in-process rate limits; nil means the system clock.
+	Clock clock.Clock
 }
 
 type server struct {
@@ -67,6 +73,8 @@ type server struct {
 	queries  *queries.Service
 	slack    *notify.Service
 	log      *slog.Logger
+	// slackTests limits Slack test messages per tenant (per api replica, like the login limit).
+	slackTests *auth.Limiter
 	// lastXFFWarn is the UnixNano time of the last missing X-Forwarded-For warning.
 	lastXFFWarn atomic.Int64
 }
@@ -79,14 +87,19 @@ func NewHandler(cfg Config, deps Deps) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("api: load embedded spec: %w", err)
 	}
-	s := &server{cfg: cfg, auth: deps.Auth, monitors: deps.Monitors, queries: deps.Queries, slack: deps.Slack, log: deps.Logger}
+	clk := deps.Clock
+	if clk == nil {
+		clk = clock.System{}
+	}
+	s := &server{cfg: cfg, auth: deps.Auth, monitors: deps.Monitors, queries: deps.Queries, slack: deps.Slack, log: deps.Logger,
+		slackTests: auth.NewLimiter(1, slackTestInterval, 10_000, clk)}
 
 	r := chi.NewRouter()
 	r.Use(httpx.RequestID, httpx.AccessLog(deps.Logger), httpx.Recover(deps.Logger))
 	if deps.Metrics != nil {
 		r.Use(deps.Metrics.Middleware)
 	}
-	r.Use(noStore, httpx.MaxBody(maxBodyBytes), withSessionSlot)
+	r.Use(apiHeaders, httpx.MaxBody(maxBodyBytes), withSessionSlot)
 	r.Use(middleware.OapiRequestValidatorWithOptions(spec, &middleware.Options{
 		// Host matching against `servers` is pointless behind the gateway.
 		DoNotValidateServers: true,
@@ -113,10 +126,12 @@ func NewHandler(cfg Config, deps Deps) (http.Handler, error) {
 	}), nil
 }
 
-// noStore keeps API responses (sessions, CSRF tokens, tenant data) out of shared caches.
-func noStore(next http.Handler) http.Handler {
+// apiHeaders keeps API responses (sessions, CSRF tokens, tenant data) out of shared caches and
+// stops browsers from sniffing a JSON or problem+json body into something executable.
+func apiHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		next.ServeHTTP(w, r)
 	})
 }

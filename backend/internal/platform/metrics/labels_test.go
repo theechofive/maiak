@@ -1,6 +1,8 @@
 package metrics_test
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"regexp"
 	"slices"
@@ -117,6 +119,42 @@ func TestNoHighCardinalityOrSecretLabels(t *testing.T) {
 	// The HTTP metrics label by route template, never by raw path.
 	if got := all["maiak_http_requests_total"]; !slices.Equal(got, []string{"route", "method", "code"}) {
 		t.Errorf("maiak_http_requests_total labels = %v", got)
+	}
+}
+
+// The method label is client-chosen; only the standard methods are kept, the rest is "other".
+func TestHTTPMethodLabelIsBounded(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	h := metrics.NewHTTP(reg).Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	for _, m := range []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT", "PROPFIND", "get", "X-RANDOM-1", "X-RANDOM-2"} {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(m, "/x", nil))
+	}
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mf := range mfs {
+		counts := map[string]float64{}
+		for _, m := range mf.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "method" {
+					counts[l.GetValue()] += m.GetCounter().GetValue() + float64(m.GetHistogram().GetSampleCount())
+				}
+			}
+		}
+		want := map[string]float64{"GET": 1, "HEAD": 1, "POST": 1, "PUT": 1, "PATCH": 1, "DELETE": 1, "OPTIONS": 1, "other": 6}
+		if len(counts) != len(want) {
+			t.Errorf("%s: method labels %v, want %v", mf.GetName(), counts, want)
+			continue
+		}
+		for k, v := range want {
+			if counts[k] != v {
+				t.Errorf("%s: method %q counted %v, want %v", mf.GetName(), k, counts[k], v)
+			}
+		}
+	}
+	if len(mfs) != 2 {
+		t.Fatalf("gathered %d families, want the two HTTP metrics", len(mfs))
 	}
 }
 

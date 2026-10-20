@@ -35,7 +35,8 @@ type outcome struct {
 	// errKind is stored in last_error; never a raw error text.
 	errKind string
 	retryAt time.Time
-	// failChannel marks the channel failed (the webhook was revoked).
+	// failChannel marks the channel failed: the webhook was revoked or the stored URL is invalid,
+	// so every later delivery to it would fail the same way.
 	failChannel bool
 }
 
@@ -54,7 +55,7 @@ func decide(attempts int, sendErr error, now time.Time) outcome {
 		kind = se.Kind + " " + strconv.Itoa(se.Status)
 	}
 	if se.Permanent {
-		return outcome{status: statusFailed, errKind: kind, failChannel: se.Kind == notify.KindNotFound}
+		return outcome{status: statusFailed, errKind: kind, failChannel: se.Kind == notify.KindNotFound || se.Kind == notify.KindInvalidURL}
 	}
 	done := attempts + 1
 	if done >= MaxAttempts {

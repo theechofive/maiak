@@ -481,7 +481,7 @@ paths:
     post:
       operationId: testSlack
       summary: Send a Slack test message
-      description: Sends a test message to the configured webhook. Fails with 409 when no webhook is configured, 429 when Slack rate-limits the webhook and 502 when Slack does not accept the message (Slack's answer is never returned).
+      description: Sends a test message to the configured webhook. Fails with 409 when no webhook is configured, 429 when called again within 5 seconds for the same tenant or when Slack rate-limits the webhook (both with Retry-After), and 502 when Slack does not accept the message (Slack's answer is never returned).
       tags: [settings]
       security:
         - cookieAuth: []
@@ -969,7 +969,7 @@ components:
           type: number
           format: double
           nullable: true
-          description: Average response time of the bucket; null when no check succeeded in it
+          description: Average response time of the checks in the bucket that received a response (failed checks with an HTTP status included); null when none did
         okRatio:
           type: number
           format: double
@@ -988,6 +988,7 @@ components:
           type: number
           format: double
           nullable: true
+          description: Average response time of the checks in the range that received a response (failed checks with an HTTP status included); null when none did
         p95Ms:
           type: number
           format: double

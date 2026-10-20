@@ -3,6 +3,7 @@ package notify
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,9 +60,9 @@ func TestFormatTLS(t *testing.T) {
 }
 
 func TestFormatEscapesControlCharacters(t *testing.T) {
-	p := Payload{MonitorID: monitorID, MonitorName: "<!channel> & <https://evil|click>", URL: "https://a.example/x?a=1&b=<2>", Reason: "a<b"}
+	p := Payload{MonitorID: monitorID, MonitorName: "<!channel> & <https://evil|click>", URL: "https://a.example/a&b/x?a=1&b=<2>", Reason: "a<b"}
 	got := FormatOpened(p, publicURL)
-	want := ":red_circle: *&lt;!channel&gt; &amp; &lt;https://evil|click&gt;* is down\nhttps://a.example/x?a=1&amp;b=&lt;2&gt;\nReason: a&lt;b\n" +
+	want := ":red_circle: *&lt;!channel&gt; &amp; &lt;https://evil|click&gt;* is down\nhttps://a.example/a&amp;b/x\nReason: a&lt;b\n" +
 		"<https://maiak.example.com/monitors/" + monitorID.String() + "|Open in Maiak>"
 	if got != want {
 		t.Fatalf("got\n%s\nwant\n%s", got, want)
@@ -71,6 +72,31 @@ func TestFormatEscapesControlCharacters(t *testing.T) {
 	}
 	if got := Escape("&amp;"); got != "&amp;amp;" {
 		t.Fatalf("double escape: %q", got)
+	}
+}
+
+func TestDisplayURLDropsQueryAndFragment(t *testing.T) {
+	cases := map[string]string{
+		"https://api.example.com/health":                     "https://api.example.com/health",
+		"https://api.example.com/health?token=s3cr3t&x=1":    "https://api.example.com/health",
+		"https://api.example.com/health#access_token=s3cr3t": "https://api.example.com/health",
+		"https://api.example.com/v1/a%2Fb?key=s3cr3t#frag":   "https://api.example.com/v1/a%2Fb",
+		"https://api.example.com?key=s3cr3t":                 "https://api.example.com",
+		"https://api.example.com/?":                          "https://api.example.com/",
+		"https://api.example.com:443/p?q":                    "https://api.example.com:443/p",
+		"https://user:pass@api.example.com/p":                "https://api.example.com/p",
+		"":                                                   "",
+		"not a url":                                          "",
+		"https://api.example.com/%zz?key=s3cr3t":             "",
+	}
+	for in, want := range cases {
+		if got := DisplayURL(in); got != want {
+			t.Errorf("DisplayURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+	got := FormatOpened(Payload{MonitorID: monitorID, MonitorName: "API", URL: "https://api.example.com/h?apikey=s3cr3t#f"}, publicURL)
+	if strings.Contains(got, "s3cr3t") || strings.Contains(got, "#f") || !strings.Contains(got, "\nhttps://api.example.com/h\n") {
+		t.Fatalf("opened message shows the query or fragment: %q", got)
 	}
 }
 

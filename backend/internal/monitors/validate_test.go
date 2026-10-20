@@ -139,6 +139,37 @@ func TestValidateName(t *testing.T) {
 	}
 }
 
+func TestValidateNameFormatCharacters(t *testing.T) {
+	cases := []struct {
+		name, in string
+		ok       bool
+	}{
+		{"right-to-left override", "pay\u202Egnp.exe", false},
+		{"left-to-right embedding", "a\u202Ab", false},
+		{"pop directional formatting", "a\u202Cb", false},
+		{"right-to-left isolate", "a\u2067b\u2069", false},
+		{"left-to-right mark", "a\u200Eb", false},
+		{"zero-width space", "Web\u200Bsite", false},
+		{"zero-width joiner", "a\u200Db", false},
+		{"zero-width non-joiner", "a\u200Cb", false},
+		{"word joiner", "a\u2060b", false},
+		{"byte order mark", "\uFEFFWebsite", false},
+		{"soft hyphen", "Web\u00ADsite", false},
+		{"Arabic letter mark", "a\u061Cb", false},
+		{"tag character", "a\U000E0041b", false},
+		{"plain Cyrillic", "Сайт клієнта", true},
+		{"Arabic letters", "موقع", true},
+		{"emoji with variation selector", "Shop \u2764\uFE0F", true},
+		{"punctuation", "API (EU) - v2 / prod #1", true},
+	}
+	for _, c := range cases {
+		_, msg := ValidateName(c.in)
+		if (msg == "") != c.ok {
+			t.Errorf("%s: ValidateName(%q) msg=%q, want ok=%t", c.name, c.in, msg, c.ok)
+		}
+	}
+}
+
 func TestValidateExpectedStatus(t *testing.T) {
 	for _, ok := range []string{"2xx", "200", "204", "299", "400", "418", "503", "599"} {
 		if msg := ValidateExpectedStatus(ok); msg != "" {

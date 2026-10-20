@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/theechofive/maiak/backend/internal/api/gen"
+	"github.com/theechofive/maiak/backend/internal/auth"
 	"github.com/theechofive/maiak/backend/internal/notify"
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
 )
@@ -39,6 +40,10 @@ func (s *server) TestSlack(ctx context.Context, _ gen.TestSlackRequestObject) (g
 	a, err := s.notifyActor(ctx)
 	if err != nil {
 		return nil, err
+	}
+	// Every call counts, whatever its outcome: the limit protects Slack and the audit log.
+	if ok, wait := s.slackTests.Reserve(a.TenantID.String()); !ok {
+		return nil, &auth.RateLimitedError{RetryAfter: wait}
 	}
 	if err := s.slack.Test(ctx, a); err != nil {
 		return nil, err
