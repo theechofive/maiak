@@ -1,0 +1,12 @@
+:root {
+  --pico-font-size: 100%;
+}
+
+main.container {
+  max-width: 960px;
+}
+
+.placeholder {
+  border: 1px dashed var(--pico-muted-border-color);
+  padding: 1rem;
+}
