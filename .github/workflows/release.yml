@@ -1,6 +1,6 @@
 name: release
 
-# Builds and pushes the multi-arch backend image, then bumps image.tag in values-platform.yaml.
+# Builds and pushes the multi-arch backend and web images, then bumps image.tag / web.image.tag in values-platform.yaml.
 # `paths` (not paths-ignore) is used: GitHub does not allow both on one event. deploy/** is not listed,
 # so the bump commit cannot re-trigger this workflow; it also carries [skip ci].
 on:
@@ -10,6 +10,7 @@ on:
       - backend/**
       - api/**
       - Dockerfile
+      - web/**
   workflow_dispatch:
 
 # Serialise releases; never cancel a run that is pushing an image / bump.
@@ -84,20 +85,19 @@ jobs:
           echo "failed to push image.tag bump after 3 attempts"
           exit 1
 
-  # DISABLED placeholder (ledger L-015): the web/ frontend stack is not chosen yet.
-  # Enable by removing `if: false` once web/ and its nginx Dockerfile exist, then add
-  # web.enabled=true + web.image.tag handling to the bump step.
-  # Kept as a real job (not commented out) so the YAML stays lint-checked; it never runs.
   web-image:
-    if: false
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
-      contents: read
+      contents: write
       packages: write
     env:
       WEB_IMAGE: ghcr.io/theechofive/maiak-web
     steps:
       - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
+      - name: Compute short SHA
+        id: vars
+        run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@v3 # TODO(L-019) pin to SHA
       - uses: docker/setup-buildx-action@v4 # TODO(L-019) pin to SHA
       - uses: docker/login-action@v4 # TODO(L-019) pin to SHA
@@ -110,6 +110,36 @@ jobs:
           context: web
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ env.WEB_IMAGE }}:${{ github.sha }}
+          tags: |
+            ${{ env.WEB_IMAGE }}:${{ steps.vars.outputs.sha }}
+            ${{ env.WEB_IMAGE }}:main
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
+      - name: Bump web.image.tag in values-platform.yaml
+        env:
+          SHA: ${{ steps.vars.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          FILE=deploy/helm/maiak/values-platform.yaml
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+            # Rewrite only `tag:` inside the `image:` block nested under the top-level `web:` block.
+            sed -i '/^web:/,/^[^ #]/ s/^\(    tag: \)"[^"]*"/\1"'"${SHA}"'"/' "$FILE"
+            grep -q "^    tag: \"${SHA}\"" "$FILE" || { echo "web.image.tag rewrite failed"; exit 1; }
+            if git diff --quiet -- "$FILE"; then
+              echo "web.image.tag already ${SHA}; nothing to commit."
+              exit 0
+            fi
+            git add "$FILE"
+            git commit -m "chore(deploy): maiak-web ${SHA} [skip ci]"
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "push raced (attempt ${attempt}); retrying"
+            sleep $((attempt * 3))
+          done
+          echo "failed to push web.image.tag bump after 3 attempts"
+          exit 1

@@ -15,6 +15,10 @@ httpRoute:
 
 web:
   enabled: false
+  image:
+    # CI-MANAGED: rewritten by .github/workflows/release.yml (web-image job). Keep this key at
+    # exactly `web.image.tag` (4-space indent, double quotes).
+    tag: "0000000"
 
 # First deploy: creates database/roles and the `maiak-db` Secret (ADR-0014).
 # OWNER: set `enabled: false` after the first successful sync (the Secret persists), because while

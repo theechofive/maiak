@@ -66,6 +66,7 @@ jobs:
       backend: ${{ github.event_name != 'pull_request' || steps.filter.outputs.backend == 'true' }}
       api: ${{ github.event_name != 'pull_request' || steps.filter.outputs.api == 'true' }}
       helm: ${{ github.event_name != 'pull_request' || steps.filter.outputs.helm == 'true' }}
+      web: ${{ github.event_name != 'pull_request' || steps.filter.outputs.web == 'true' }}
     steps:
       - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
         with:
@@ -90,6 +91,9 @@ jobs:
               - '.github/workflows/ci.yml'
             helm:
               - 'deploy/helm/**'
+              - '.github/workflows/ci.yml'
+            web:
+              - 'web/**'
               - '.github/workflows/ci.yml'
 
   backend:
@@ -168,6 +172,35 @@ jobs:
           git show "origin/${BASE_REF}:${OPENAPI_SPEC}" > "${RUNNER_TEMP}/base-openapi.yaml"
           go install github.com/oasdiff/oasdiff@latest # TODO(L-019) pin oasdiff version
           "$(go env GOPATH)/bin/oasdiff" breaking "${RUNNER_TEMP}/base-openapi.yaml" "$OPENAPI_SPEC" --fail-on ERR
+
+  web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4 # TODO(L-019) pin to SHA
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build
 
   helm:
     needs: changes

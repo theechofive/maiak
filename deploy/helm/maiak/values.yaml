@@ -115,7 +115,7 @@ jobs:
     limits: {cpu: 500m, memory: 256Mi}
   env: []
 
-# Frontend (React, nginx static). Not built yet -> disabled.
+# Frontend (React, nginx static). Enabled per environment in values-platform.yaml.
 web:
   enabled: false
   replicas: 2
