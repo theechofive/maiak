@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/theechofive/maiak/backend/internal/incidents/incidentsdb"
 	"github.com/theechofive/maiak/backend/internal/incidents/machine"
@@ -34,6 +35,14 @@ const (
 
 // ErrMonitorNotFound means the monitor or its state row does not exist in the tenant.
 var ErrMonitorNotFound = errors.New("incidents: monitor not found")
+
+// ErrInconsistentState means the stored incident state contradicts itself: the incident to
+// resolve is not open, or the monitor already has another open incident. Like
+// ErrMonitorNotFound it is permanent: repeating the same result cannot succeed.
+var ErrInconsistentState = errors.New("incidents: inconsistent incident state")
+
+// openIncidentIndex is the partial unique index allowing one open incident per monitor.
+const openIncidentIndex = "incidents_one_open_per_monitor_idx"
 
 // Service applies check results to incident state.
 type Service struct {
@@ -128,6 +137,10 @@ func (s *Service) ApplyResult(ctx context.Context, tx pgx.Tx, in ResultInput) (m
 		if err := q.InsertIncident(ctx, incidentsdb.InsertIncidentParams{
 			ID: id, TenantID: in.TenantID, MonitorID: &in.MonitorID, StartedAt: startedAt, Reason: nonEmpty(in.Result.ErrorKind),
 		}); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" /* unique_violation */ && pgErr.ConstraintName == openIncidentIndex {
+				return machine.Output{}, fmt.Errorf("%w: monitor already has an open incident", ErrInconsistentState)
+			}
 			return machine.Output{}, fmt.Errorf("incidents: open: %w", err)
 		}
 		if err := q.InsertIncidentMonitor(ctx, incidentsdb.InsertIncidentMonitorParams{TenantID: in.TenantID, IncidentID: id, MonitorID: in.MonitorID}); err != nil {
@@ -138,6 +151,9 @@ func (s *Service) ApplyResult(ctx context.Context, tx pgx.Tx, in ResultInput) (m
 			res, err := q.ResolveIncident(ctx, incidentsdb.ResolveIncidentParams{
 				TenantID: in.TenantID, ID: *incidentID, ResolvedAt: &in.Result.CheckedAt, ResolveReason: nonEmpty(ReasonRecovered),
 			})
+			if errors.Is(err, pgx.ErrNoRows) {
+				return machine.Output{}, fmt.Errorf("%w: current incident is not open", ErrInconsistentState)
+			}
 			if err != nil {
 				return machine.Output{}, fmt.Errorf("incidents: resolve: %w", err)
 			}

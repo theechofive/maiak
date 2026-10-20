@@ -6,6 +6,8 @@ package worker
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"net/url"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/theechofive/maiak/backend/internal/checks"
@@ -39,7 +42,21 @@ const (
 	DeferDelay = 2 * time.Second
 	// flushTimeout bounds one tenant batch write, also during shutdown.
 	flushTimeout = 10 * time.Second
+	// finalFlushTimeout bounds everything written after the drain at shutdown (ADR-0022).
+	finalFlushTimeout = 15 * time.Second
+	// flushParallelism caps tenant batches written at the same time.
+	flushParallelism = 8
+	// resultLockTimeout is the lock_timeout of a result transaction: a batch blocked behind a
+	// pause, a delete or a migration gives up instead of holding its leases until they expire.
+	resultLockTimeout = "2s"
+	// PartitionInterval is how often the worker calls ensure_partitions() (also at start), so
+	// results never depend on jobs running; a failed call is retried after partitionRetry.
+	PartitionInterval = time.Hour
+	partitionRetry    = time.Minute
 )
+
+// errLockTimeout aborts a tenant batch whose transaction hit resultLockTimeout.
+var errLockTimeout = errors.New("worker: result transaction hit its lock timeout")
 
 // Config tunes the worker. Zero values take the defaults above (limits default to 1).
 type Config struct {
@@ -124,6 +141,11 @@ func (w *Worker) Run(ctx context.Context) error {
 		w.batch.loop(flushCtx, w.cfg.FlushInterval, func(items []outcome) { w.flush(base, items) })
 	}()
 
+	var partitions sync.WaitGroup
+	partitions.Add(1)
+	go func() { defer partitions.Done(); w.partitionLoop(ctx) }()
+	defer partitions.Wait()
+
 	w.d.Log.Info("worker started", "concurrency", w.cfg.Concurrency, "claim_batch", w.cfg.ClaimBatch, "location", w.cfg.Location)
 	tick := time.NewTicker(w.cfg.PollInterval)
 	defer tick.Stop()
@@ -147,10 +169,50 @@ func (w *Worker) Run(ctx context.Context) error {
 		abandon()
 		<-done
 	}
+	finalCtx, cancelFinal := context.WithTimeout(base, finalFlushTimeout)
+	defer cancelFinal()
 	stopFlushing()
 	flusher.Wait()
-	w.flush(base, w.batch.take())
+	w.flush(finalCtx, w.batch.take())
 	w.d.Log.Info("worker stopped")
+	return nil
+}
+
+// partitionLoop calls EnsurePartitions now and every PartitionInterval until ctx ends.
+func (w *Worker) partitionLoop(ctx context.Context) {
+	for {
+		wait := PartitionInterval
+		if err := w.EnsurePartitions(ctx); err != nil {
+			wait = partitionRetry
+		}
+		t := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// EnsurePartitions creates missing check_results partitions (current month and the next two)
+// through the idempotent definer function. A failure is logged and counted, never fatal: the
+// existing partitions cover at least the rest of the month.
+func (w *Worker) EnsurePartitions(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, flushTimeout)
+	defer cancel()
+	var created int32
+	err := db.WithTx(ctx, w.d.Pool, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT ensure_partitions()`).Scan(&created)
+	})
+	if err != nil {
+		w.d.Metrics.ensureErrors.Inc()
+		w.d.Log.ErrorContext(ctx, "ensure_partitions failed", "error", err)
+		return err
+	}
+	if created > 0 {
+		w.d.Log.InfoContext(ctx, "created check_results partitions", "created", created)
+	}
 	return nil
 }
 
@@ -191,15 +253,33 @@ func (w *Worker) tick(ctx, checkCtx context.Context) {
 	}
 	if len(deferred) > 0 {
 		w.d.Metrics.deferred.Add(float64(len(deferred)))
-		w.release(ctx, deferred, DeferDelay)
+		// A shutdown signal must not cancel the release: the leases would block the jobs for 30 s.
+		w.release(context.WithoutCancel(ctx), deferred, DeferDelay)
 	}
 }
 
 func (w *Worker) check(ctx context.Context, j scheduler.Job, host string) {
 	defer w.running.Done()
+	released := false
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		if !released {
+			w.limiter.Release(j.TenantID, host)
+		}
+		// The lease is left to expire, so a prober that panics on one target is retried 30 s
+		// later rather than in a tight loop. Neither the URL nor the panic value (which may
+		// contain it) is logged.
+		w.d.Metrics.panics.Inc()
+		w.d.Log.Error("prober panicked; the job's lease will expire", "tenant_id", j.TenantID, "monitor_id", j.MonitorID,
+			"location_id", j.LocationID, "panic_type", fmt.Sprintf("%T", r))
+	}()
 	start := time.Now()
 	res := w.d.Prober.Probe(ctx, checks.Request{URL: j.URL, Timeout: j.Timeout, ExpectedStatus: j.ExpectedStatus})
 	w.limiter.Release(j.TenantID, host)
+	released = true
 	if res.Cancelled || ctx.Err() != nil {
 		// Abandoned at shutdown: not a real result (ADR-0018). Give the job back so another
 		// worker runs it now instead of after the lease expires.
@@ -216,7 +296,8 @@ func (w *Worker) check(ctx context.Context, j scheduler.Job, host string) {
 	w.batch.add(outcome{job: j, res: res})
 }
 
-// flush writes outcomes in one transaction per tenant. Each outcome has its own savepoint, so
+// flush writes outcomes in one transaction per tenant, at most flushParallelism tenants at a
+// time, so one slow tenant does not hold up the others. Each outcome has its own savepoint, so
 // a stale lease or a broken row is skipped without losing the rest of the batch.
 func (w *Worker) flush(ctx context.Context, items []outcome) {
 	if len(items) == 0 {
@@ -230,9 +311,17 @@ func (w *Worker) flush(ctx context.Context, items []outcome) {
 		}
 		byTenant[o.job.TenantID] = append(byTenant[o.job.TenantID], o)
 	}
+	sem := make(chan struct{}, flushParallelism)
+	var wg sync.WaitGroup
 	for _, tenant := range order {
-		w.flushTenant(ctx, tenant, byTenant[tenant])
+		sem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			w.flushTenant(ctx, tenant, byTenant[tenant])
+		}()
 	}
+	wg.Wait()
 }
 
 func (w *Worker) flushTenant(ctx context.Context, tenant uuid.UUID, items []outcome) {
@@ -242,6 +331,9 @@ func (w *Worker) flushTenant(ctx context.Context, tenant uuid.UUID, items []outc
 	var stale, failed int
 	err := db.WithTenantTx(ctx, w.d.Pool, tenant, func(tx pgx.Tx) error {
 		stale, failed = 0, 0
+		if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '"+resultLockTimeout+"'"); err != nil {
+			return err
+		}
 		for _, o := range items {
 			sp, err := tx.Begin(ctx)
 			if err != nil {
@@ -249,6 +341,8 @@ func (w *Worker) flushTenant(ctx context.Context, tenant uuid.UUID, items []outc
 			}
 			ok, err := w.write(ctx, sp, o)
 			switch {
+			case isLockTimeout(err):
+				return errLockTimeout
 			case err != nil:
 				failed++
 				w.d.Log.ErrorContext(ctx, "writing result failed", "monitor_id", o.job.MonitorID, "error", err)
@@ -265,6 +359,13 @@ func (w *Worker) flushTenant(ctx context.Context, tenant uuid.UUID, items []outc
 		}
 		return nil
 	})
+	if errors.Is(err, errLockTimeout) {
+		// Like a stale lease: nothing of the batch is written, the leases expire and the
+		// checks run again.
+		w.d.Metrics.lockTimeouts.Inc()
+		w.d.Log.WarnContext(ctx, "result batch discarded: lock timeout", "results", len(items))
+		return
+	}
 	if err != nil {
 		w.d.Metrics.writeErrors.Add(float64(len(items)))
 		w.d.Log.ErrorContext(ctx, "result batch failed", "results", len(items), "error", err)
@@ -290,11 +391,46 @@ func (w *Worker) write(ctx context.Context, tx pgx.Tx, o outcome) (bool, error) 
 	if err != nil || !ok {
 		return false, err
 	}
-	_, err = w.d.Incidents.ApplyResult(ctx, tx, incidents.ResultInput{
+	// The state machine runs in a nested savepoint: a permanent error undoes only its part, the
+	// result and the completed lease are kept, so the job is not repeated just to fail again.
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	_, err = w.d.Incidents.ApplyResult(ctx, sp, incidents.ResultInput{
 		TenantID: j.TenantID, MonitorID: j.MonitorID, LocationID: j.LocationID, Now: w.d.Clock.Now(),
 		Result: machine.Result{OK: r.OK, ErrorKind: r.ErrorKind, TLSNotAfter: r.TLSNotAfter, CheckedAt: r.CheckedAt},
 	})
-	return err == nil, err
+	if err == nil {
+		return true, sp.Commit(ctx)
+	}
+	kind := permanentKind(err)
+	if kind == "" {
+		return false, err
+	}
+	if err := sp.Rollback(ctx); err != nil {
+		return false, err
+	}
+	w.d.Metrics.applyErrors.Inc()
+	w.d.Log.ErrorContext(ctx, "applying a result failed permanently; result kept, lease completed",
+		"monitor_id", j.MonitorID, "location_id", j.LocationID, "error_kind", kind)
+	return true, nil
+}
+
+// permanentKind names a permanent ApplyResult error, or returns "" for any other error.
+func permanentKind(err error) string {
+	switch {
+	case errors.Is(err, incidents.ErrMonitorNotFound):
+		return "monitor_not_found"
+	case errors.Is(err, incidents.ErrInconsistentState):
+		return "inconsistent_state"
+	}
+	return ""
+}
+
+func isLockTimeout(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "55P03" // lock_not_available
 }
 
 // release gives claimed jobs back unchecked, due again after delay, one transaction per tenant.
@@ -304,14 +440,16 @@ func (w *Worker) release(ctx context.Context, leases []scheduler.Lease, delay ti
 		byTenant[l.TenantID] = append(byTenant[l.TenantID], l)
 	}
 	for tenant, ls := range byTenant {
-		err := db.WithTenantTx(ctx, w.d.Pool, tenant, func(tx pgx.Tx) error {
+		tctx, cancel := context.WithTimeout(ctx, flushTimeout)
+		err := db.WithTenantTx(tctx, w.d.Pool, tenant, func(tx pgx.Tx) error {
 			for _, l := range ls {
-				if err := w.d.Scheduler.Release(ctx, tx, l, delay); err != nil {
+				if err := w.d.Scheduler.Release(tctx, tx, l, delay); err != nil {
 					return err
 				}
 			}
 			return nil
 		})
+		cancel()
 		if err != nil {
 			// The leases expire on their own after 30 s.
 			w.d.Log.WarnContext(ctx, "releasing jobs failed", "jobs", len(ls), "error", err)
@@ -337,14 +475,18 @@ func orDefault[T comparable](v, def T) T {
 
 // Metrics are the worker's Prometheus metrics, served on the admin port.
 type Metrics struct {
-	checks      *prometheus.CounterVec
-	duration    prometheus.Histogram
-	lag         prometheus.Histogram
-	stale       prometheus.Counter
-	claimErrors prometheus.Counter
-	writeErrors prometheus.Counter
-	deferred    prometheus.Counter
-	cancelled   prometheus.Counter
+	checks       *prometheus.CounterVec
+	duration     prometheus.Histogram
+	lag          prometheus.Histogram
+	stale        prometheus.Counter
+	claimErrors  prometheus.Counter
+	writeErrors  prometheus.Counter
+	deferred     prometheus.Counter
+	cancelled    prometheus.Counter
+	applyErrors  prometheus.Counter
+	lockTimeouts prometheus.Counter
+	panics       prometheus.Counter
+	ensureErrors prometheus.Counter
 }
 
 // NewMetrics registers the worker metrics.
@@ -376,9 +518,22 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		cancelled: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "maiak_worker_cancelled_checks_total", Help: "Checks abandoned at shutdown; discarded and given back.",
 		}),
+		applyErrors: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "maiak_worker_apply_errors_total", Help: "Results kept without a state-machine update because of a permanent error (missing rows, inconsistent incident state).",
+		}),
+		lockTimeouts: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "maiak_worker_lock_timeouts_total", Help: "Tenant result batches discarded because their transaction hit the 2 s lock timeout.",
+		}),
+		panics: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "maiak_worker_prober_panics_total", Help: "Checks whose prober panicked; the panic was recovered and the lease left to expire.",
+		}),
+		ensureErrors: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "maiak_worker_ensure_partitions_errors_total", Help: "Failed ensure_partitions() calls of the worker.",
+		}),
 	}
 	m.checks.WithLabelValues("ok")
 	m.checks.WithLabelValues("failed")
-	reg.MustRegister(m.checks, m.duration, m.lag, m.stale, m.claimErrors, m.writeErrors, m.deferred, m.cancelled)
+	reg.MustRegister(m.checks, m.duration, m.lag, m.stale, m.claimErrors, m.writeErrors, m.deferred, m.cancelled,
+		m.applyErrors, m.lockTimeouts, m.panics, m.ensureErrors)
 	return m
 }
