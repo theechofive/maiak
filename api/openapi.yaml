@@ -341,7 +341,13 @@ paths:
     get:
       operationId: getMonitorStats
       summary: Response time statistics
-      description: Average and p95 response time and the latency series for the range (raw results up to 24 h, hourly rollups beyond).
+      description: |
+        Average and p95 response time and the latency series for the range. Latency statistics
+        cover checks that got a response. `24h` is computed from raw results (exact p95) in
+        15-minute buckets; `7d` (hourly buckets) and `30d` (6-hour buckets) from hourly rollups,
+        where p95 is the upper edge of the histogram bucket that contains the 95th percentile
+        (edges 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000 ms). Every bucket of the range is
+        listed; buckets without checks have null values.
       tags: [monitors]
       parameters:
         - name: range
@@ -381,7 +387,7 @@ paths:
           schema:
             type: integer
             minimum: 1
-            maximum: 100
+            maximum: 200
             default: 50
       responses:
         "200":
@@ -404,7 +410,7 @@ paths:
     get:
       operationId: listMonitorIncidents
       summary: Incidents of a monitor
-      description: Incidents of the monitor, newest first.
+      description: Incidents of the monitor, newest first, at most 100.
       tags: [monitors]
       responses:
         "200":
@@ -659,7 +665,7 @@ components:
       enum: [owner, admin, member, viewer]
     MonitorStatus:
       type: string
-      description: Aggregated status. `unknown` until the first check after creation or resume.
+      description: Aggregated status. `unknown` until the first check after creation, resume or a URL change, and while the monitor is paused (`paused` is then true).
       enum: [unknown, up, down]
     ExpectedStatus:
       type: string

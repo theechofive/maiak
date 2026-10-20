@@ -18,6 +18,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
+	"github.com/theechofive/maiak/backend/internal/queries"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
 	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
 )
@@ -96,7 +97,7 @@ func newServer(t *testing.T, env *pgtest.Env, opts auth.Options) *client {
 	}
 	sched := scheduler.New()
 	h, err := api.NewHandler(api.Config{Version: "test", Commit: "test", CookieSecure: true, TrustedProxyHops: 1},
-		api.Deps{Auth: svc, Monitors: monitors.NewService(pool, sched, incidents.NewService(sched)), Logger: log})
+		api.Deps{Auth: svc, Monitors: monitors.NewService(pool, sched, incidents.NewService(sched)), Queries: queries.New(pool, nil), Logger: log})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,17 +324,5 @@ func TestIntegrationUnsafeOperationsNeedCSRF(t *testing.T) {
 	// The session survived all of it.
 	if r := c.do(http.MethodGet, "/api/v1/auth/me", "", cookie); r.code != http.StatusOK {
 		t.Fatalf("me: %d %s", r.code, r.raw)
-	}
-}
-
-// Operations without a handler yet answer 501 problem+json to an authenticated client.
-func TestIntegrationUnimplementedOperationIs501(t *testing.T) {
-	env := pgtest.New(t, pgtest.DBName("api501"))
-	c := newServer(t, env, auth.Options{})
-	cookie, _ := c.login()
-	r := c.do(http.MethodGet, "/api/v1/monitors/0192b9c4-7c5e-7000-8000-000000000001/incidents", "", cookie)
-	if r.code != http.StatusNotImplemented || r.body["type"] != "urn:maiak:problem:not-implemented" ||
-		!strings.HasPrefix(r.header.Get("Content-Type"), "application/problem+json") {
-		t.Fatalf("monitor incidents: %d %v %s", r.code, r.header, r.raw)
 	}
 }

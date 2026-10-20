@@ -24,16 +24,6 @@ FROM monitors AS m
 JOIN monitor_state AS s ON s.tenant_id = m.tenant_id AND s.monitor_id = m.id
 WHERE m.tenant_id = @tenant_id AND m.id = @id AND m.deleted_at IS NULL;
 
--- name: ListMonitors :many
-SELECT m.id, m.name, m.config, m.interval_seconds, m.timeout_seconds, m.failure_threshold,
-       m.notify_slack, m.paused, m.created_at, m.updated_at,
-       s.status, s.status_changed_at, s.last_error_kind, s.last_checked_at, s.tls_expires_at,
-       s.current_incident_id
-FROM monitors AS m
-JOIN monitor_state AS s ON s.tenant_id = m.tenant_id AND s.monitor_id = m.id
-WHERE m.tenant_id = @tenant_id AND m.deleted_at IS NULL
-ORDER BY m.created_at, m.id;
-
 -- name: LockMonitor :one
 SELECT id, name, config, interval_seconds, timeout_seconds, failure_threshold, notify_slack, paused
 FROM monitors

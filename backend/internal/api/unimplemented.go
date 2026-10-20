@@ -1,25 +1,8 @@
 package api
 
-import (
-	"context"
-
-	"github.com/theechofive/maiak/backend/internal/api/gen"
-)
-
 // unimplemented lists, explicitly, every operation of the contract that has no handler yet; each
 // answers 501 problem+json. It is hand-written on purpose (unlike gen.Unimplemented): a new
 // operation in api/openapi.yaml breaks the build until it is added here or implemented on
-// server. A task that implements an operation deletes its method here.
+// server. A task that implements an operation deletes its method here. Since B-15 every
+// operation of the MVP contract has a handler, so the type is empty.
 type unimplemented struct{}
-
-func (unimplemented) GetMonitorStats(context.Context, gen.GetMonitorStatsRequestObject) (gen.GetMonitorStatsResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) ListMonitorChecks(context.Context, gen.ListMonitorChecksRequestObject) (gen.ListMonitorChecksResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) ListMonitorIncidents(context.Context, gen.ListMonitorIncidentsRequestObject) (gen.ListMonitorIncidentsResponseObject, error) {
-	return nil, errNotImplemented
-}

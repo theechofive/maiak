@@ -20,6 +20,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
 	"github.com/theechofive/maiak/backend/internal/platform/metrics"
+	"github.com/theechofive/maiak/backend/internal/queries"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
 )
 
@@ -81,6 +82,7 @@ func run() error {
 	}, api.Deps{
 		Auth:     authSvc,
 		Monitors: monitors.NewService(pool, sched, incidents.NewService(sched)),
+		Queries:  queries.New(pool, nil),
 		Slack:    notify.NewService(pool, keys, slack, cfg.PublicURL),
 		Logger:   log,
 		Metrics:  metrics.NewHTTP(reg),

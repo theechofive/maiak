@@ -82,11 +82,6 @@ type Monitor struct {
 	UpdatedAt         time.Time
 }
 
-// Summary counts monitors by display state; a paused monitor counts only as paused.
-type Summary struct {
-	Up, Down, Paused, Unknown int
-}
-
 // CreateInput is a new monitor. Nil fields take their defaults.
 type CreateInput struct {
 	Name             string
@@ -200,55 +195,6 @@ func (s *Service) Create(ctx context.Context, a Actor, in CreateInput) (Monitor,
 	})
 	if err != nil {
 		return Monitor{}, wrap("create", err)
-	}
-	return m, nil
-}
-
-// List returns the live monitors of the tenant, oldest first, and the summary counts.
-func (s *Service) List(ctx context.Context, tenantID uuid.UUID) ([]Monitor, Summary, error) {
-	var out []Monitor
-	var sum Summary
-	err := db.WithTenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
-		rows, err := monitorsdb.New(tx).ListMonitors(ctx, tenantID)
-		if err != nil {
-			return fmt.Errorf("list monitors: %w", err)
-		}
-		out = make([]Monitor, 0, len(rows))
-		for _, r := range rows {
-			m, err := fromRow(monitorsdb.GetMonitorRow(r))
-			if err != nil {
-				return err
-			}
-			switch {
-			case m.Paused:
-				sum.Paused++
-			case m.Status == StatusUp:
-				sum.Up++
-			case m.Status == StatusDown:
-				sum.Down++
-			default:
-				sum.Unknown++
-			}
-			out = append(out, m)
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, Summary{}, wrap("list", err)
-	}
-	return out, sum, nil
-}
-
-// Get returns one live monitor.
-func (s *Service) Get(ctx context.Context, tenantID, id uuid.UUID) (Monitor, error) {
-	var m Monitor
-	err := db.WithTenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
-		var err error
-		m, err = get(ctx, monitorsdb.New(tx), tenantID, id)
-		return err
-	})
-	if err != nil {
-		return Monitor{}, wrap("get", err)
 	}
 	return m, nil
 }

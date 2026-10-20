@@ -3,13 +3,17 @@ package api
 import (
 	"context"
 
+	"github.com/google/uuid"
+
 	"github.com/theechofive/maiak/backend/internal/api/gen"
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
+	"github.com/theechofive/maiak/backend/internal/queries"
 )
 
-// Uptime, the last response time and the ongoing incident come from results, rollups and
-// incidents, which arrive with B-10, B-11 and B-15; until then they are null.
+// Reads go through the dashboard read models (internal/queries); writes through the monitors
+// service, after which the monitor is read back so every response has the same shape (uptime,
+// ongoing incident, last response time).
 
 func (s *server) actor(ctx context.Context) (monitors.Actor, error) {
 	p, err := s.principal(ctx)
@@ -24,7 +28,7 @@ func (s *server) ListMonitors(ctx context.Context, _ gen.ListMonitorsRequestObje
 	if err != nil {
 		return nil, err
 	}
-	list, sum, err := s.monitors.List(ctx, p.TenantID)
+	list, sum, err := s.queries.ListMonitors(ctx, p.TenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +39,8 @@ func (s *server) ListMonitors(ctx context.Context, _ gen.ListMonitorsRequestObje
 			IntervalSeconds: m.IntervalSeconds, TimeoutSeconds: m.TimeoutSeconds,
 			FailureThreshold: m.FailureThreshold, NotifySlack: m.NotifySlack, Paused: m.Paused,
 			Status: gen.MonitorStatus(m.Status), StatusSince: m.StatusSince, LastErrorKind: m.LastErrorKind,
-			LastCheckedAt: m.LastCheckedAt, TlsExpiresAt: m.TLSExpiresAt,
+			LastCheckedAt: m.LastCheckedAt, TlsExpiresAt: m.TLSExpiresAt, OngoingIncident: toOngoing(m.Ongoing),
+			Uptime24h: m.Uptime24h, LastResponseMs: m.LastResponseMs,
 		}
 	}
 	return gen.ListMonitors200JSONResponse{
@@ -57,7 +62,11 @@ func (s *server) CreateMonitor(ctx context.Context, req gen.CreateMonitorRequest
 	if err != nil {
 		return nil, err
 	}
-	return gen.CreateMonitor201JSONResponse(toMonitorDetail(m)), nil
+	d, err := s.detail(ctx, a.TenantID, m.ID)
+	if err != nil {
+		return nil, err
+	}
+	return gen.CreateMonitor201JSONResponse(d), nil
 }
 
 func (s *server) GetMonitor(ctx context.Context, req gen.GetMonitorRequestObject) (gen.GetMonitorResponseObject, error) {
@@ -65,11 +74,11 @@ func (s *server) GetMonitor(ctx context.Context, req gen.GetMonitorRequestObject
 	if err != nil {
 		return nil, err
 	}
-	m, err := s.monitors.Get(ctx, p.TenantID, req.MonitorId)
+	d, err := s.detail(ctx, p.TenantID, req.MonitorId)
 	if err != nil {
 		return nil, err
 	}
-	return gen.GetMonitor200JSONResponse(toMonitorDetail(m)), nil
+	return gen.GetMonitor200JSONResponse(d), nil
 }
 
 func (s *server) UpdateMonitor(ctx context.Context, req gen.UpdateMonitorRequestObject) (gen.UpdateMonitorResponseObject, error) {
@@ -78,14 +87,17 @@ func (s *server) UpdateMonitor(ctx context.Context, req gen.UpdateMonitorRequest
 		return nil, err
 	}
 	b := req.Body
-	m, err := s.monitors.Update(ctx, a, req.MonitorId, monitors.UpdateInput{
+	if _, err := s.monitors.Update(ctx, a, req.MonitorId, monitors.UpdateInput{
 		Name: b.Name, URL: b.Url, IntervalSeconds: b.IntervalSeconds, TimeoutSeconds: b.TimeoutSeconds,
 		ExpectedStatus: b.ExpectedStatus, FailureThreshold: b.FailureThreshold, NotifySlack: b.NotifySlack,
-	})
+	}); err != nil {
+		return nil, err
+	}
+	d, err := s.detail(ctx, a.TenantID, req.MonitorId)
 	if err != nil {
 		return nil, err
 	}
-	return gen.UpdateMonitor200JSONResponse(toMonitorDetail(m)), nil
+	return gen.UpdateMonitor200JSONResponse(d), nil
 }
 
 func (s *server) DeleteMonitor(ctx context.Context, req gen.DeleteMonitorRequestObject) (gen.DeleteMonitorResponseObject, error) {
@@ -104,11 +116,14 @@ func (s *server) PauseMonitor(ctx context.Context, req gen.PauseMonitorRequestOb
 	if err != nil {
 		return nil, err
 	}
-	m, err := s.monitors.Pause(ctx, a, req.MonitorId)
+	if _, err := s.monitors.Pause(ctx, a, req.MonitorId); err != nil {
+		return nil, err
+	}
+	d, err := s.detail(ctx, a.TenantID, req.MonitorId)
 	if err != nil {
 		return nil, err
 	}
-	return gen.PauseMonitor200JSONResponse(toMonitorDetail(m)), nil
+	return gen.PauseMonitor200JSONResponse(d), nil
 }
 
 func (s *server) ResumeMonitor(ctx context.Context, req gen.ResumeMonitorRequestObject) (gen.ResumeMonitorResponseObject, error) {
@@ -116,20 +131,96 @@ func (s *server) ResumeMonitor(ctx context.Context, req gen.ResumeMonitorRequest
 	if err != nil {
 		return nil, err
 	}
-	m, err := s.monitors.Resume(ctx, a, req.MonitorId)
+	if _, err := s.monitors.Resume(ctx, a, req.MonitorId); err != nil {
+		return nil, err
+	}
+	d, err := s.detail(ctx, a.TenantID, req.MonitorId)
 	if err != nil {
 		return nil, err
 	}
-	return gen.ResumeMonitor200JSONResponse(toMonitorDetail(m)), nil
+	return gen.ResumeMonitor200JSONResponse(d), nil
 }
 
-func toMonitorDetail(m monitors.Monitor) gen.MonitorDetail {
+func (s *server) GetMonitorStats(ctx context.Context, req gen.GetMonitorStatsRequestObject) (gen.GetMonitorStatsResponseObject, error) {
+	p, err := s.principal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rng := gen.N24h
+	if req.Params.Range != nil {
+		rng = *req.Params.Range
+	}
+	if !queries.ValidRange(string(rng)) {
+		return nil, &badRequestError{detail: "range must be 24h, 7d or 30d"}
+	}
+	st, err := s.queries.Stats(ctx, p.TenantID, req.MonitorId, string(rng))
+	if err != nil {
+		return nil, err
+	}
+	series := make([]gen.LatencyPoint, len(st.Series))
+	for i, pt := range st.Series {
+		series[i] = gen.LatencyPoint{T: pt.T, AvgMs: pt.AvgMs, OkRatio: pt.OKRatio}
+	}
+	return gen.GetMonitorStats200JSONResponse{Range: rng, AvgMs: st.AvgMs, P95Ms: st.P95Ms, Series: series}, nil
+}
+
+func (s *server) ListMonitorChecks(ctx context.Context, req gen.ListMonitorChecksRequestObject) (gen.ListMonitorChecksResponseObject, error) {
+	p, err := s.principal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	limit := queries.DefaultCheckLimit
+	if req.Params.Limit != nil {
+		limit = *req.Params.Limit
+	}
+	list, err := s.queries.Checks(ctx, p.TenantID, req.MonitorId, limit)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]gen.Check, len(list))
+	for i, c := range list {
+		items[i] = gen.Check{CheckedAt: c.CheckedAt, Location: c.Location, Ok: c.OK, HttpStatus: c.HTTPStatus,
+			ResponseMs: c.ResponseMs, ErrorKind: c.ErrorKind}
+	}
+	return gen.ListMonitorChecks200JSONResponse{Items: items}, nil
+}
+
+func (s *server) ListMonitorIncidents(ctx context.Context, req gen.ListMonitorIncidentsRequestObject) (gen.ListMonitorIncidentsResponseObject, error) {
+	p, err := s.principal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	list, err := s.queries.Incidents(ctx, p.TenantID, req.MonitorId)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]gen.Incident, len(list))
+	for i, in := range list {
+		items[i] = gen.Incident{Id: in.ID, StartedAt: in.StartedAt, ResolvedAt: in.ResolvedAt, Reason: in.Reason}
+	}
+	return gen.ListMonitorIncidents200JSONResponse{Items: items}, nil
+}
+
+func (s *server) detail(ctx context.Context, tenantID, id uuid.UUID) (gen.MonitorDetail, error) {
+	d, err := s.queries.Monitor(ctx, tenantID, id)
+	if err != nil {
+		return gen.MonitorDetail{}, err
+	}
+	m := d.Monitor
 	return gen.MonitorDetail{
 		Id: m.ID, Name: m.Name, Url: m.URL, ExpectedStatus: m.ExpectedStatus,
 		IntervalSeconds: m.IntervalSeconds, TimeoutSeconds: m.TimeoutSeconds,
 		FailureThreshold: m.FailureThreshold, NotifySlack: m.NotifySlack, Paused: m.Paused,
 		Status: gen.MonitorStatus(m.Status), StatusSince: m.StatusSince, LastErrorKind: m.LastErrorKind,
-		LastCheckedAt: m.LastCheckedAt, TlsExpiresAt: m.TLSExpiresAt,
+		LastCheckedAt: m.LastCheckedAt, TlsExpiresAt: m.TLSExpiresAt, OngoingIncident: toOngoing(m.Ongoing),
+		Uptime:    gen.Uptime{H24: m.Uptime24h, D7: d.Uptime7d, D30: d.Uptime30d},
 		CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
+	}, nil
+}
+
+func toOngoing(in *queries.Incident) *gen.OngoingIncident {
+	if in == nil {
+		return nil
 	}
+	return &gen.OngoingIncident{Id: in.ID, StartedAt: in.StartedAt, Reason: in.Reason}
 }

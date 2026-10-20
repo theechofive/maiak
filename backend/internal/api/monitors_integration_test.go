@@ -414,3 +414,58 @@ func TestIntegrationPauseFencesAndURLChangeRestarts(t *testing.T) {
 		t.Fatalf("incident: reason=%q deliveries=%d err=%v", reason, deliveries, err)
 	}
 }
+
+// The read endpoints of B-15 through the generated server: shapes, parameter limits and
+// tenant isolation (the read models themselves are tested in internal/queries).
+func TestIntegrationMonitorReadEndpoints(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("apimonread"))
+	c := newServer(t, env, auth.Options{})
+	cookie, csrf := c.login()
+	admin := env.AdminConn(t)
+	r := c.do(http.MethodPost, "/api/v1/monitors", `{"name":"Site","url":"https://example.com/"}`, withCSRF(cookie, csrf))
+	if r.code != http.StatusCreated {
+		t.Fatalf("create: %d %s", r.code, r.raw)
+	}
+	id := r.body["id"].(string)
+	pgtest.MustExec(t, admin,
+		`INSERT INTO check_results (tenant_id, monitor_id, location_id, checked_at, ok, status_code, latency_ms)
+		 SELECT tenant_id, id, '01920000-0000-7000-8000-000000000001', now() - interval '1 minute', true, 200, 42 FROM monitors WHERE id = '`+id+`'`,
+		`UPDATE monitor_state SET status = 'up', last_checked_at = now() - interval '1 minute' WHERE monitor_id = '`+id+`'`)
+
+	list := c.do(http.MethodGet, "/api/v1/monitors", "", cookie)
+	item := list.body["items"].([]any)[0].(map[string]any)
+	if item["uptime24h"] != 100.0 || item["lastResponseMs"] != 42.0 || fmt.Sprint(list.body["summary"]) != "map[down:0 paused:0 unknown:0 up:1]" {
+		t.Fatalf("list: %s", list.raw)
+	}
+	if g := c.do(http.MethodGet, "/api/v1/monitors/"+id, "", cookie); fmt.Sprint(g.body["uptime"]) != "map[d30:100 d7:100 h24:100]" {
+		t.Fatalf("detail uptime: %s", g.raw)
+	}
+
+	st := c.do(http.MethodGet, "/api/v1/monitors/"+id+"/stats", "", cookie)
+	series, _ := st.body["series"].([]any)
+	if st.code != http.StatusOK || st.body["range"] != "24h" || st.body["avgMs"] != 42.0 || st.body["p95Ms"] != 42.0 || len(series) != 97 {
+		t.Fatalf("stats: %d %s", st.code, st.raw)
+	}
+	if st := c.do(http.MethodGet, "/api/v1/monitors/"+id+"/stats?range=30d", "", cookie); st.code != http.StatusOK || len(st.body["series"].([]any)) != 121 {
+		t.Fatalf("stats 30d: %d", st.code)
+	}
+	ch := c.do(http.MethodGet, "/api/v1/monitors/"+id+"/checks?limit=200", "", cookie)
+	items, _ := ch.body["items"].([]any)
+	if ch.code != http.StatusOK || len(items) != 1 || items[0].(map[string]any)["responseMs"] != 42.0 || items[0].(map[string]any)["location"] != "home-eu-central-1" {
+		t.Fatalf("checks: %d %s", ch.code, ch.raw)
+	}
+	if inc := c.do(http.MethodGet, "/api/v1/monitors/"+id+"/incidents", "", cookie); inc.code != http.StatusOK || !strings.Contains(inc.raw, `"items":[]`) {
+		t.Fatalf("incidents: %d %s", inc.code, inc.raw)
+	}
+	for _, q := range []string{"/stats?range=1y", "/checks?limit=0", "/checks?limit=201"} {
+		if r := c.do(http.MethodGet, "/api/v1/monitors/"+id+q, "", cookie); r.code != http.StatusBadRequest {
+			t.Errorf("%s: %d %s", q, r.code, r.raw)
+		}
+	}
+	other, _ := otherTenantSession(t, env)
+	for _, p := range []string{"", "/stats", "/checks", "/incidents"} {
+		if r := c.do(http.MethodGet, "/api/v1/monitors/"+id+p, "", other); r.code != http.StatusNotFound {
+			t.Errorf("other tenant %s: %d %s", p, r.code, r.raw)
+		}
+	}
+}
