@@ -135,6 +135,7 @@ func TestPasswordsFromRequiresAllKeys(t *testing.T) {
 
 func TestKubeSecretsClient(t *testing.T) {
 	stored := map[string]map[string][]byte{}
+	annotations := map[string]map[string]string{}
 	var authHeaders []string
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeaders = append(authHeaders, r.Header.Get("Authorization"))
@@ -175,6 +176,7 @@ func TestKubeSecretsClient(t *testing.T) {
 				return
 			}
 			stored[s.Metadata.Name] = s.Data
+			annotations[s.Metadata.Name] = s.Metadata.Annotations
 			w.WriteHeader(http.StatusCreated)
 		default:
 			w.WriteHeader(http.StatusForbidden)
@@ -199,6 +201,12 @@ func TestKubeSecretsClient(t *testing.T) {
 	}
 	if err := k.Create(ctx, "maiak", "maiak-db", data); err != ErrSecretExists {
 		t.Fatalf("second create: %v", err)
+	}
+	if err := k.CreateAnnotated(ctx, "maiak", "annotated", data, map[string]string{"maiak/notice": "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	if annotations["annotated"]["maiak/notice"] != "hi" || annotations["maiak-db"] != nil {
+		t.Fatalf("annotations: %v", annotations)
 	}
 	got, found, err := k.Get(ctx, "maiak", "maiak-db")
 	if err != nil || !found || string(got[KeyAPIPassword]) != "secret value" {

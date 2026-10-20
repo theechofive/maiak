@@ -195,15 +195,16 @@ func (e *Env) AdminConn(t testing.TB) *pgx.Conn {
 
 // FakeSecrets is an in-memory dbbootstrap.SecretStore.
 type FakeSecrets struct {
-	mu      sync.Mutex
-	secrets map[string]map[string][]byte
-	Creates int
-	Updates int
+	mu          sync.Mutex
+	secrets     map[string]map[string][]byte
+	annotations map[string]map[string]string
+	Creates     int
+	Updates     int
 }
 
 // NewFakeSecrets returns an empty store.
 func NewFakeSecrets() *FakeSecrets {
-	return &FakeSecrets{secrets: map[string]map[string][]byte{}}
+	return &FakeSecrets{secrets: map[string]map[string][]byte{}, annotations: map[string]map[string]string{}}
 }
 
 // Get implements dbbootstrap.SecretStore.
@@ -231,6 +232,32 @@ func (f *FakeSecrets) Create(_ context.Context, ns, name string, data map[string
 	f.Creates++
 	f.secrets[ns+"/"+name] = data
 	return nil
+}
+
+// CreateAnnotated implements secretsbootstrap.SecretStore.
+func (f *FakeSecrets) CreateAnnotated(ctx context.Context, ns, name string, data map[string][]byte, annotations map[string]string) error {
+	if err := f.Create(ctx, ns, name, data); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.annotations[ns+"/"+name] = annotations
+	return nil
+}
+
+// Annotations returns the annotations a Secret was created with.
+func (f *FakeSecrets) Annotations(ns, name string) map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.annotations[ns+"/"+name]
+}
+
+// Delete removes a Secret (to simulate an owner deleting it).
+func (f *FakeSecrets) Delete(ns, name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.secrets, ns+"/"+name)
+	delete(f.annotations, ns+"/"+name)
 }
 
 // Update implements dbbootstrap.SecretStore.

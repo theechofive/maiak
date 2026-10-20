@@ -2,6 +2,7 @@
 //
 //	maiakctl hashpw [-m KiB] [-t iterations] [-p parallelism]   print an argon2id hash of a password read from stdin
 //	maiakctl db bootstrap                                       create/repair the database and roles (see internal/dbbootstrap)
+//	maiakctl secrets bootstrap                                  create the admin and encryption Secrets if absent (see internal/secretsbootstrap)
 package main
 
 import (
@@ -26,6 +27,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/platform/config"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
+	"github.com/theechofive/maiak/backend/internal/secretsbootstrap"
 )
 
 var (
@@ -36,6 +38,7 @@ var (
 const usage = `usage:
   maiakctl hashpw [-m KiB] [-t iterations] [-p parallelism]
   maiakctl db bootstrap
+  maiakctl secrets bootstrap
   maiakctl version
 `
 
@@ -56,6 +59,8 @@ func run(args []string) error {
 		return hashpw(args[1:], os.Stdin, os.Stdout, os.Stderr)
 	case args[0] == "db" && len(args) > 1 && args[1] == "bootstrap":
 		return dbBootstrap()
+	case args[0] == "secrets" && len(args) > 1 && args[1] == "bootstrap":
+		return secretsBootstrap()
 	case args[0] == "version":
 		fmt.Printf("maiakctl %s (%s)\n", version, commit)
 		return nil
@@ -178,6 +183,33 @@ func dbBootstrap() error {
 		return err
 	}
 	log.Info("bootstrap complete")
+	return nil
+}
+
+func secretsBootstrap() error {
+	cfg, err := secretsbootstrap.LoadConfig(os.LookupEnv)
+	if err != nil {
+		return err
+	}
+	log := logging.New(os.Stderr, cfg.LogLevel).With("service", "maiakctl", "command", "secrets bootstrap", "version", version)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+
+	opts := cfg.Options
+	if opts.Namespace = cfg.Namespace; opts.Namespace == "" {
+		if opts.Namespace, err = dbbootstrap.InClusterNamespace(); err != nil {
+			return err
+		}
+	}
+	if opts.Secrets, err = dbbootstrap.NewInClusterSecrets(); err != nil {
+		return err
+	}
+	opts.Logger = log
+	res, err := secretsbootstrap.Run(ctx, opts)
+	if err != nil {
+		return err
+	}
+	log.Info("secrets bootstrap complete", "admin_created", res.AdminCreated, "admin_initial_created", res.AdminInitialCreated, "crypto_created", res.CryptoCreated)
 	return nil
 }
 

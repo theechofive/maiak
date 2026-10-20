@@ -90,9 +90,10 @@ type kubeSecret struct {
 }
 
 type kubeMeta struct {
-	Name      string            `json:"name"`
-	Namespace string            `json:"namespace,omitempty"`
-	Labels    map[string]string `json:"labels,omitempty"`
+	Name        string            `json:"name"`
+	Namespace   string            `json:"namespace,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
 type kubeStatus struct {
@@ -123,10 +124,15 @@ func (k *KubeSecrets) Get(ctx context.Context, namespace, name string) (map[stri
 
 // Create implements SecretStore.
 func (k *KubeSecrets) Create(ctx context.Context, namespace, name string, data map[string][]byte) error {
+	return k.CreateAnnotated(ctx, namespace, name, data, nil)
+}
+
+// CreateAnnotated is Create with metadata annotations (used by `maiakctl secrets bootstrap`).
+func (k *KubeSecrets) CreateAnnotated(ctx context.Context, namespace, name string, data map[string][]byte, annotations map[string]string) error {
 	body, err := json.Marshal(kubeSecret{
 		APIVersion: "v1",
 		Kind:       "Secret",
-		Metadata: kubeMeta{Name: name, Namespace: namespace, Labels: map[string]string{
+		Metadata: kubeMeta{Name: name, Namespace: namespace, Annotations: annotations, Labels: map[string]string{
 			"app.kubernetes.io/managed-by": "maiakctl",
 			"app.kubernetes.io/part-of":    "maiak",
 		}},
