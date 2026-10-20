@@ -1,11 +1,10 @@
-// Package api is the HTTP layer of cmd/api. It implements the server interface generated from
-// api/openapi.yaml, validates every request against the spec, and maps domain errors to
+// Package api is the HTTP layer of cmd/api. It implements the strict server interface generated
+// from api/openapi.yaml, validates every request against the spec, and maps domain errors to
 // RFC 9457 problems in one place (errors.go).
 package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -51,6 +50,10 @@ type Deps struct {
 }
 
 type server struct {
+	// unimplemented answers 501 for every operation this type does not implement yet. Removing
+	// an operation from it without implementing it on server is a compile error (see below).
+	unimplemented
+
 	cfg  Config
 	auth *auth.Service
 	log  *slog.Logger
@@ -58,7 +61,7 @@ type server struct {
 	lastXFFWarn atomic.Int64
 }
 
-var _ gen.ServerInterface = (*server)(nil)
+var _ gen.StrictServerInterface = (*server)(nil)
 
 // NewHandler builds the public HTTP handler.
 func NewHandler(cfg Config, deps Deps) (http.Handler, error) {
@@ -73,7 +76,7 @@ func NewHandler(cfg Config, deps Deps) (http.Handler, error) {
 	if deps.Metrics != nil {
 		r.Use(deps.Metrics.Middleware)
 	}
-	r.Use(httpx.MaxBody(maxBodyBytes), withSessionSlot)
+	r.Use(noStore, httpx.MaxBody(maxBodyBytes), withSessionSlot)
 	r.Use(middleware.OapiRequestValidatorWithOptions(spec, &middleware.Options{
 		// Host matching against `servers` is pointless behind the gateway.
 		DoNotValidateServers: true,
@@ -87,12 +90,43 @@ func NewHandler(cfg Config, deps Deps) (http.Handler, error) {
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) { writeError(w, r, s.log, errNotFound) })
 	r.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) { writeError(w, r, s.log, errMethodNotAllowed) })
 
-	return gen.HandlerWithOptions(s, gen.ChiServerOptions{
-		BaseRouter: r,
-		ErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
-			writeError(w, r, s.log, &badRequestError{detail: err.Error()})
-		},
+	badRequest := func(w http.ResponseWriter, r *http.Request, err error) {
+		writeError(w, r, s.log, &badRequestError{detail: err.Error()})
+	}
+	strict := gen.NewStrictHandlerWithOptions(s, []gen.StrictMiddlewareFunc{withHTTPRequest}, gen.StrictHTTPServerOptions{
+		RequestErrorHandlerFunc:  badRequest,
+		ResponseErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) { writeError(w, r, s.log, err) },
+	})
+	return gen.HandlerWithOptions(strict, gen.ChiServerOptions{
+		BaseRouter:       r,
+		ErrorHandlerFunc: badRequest,
 	}), nil
+}
+
+// noStore keeps API responses (sessions, CSRF tokens, tenant data) out of shared caches.
+func noStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
+}
+
+type httpRequestKey struct{}
+
+// withHTTPRequest gives strict handlers access to the request (client IP, user agent, cookies).
+func withHTTPRequest(f gen.StrictHandlerFunc, _ string) gen.StrictHandlerFunc {
+	return func(ctx context.Context, w http.ResponseWriter, r *http.Request, req any) (any, error) {
+		return f(context.WithValue(ctx, httpRequestKey{}, r), w, r, req)
+	}
+}
+
+func httpRequest(ctx context.Context) *http.Request {
+	r, _ := ctx.Value(httpRequestKey{}).(*http.Request)
+	if r == nil {
+		// Only reachable if a handler is called outside the strict wrapper.
+		panic("api: http request missing from context")
+	}
+	return r
 }
 
 // sessionSlot carries the authenticated principal from the validator's AuthenticationFunc
@@ -128,6 +162,11 @@ func (s *server) resolve(r *http.Request) (auth.Principal, error) {
 	return slot.principal, slot.err
 }
 
+// principal returns the authenticated session of the request handled under ctx.
+func (s *server) principal(ctx context.Context) (auth.Principal, error) {
+	return s.resolve(httpRequest(ctx))
+}
+
 // authenticate is called by the request validator for every security scheme the matched
 // operation requires, so which endpoints need a session is decided by the spec.
 func (s *server) authenticate(_ context.Context, in *openapi3filter.AuthenticationInput) error {
@@ -160,37 +199,33 @@ func isUnsafe(method string) bool {
 	return true
 }
 
-func (s *server) GetHealth(w http.ResponseWriter, _ *http.Request) {
-	httpx.WriteJSON(w, http.StatusOK, gen.Health{Status: gen.Ok, Version: s.cfg.Version, Commit: s.cfg.Commit})
+func (s *server) GetHealth(_ context.Context, _ gen.GetHealthRequestObject) (gen.GetHealthResponseObject, error) {
+	return gen.GetHealth200JSONResponse{Status: gen.Ok, Version: s.cfg.Version, Commit: s.cfg.Commit}, nil
 }
 
-func (s *server) Login(w http.ResponseWriter, r *http.Request) {
-	var body gen.LoginRequest
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&body); err != nil {
-		writeError(w, r, s.log, &badRequestError{detail: "request body is not valid JSON for LoginRequest"})
-		return
-	}
+func (s *server) Login(ctx context.Context, req gen.LoginRequestObject) (gen.LoginResponseObject, error) {
+	r := httpRequest(ctx)
 	ip, trusted := httpx.ForwardedClientIP(r, s.cfg.TrustedProxyHops)
 	if !trusted {
 		// The peer is the proxy: limiting by it would let one client lock everybody out.
 		// An invalid address makes auth use one shared bucket for such requests.
-		s.warnMissingXFF(r.Context())
+		s.warnMissingXFF(ctx)
 		ip = netip.Addr{}
 	}
-	res, err := s.auth.Login(r.Context(), auth.LoginInput{
-		Email:     body.Email,
-		Password:  body.Password,
+	res, err := s.auth.Login(ctx, auth.LoginInput{
+		Email:     req.Body.Email,
+		Password:  req.Body.Password,
 		IP:        ip,
 		UserAgent: r.UserAgent(),
 	})
 	if err != nil {
-		writeError(w, r, s.log, err)
-		return
+		return nil, err
 	}
-	http.SetCookie(w, s.sessionCookie(res.Token, res.ExpiresAt))
-	httpx.WriteJSON(w, http.StatusOK, toSessionInfo(res.SessionInfo))
+	cookie := s.sessionCookie(res.Token, res.ExpiresAt).String()
+	return gen.Login200JSONResponse{
+		Body:    toSessionInfo(res.SessionInfo),
+		Headers: gen.Login200ResponseHeaders{SetCookie: &cookie},
+	}, nil
 }
 
 func (s *server) warnMissingXFF(ctx context.Context) {
@@ -203,32 +238,28 @@ func (s *server) warnMissingXFF(ctx context.Context) {
 		"trusted_proxy_hops", s.cfg.TrustedProxyHops)
 }
 
-func (s *server) Logout(w http.ResponseWriter, r *http.Request) {
-	p, err := s.resolve(r)
+func (s *server) Logout(ctx context.Context, _ gen.LogoutRequestObject) (gen.LogoutResponseObject, error) {
+	p, err := s.principal(ctx)
 	if err != nil {
-		writeError(w, r, s.log, err)
-		return
+		return nil, err
 	}
-	if err := s.auth.Logout(r.Context(), p, httpx.ClientIP(r, s.cfg.TrustedProxyHops)); err != nil {
-		writeError(w, r, s.log, err)
-		return
+	if err := s.auth.Logout(ctx, p, httpx.ClientIP(httpRequest(ctx), s.cfg.TrustedProxyHops)); err != nil {
+		return nil, err
 	}
-	http.SetCookie(w, s.sessionCookie("", time.Time{}))
-	w.WriteHeader(http.StatusNoContent)
+	cleared := s.sessionCookie("", time.Time{}).String()
+	return gen.Logout204Response{Headers: gen.Logout204ResponseHeaders{SetCookie: &cleared}}, nil
 }
 
-func (s *server) GetMe(w http.ResponseWriter, r *http.Request) {
-	p, err := s.resolve(r)
+func (s *server) GetMe(ctx context.Context, _ gen.GetMeRequestObject) (gen.GetMeResponseObject, error) {
+	p, err := s.principal(ctx)
 	if err != nil {
-		writeError(w, r, s.log, err)
-		return
+		return nil, err
 	}
-	info, err := s.auth.Me(r.Context(), p)
+	info, err := s.auth.Me(ctx, p)
 	if err != nil {
-		writeError(w, r, s.log, err)
-		return
+		return nil, err
 	}
-	httpx.WriteJSON(w, http.StatusOK, toSessionInfo(info))
+	return gen.GetMe200JSONResponse(toSessionInfo(info)), nil
 }
 
 // sessionCookie builds the session cookie; an empty token expires it.

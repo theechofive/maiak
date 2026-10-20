@@ -32,6 +32,14 @@ type Problem struct {
 	Detail    string `json:"detail,omitempty"`
 	Instance  string `json:"instance,omitempty"`
 	RequestID string `json:"request_id,omitempty"`
+	// FieldErrors lists per-field validation failures (400 and 422 only).
+	FieldErrors []FieldError `json:"fieldErrors,omitempty"`
+}
+
+// FieldError is one entry of Problem.FieldErrors.
+type FieldError struct {
+	Field   string `json:"field"`
+	Message string `json:"message"`
 }
 
 // WriteProblem writes p as application/problem+json.

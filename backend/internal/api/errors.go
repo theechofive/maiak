@@ -17,6 +17,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/auth"
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
+	"github.com/theechofive/maiak/backend/internal/platform/validation"
 )
 
 // Problem types (RFC 9457 "type" members).
@@ -28,6 +29,8 @@ const (
 	problemRateLimited        = "urn:maiak:problem:rate-limited"
 	problemNotFound           = "urn:maiak:problem:not-found"
 	problemMethodNotAllowed   = "urn:maiak:problem:method-not-allowed"
+	problemValidation         = "urn:maiak:problem:validation"
+	problemNotImplemented     = "urn:maiak:problem:not-implemented"
 	problemInternal           = "urn:maiak:problem:internal"
 )
 
@@ -39,6 +42,7 @@ func (e *badRequestError) Error() string { return "bad request: " + e.detail }
 var (
 	errNotFound         = errors.New("not found")
 	errMethodNotAllowed = errors.New("method not allowed")
+	errNotImplemented   = errors.New("not implemented")
 )
 
 // writeError is the single place where errors become HTTP responses. Unknown errors are
@@ -49,11 +53,18 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 	var badReq *badRequestError
 	var reqErr *openapi3filter.RequestError
 	var rateErr *auth.RateLimitedError
+	var valErr *validation.Error
 	switch {
 	case errors.As(err, &badReq):
 		p.Type, p.Title, p.Status, p.Detail = problemBadRequest, "Bad request", http.StatusBadRequest, badReq.detail
 	case errors.As(err, &reqErr):
 		p.Type, p.Title, p.Status, p.Detail = problemBadRequest, "Bad request", http.StatusBadRequest, requestErrorDetail(reqErr)
+		p.FieldErrors = requestFieldErrors(reqErr)
+	case errors.As(err, &valErr):
+		p.Type, p.Title, p.Status = problemValidation, "Validation failed", http.StatusUnprocessableEntity
+		for _, f := range valErr.Fields {
+			p.FieldErrors = append(p.FieldErrors, httpx.FieldError{Field: f.Field, Message: f.Message})
+		}
 	case errors.Is(err, auth.ErrCSRF):
 		p.Type, p.Title, p.Status = problemCSRF, "Missing or invalid CSRF token", http.StatusForbidden
 	case errors.Is(err, auth.ErrUnauthenticated):
@@ -68,6 +79,8 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 		p.Type, p.Title, p.Status = problemNotFound, "Not found", http.StatusNotFound
 	case errors.Is(err, errMethodNotAllowed), errors.Is(err, routers.ErrMethodNotAllowed):
 		p.Type, p.Title, p.Status = problemMethodNotAllowed, "Method not allowed", http.StatusMethodNotAllowed
+	case errors.Is(err, errNotImplemented):
+		p.Type, p.Title, p.Status = problemNotImplemented, "Not implemented yet", http.StatusNotImplemented
 	case errors.Is(err, context.Canceled):
 		// The client went away; nobody reads the response.
 		log.InfoContext(r.Context(), "request cancelled", "error", err)
@@ -102,4 +115,18 @@ func requestErrorDetail(e *openapi3filter.RequestError) string {
 		return fmt.Sprintf("%s: %s", where, e.Reason)
 	}
 	return where + " is invalid"
+}
+
+// requestFieldErrors attributes a request body schema violation to its field, so clients can
+// show it next to the input. Parameters and unparsable bodies have no field.
+func requestFieldErrors(e *openapi3filter.RequestError) []httpx.FieldError {
+	var se *openapi3.SchemaError
+	if e.RequestBody == nil || !errors.As(e.Err, &se) {
+		return nil
+	}
+	ptr := se.JSONPointer()
+	if len(ptr) == 0 {
+		return nil
+	}
+	return []httpx.FieldError{{Field: strings.Join(ptr, "."), Message: se.Reason}}
 }

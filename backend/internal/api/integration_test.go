@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/theechofive/maiak/backend/internal/api"
+	"github.com/theechofive/maiak/backend/internal/api/gen"
 	"github.com/theechofive/maiak/backend/internal/auth"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
@@ -266,5 +267,68 @@ func TestIntegrationLoginWithoutForwardedForUsesSharedKey(t *testing.T) {
 	}
 	if withIP != 1 || withoutIP != 2 {
 		t.Fatalf("audit rows with ip=%d without=%d, want 1/2 (the proxy address is not recorded)", withIP, withoutIP)
+	}
+}
+
+// login returns the session cookie header and CSRF token of the admin.
+func (c *client) login() (map[string]string, string) {
+	c.t.Helper()
+	r := c.do(http.MethodPost, "/api/v1/auth/login", `{"email":"`+adminEmail+`","password":"`+adminPassword+`"}`, nil)
+	if r.code != http.StatusOK {
+		c.t.Fatalf("login: %d %s", r.code, r.raw)
+	}
+	csrf, _ := r.body["csrf_token"].(string)
+	return map[string]string{"Cookie": api.SessionCookie + "=" + sessionCookie(c.t, r).Value}, csrf
+}
+
+// Every unsafe operation of the contract except login refuses a valid session without the
+// right CSRF token, before any handler (implemented or not) runs.
+func TestIntegrationUnsafeOperationsNeedCSRF(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("apicsrf"))
+	c := newServer(t, env, auth.Options{})
+	cookie, csrf := c.login()
+
+	spec, err := gen.GetSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, path := range spec.Paths.InMatchingOrder() {
+		for method, op := range spec.Paths.Value(path).Operations() {
+			if method == http.MethodGet || strings.EqualFold(op.OperationID, "login") {
+				continue
+			}
+			url := strings.ReplaceAll(path, "{monitorId}", "0192b9c4-7c5e-7000-8000-000000000001")
+			for name, token := range map[string]string{"missing": "", "wrong": csrf + "x"} {
+				hdr := map[string]string{"Cookie": cookie["Cookie"]}
+				if token != "" {
+					hdr["X-CSRF-Token"] = token
+				}
+				r := c.do(method, url, "", hdr)
+				if r.code != http.StatusForbidden || r.body["type"] != "urn:maiak:problem:csrf" {
+					t.Errorf("%s %s with %s token: %d %s", method, url, name, r.code, r.raw)
+				}
+			}
+			checked++
+		}
+	}
+	if checked < 8 {
+		t.Fatalf("only %d unsafe operations checked", checked)
+	}
+	// The session survived all of it.
+	if r := c.do(http.MethodGet, "/api/v1/auth/me", "", cookie); r.code != http.StatusOK {
+		t.Fatalf("me: %d %s", r.code, r.raw)
+	}
+}
+
+// Operations without a handler yet answer 501 problem+json to an authenticated client.
+func TestIntegrationUnimplementedOperationIs501(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("api501"))
+	c := newServer(t, env, auth.Options{})
+	cookie, _ := c.login()
+	r := c.do(http.MethodGet, "/api/v1/settings/slack", "", cookie)
+	if r.code != http.StatusNotImplemented || r.body["type"] != "urn:maiak:problem:not-implemented" ||
+		!strings.HasPrefix(r.header.Get("Content-Type"), "application/problem+json") {
+		t.Fatalf("slack settings: %d %v %s", r.code, r.header, r.raw)
 	}
 }

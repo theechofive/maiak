@@ -1,15 +1,23 @@
 openapi: 3.0.3
 info:
   title: Maiak API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     REST API of Maiak, the multi-tenant uptime-monitoring service. This file is the source of
     truth: the Go server and the TypeScript client are generated from it (ADR-0008).
 
     Authentication is a server-side session in the HttpOnly cookie `maiak_session`. Unsafe
     methods (POST, PUT, PATCH, DELETE) on authenticated endpoints also need the header
-    `X-CSRF-Token` with the `csrf_token` returned by login and `GET /api/v1/auth/me`.
-    Errors are `application/problem+json` (RFC 9457).
+    `X-CSRF-Token` with the `csrf_token` returned by login and `GET /api/v1/auth/me`; a missing
+    or wrong token is answered with 403.
+
+    Errors are `application/problem+json` (RFC 9457). A request that does not match this
+    contract (malformed JSON, wrong types, unknown or missing fields) gets 400; a well-formed
+    request that breaks a business rule (for example a URL with a private IP literal) gets 422.
+    Both carry `fieldErrors` when the problem can be attributed to request body fields.
+
+    Field names of the monitor, check, incident and settings resources are camelCase. The auth
+    resources predate that convention and keep their snake_case names (ADR-0017).
   contact:
     name: Maiak maintainers
     url: https://github.com/theechofive/maiak
@@ -21,6 +29,10 @@ tags:
     description: Service metadata
   - name: auth
     description: Login, logout and the current session
+  - name: monitors
+    description: HTTPS monitors, their status, statistics, checks and incidents
+  - name: settings
+    description: Tenant settings such as the Slack webhook
 security:
   - cookieAuth: []
 paths:
@@ -46,7 +58,8 @@ paths:
       summary: Log in with email and password
       description: |
         Creates a session and sets the `maiak_session` cookie. Failures always return the same
-        generic error. Attempts are rate limited per client IP and per email.
+        generic error. Attempts are rate limited per client IP and per email. This is the only
+        unsafe operation without a CSRF token (there is no session yet).
       tags: [auth]
       security: []
       requestBody:
@@ -84,6 +97,8 @@ paths:
       security:
         - cookieAuth: []
           csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
       responses:
         "204":
           description: Logged out
@@ -115,6 +130,358 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/monitors:
+    get:
+      operationId: listMonitors
+      summary: List monitors with their current status
+      description: |
+        All monitors of the tenant that are not deleted, with the current status and summary
+        counts. Answered from the state tables and rollups, never by scanning raw results.
+      tags: [monitors]
+      responses:
+        "200":
+          description: The monitors of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonitorList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createMonitor
+      summary: Create a monitor
+      description: |
+        Creates an HTTPS monitor. It starts with status `unknown` and is first checked within
+        about 30 seconds. Fails with 409 when the tenant's monitor limit (50 by default) is reached.
+      tags: [monitors]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MonitorCreate"
+      responses:
+        "201":
+          description: The created monitor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonitorDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/monitors/{monitorId}:
+    parameters:
+      - $ref: "#/components/parameters/MonitorId"
+    get:
+      operationId: getMonitor
+      summary: One monitor with status and uptime
+      description: The monitor with its current status, TLS expiry, ongoing incident and uptime for 24 h, 7 d and 30 d.
+      tags: [monitors]
+      responses:
+        "200":
+          description: The monitor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonitorDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+    patch:
+      operationId: updateMonitor
+      summary: Edit a monitor
+      description: |
+        Changes the given fields. `intervalSeconds` and `timeoutSeconds` cannot be changed in the
+        MVP: sending them with a different value fails with 422.
+      tags: [monitors]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MonitorUpdate"
+      responses:
+        "200":
+          description: The updated monitor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonitorDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteMonitor
+      summary: Delete a monitor
+      description: |
+        Soft delete: the monitor stops being checked, an open incident is resolved without a
+        notification, history is kept until retention and the monitor no longer counts toward
+        the limit.
+      tags: [monitors]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/monitors/{monitorId}/pause:
+    parameters:
+      - $ref: "#/components/parameters/MonitorId"
+    post:
+      operationId: pauseMonitor
+      summary: Pause a monitor
+      description: Stops checking. An open incident is resolved without a notification. Idempotent.
+      tags: [monitors]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "200":
+          description: The paused monitor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonitorDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/monitors/{monitorId}/resume:
+    parameters:
+      - $ref: "#/components/parameters/MonitorId"
+    post:
+      operationId: resumeMonitor
+      summary: Resume a paused monitor
+      description: Starts checking again within about 30 seconds; the status is `unknown` until the first check. Idempotent.
+      tags: [monitors]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "200":
+          description: The resumed monitor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonitorDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/monitors/{monitorId}/stats:
+    parameters:
+      - $ref: "#/components/parameters/MonitorId"
+    get:
+      operationId: getMonitorStats
+      summary: Response time statistics
+      description: Average and p95 response time and the latency series for the range (raw results up to 24 h, hourly rollups beyond).
+      tags: [monitors]
+      parameters:
+        - name: range
+          in: query
+          required: false
+          description: Time range ending now
+          schema:
+            $ref: "#/components/schemas/StatsRange"
+      responses:
+        "200":
+          description: Statistics for the range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonitorStats"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/monitors/{monitorId}/checks:
+    parameters:
+      - $ref: "#/components/parameters/MonitorId"
+    get:
+      operationId: listMonitorChecks
+      summary: Recent checks
+      description: The most recent check results of the monitor, newest first.
+      tags: [monitors]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of checks to return
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Recent checks
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CheckList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/monitors/{monitorId}/incidents:
+    parameters:
+      - $ref: "#/components/parameters/MonitorId"
+    get:
+      operationId: listMonitorIncidents
+      summary: Incidents of a monitor
+      description: Incidents of the monitor, newest first.
+      tags: [monitors]
+      responses:
+        "200":
+          description: Incidents
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IncidentList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/settings/slack:
+    get:
+      operationId: getSlackSettings
+      summary: Slack notification settings
+      description: Whether a Slack webhook is configured. The webhook URL is a secret and is never returned.
+      tags: [settings]
+      responses:
+        "200":
+          description: Current settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SlackSettings"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        default:
+          $ref: "#/components/responses/Error"
+    put:
+      operationId: putSlackSettings
+      summary: Set the Slack webhook
+      description: Stores the Incoming Webhook URL encrypted. It must match `https://hooks.slack.com/services/...` (422 otherwise).
+      tags: [settings]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SlackSettingsUpdate"
+      responses:
+        "200":
+          description: Settings after the change
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SlackSettings"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/settings/slack/test:
+    post:
+      operationId: testSlack
+      summary: Send a Slack test message
+      description: Sends a test message to the configured webhook. Fails with 409 when no webhook is configured.
+      tags: [settings]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "204":
+          description: Slack accepted the message
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        default:
+          $ref: "#/components/responses/Error"
 components:
   securitySchemes:
     cookieAuth:
@@ -125,6 +492,24 @@ components:
       type: apiKey
       in: header
       name: X-CSRF-Token
+  parameters:
+    MonitorId:
+      name: monitorId
+      in: path
+      required: true
+      description: Monitor id
+      schema:
+        type: string
+        format: uuid
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: The `csrf_token` of the session (from login or `GET /api/v1/auth/me`)
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 256
   responses:
     BadRequest:
       description: The request does not match the contract
@@ -144,6 +529,24 @@ components:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: The resource does not exist in this tenant (or was deleted)
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Conflict:
+      description: The request conflicts with the current state (for example the monitor limit is reached)
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    UnprocessableEntity:
+      description: The request is well-formed but breaks a validation rule; see `fieldErrors`
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     TooManyRequests:
       description: Rate limit exceeded
       headers:
@@ -156,7 +559,7 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
     Error:
-      description: Unexpected error
+      description: Unexpected error (also 501 for operations that are not implemented yet)
       content:
         application/problem+json:
           schema:
@@ -235,6 +638,408 @@ components:
     MembershipRole:
       type: string
       enum: [owner, admin, member, viewer]
+    MonitorStatus:
+      type: string
+      description: Aggregated status. `unknown` until the first check after creation or resume.
+      enum: [unknown, up, down]
+    ExpectedStatus:
+      type: string
+      description: "`2xx` (any 200-299) or one exact HTTP status code from 100 to 599, as a string"
+      pattern: "^(2xx|[1-5][0-9][0-9])$"
+      example: 2xx
+    MonitorCreate:
+      type: object
+      additionalProperties: false
+      required: [name, url]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          example: Website
+        url:
+          type: string
+          description: HTTPS URL on port 443, without credentials; hosts that are private IP literals or internal names are rejected
+          minLength: 1
+          maxLength: 2048
+          example: https://example.com/health
+        intervalSeconds:
+          type: integer
+          description: Check interval; only 60 is accepted in the MVP
+          default: 60
+        timeoutSeconds:
+          type: integer
+          description: Request deadline including redirects; only 10 is accepted in the MVP
+          default: 10
+        expectedStatus:
+          $ref: "#/components/schemas/ExpectedStatus"
+        failureThreshold:
+          type: integer
+          description: Consecutive failures before the monitor is down
+          minimum: 1
+          maximum: 3
+          default: 2
+        notifySlack:
+          type: boolean
+          default: true
+    MonitorUpdate:
+      type: object
+      additionalProperties: false
+      description: Only the given fields change. `intervalSeconds` and `timeoutSeconds` are accepted only with their current value.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        url:
+          type: string
+          minLength: 1
+          maxLength: 2048
+        intervalSeconds:
+          type: integer
+        timeoutSeconds:
+          type: integer
+        expectedStatus:
+          $ref: "#/components/schemas/ExpectedStatus"
+        failureThreshold:
+          type: integer
+          minimum: 1
+          maximum: 3
+        notifySlack:
+          type: boolean
+    Incident:
+      type: object
+      additionalProperties: false
+      required: [id, startedAt, resolvedAt, reason]
+      properties:
+        id:
+          type: string
+          format: uuid
+        startedAt:
+          type: string
+          format: date-time
+        resolvedAt:
+          type: string
+          format: date-time
+          nullable: true
+        reason:
+          type: string
+          description: Why the monitor went down (the error kind of the failing checks, for example `timeout` or `http_status`)
+    OngoingIncident:
+      type: object
+      nullable: true
+      additionalProperties: false
+      description: The open incident of a monitor; null when there is none
+      required: [id, startedAt, reason]
+      properties:
+        id:
+          type: string
+          format: uuid
+        startedAt:
+          type: string
+          format: date-time
+        reason:
+          type: string
+    MonitorListItem:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - url
+        - intervalSeconds
+        - timeoutSeconds
+        - expectedStatus
+        - failureThreshold
+        - notifySlack
+        - paused
+        - status
+        - statusSince
+        - lastErrorKind
+        - lastCheckedAt
+        - tlsExpiresAt
+        - ongoingIncident
+        - uptime24h
+        - lastResponseMs
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        url:
+          type: string
+        intervalSeconds:
+          type: integer
+        timeoutSeconds:
+          type: integer
+        expectedStatus:
+          $ref: "#/components/schemas/ExpectedStatus"
+        failureThreshold:
+          type: integer
+        notifySlack:
+          type: boolean
+        paused:
+          type: boolean
+        status:
+          $ref: "#/components/schemas/MonitorStatus"
+        statusSince:
+          type: string
+          format: date-time
+          description: When the status last changed
+        lastErrorKind:
+          type: string
+          nullable: true
+          description: Error kind of the last failed check, null after a success
+        lastCheckedAt:
+          type: string
+          format: date-time
+          nullable: true
+        tlsExpiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Expiry of the certificate seen by the last successful check
+        ongoingIncident:
+          $ref: "#/components/schemas/OngoingIncident"
+        uptime24h:
+          type: number
+          format: double
+          nullable: true
+          minimum: 0
+          maximum: 100
+          description: Percentage of successful checks in the last 24 h; null when no check ran
+        lastResponseMs:
+          type: integer
+          nullable: true
+          description: Response time of the last check in milliseconds; null when no check ran
+    MonitorSummary:
+      type: object
+      additionalProperties: false
+      required: [up, down, paused, unknown]
+      description: Counts over all non-deleted monitors. A paused monitor counts only as paused.
+      properties:
+        up:
+          type: integer
+        down:
+          type: integer
+        paused:
+          type: integer
+        unknown:
+          type: integer
+    MonitorList:
+      type: object
+      additionalProperties: false
+      required: [summary, items]
+      properties:
+        summary:
+          $ref: "#/components/schemas/MonitorSummary"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/MonitorListItem"
+    Uptime:
+      type: object
+      additionalProperties: false
+      required: [h24, d7, d30]
+      description: Percentage of successful checks per window; null when no check ran in it
+      properties:
+        h24:
+          type: number
+          format: double
+          nullable: true
+        d7:
+          type: number
+          format: double
+          nullable: true
+        d30:
+          type: number
+          format: double
+          nullable: true
+    MonitorDetail:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - url
+        - intervalSeconds
+        - timeoutSeconds
+        - expectedStatus
+        - failureThreshold
+        - notifySlack
+        - paused
+        - status
+        - statusSince
+        - lastErrorKind
+        - lastCheckedAt
+        - tlsExpiresAt
+        - ongoingIncident
+        - uptime
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        url:
+          type: string
+        intervalSeconds:
+          type: integer
+        timeoutSeconds:
+          type: integer
+        expectedStatus:
+          $ref: "#/components/schemas/ExpectedStatus"
+        failureThreshold:
+          type: integer
+        notifySlack:
+          type: boolean
+        paused:
+          type: boolean
+        status:
+          $ref: "#/components/schemas/MonitorStatus"
+        statusSince:
+          type: string
+          format: date-time
+        lastErrorKind:
+          type: string
+          nullable: true
+        lastCheckedAt:
+          type: string
+          format: date-time
+          nullable: true
+        tlsExpiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        ongoingIncident:
+          $ref: "#/components/schemas/OngoingIncident"
+        uptime:
+          $ref: "#/components/schemas/Uptime"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    StatsRange:
+      type: string
+      enum: [24h, 7d, 30d]
+      default: 24h
+    LatencyPoint:
+      type: object
+      additionalProperties: false
+      required: [t, avgMs, okRatio]
+      properties:
+        t:
+          type: string
+          format: date-time
+          description: Start of the bucket (UTC)
+        avgMs:
+          type: number
+          format: double
+          nullable: true
+          description: Average response time of the bucket; null when no check succeeded in it
+        okRatio:
+          type: number
+          format: double
+          nullable: true
+          minimum: 0
+          maximum: 1
+          description: Share of successful checks in the bucket; null when no check ran
+    MonitorStats:
+      type: object
+      additionalProperties: false
+      required: [range, avgMs, p95Ms, series]
+      properties:
+        range:
+          $ref: "#/components/schemas/StatsRange"
+        avgMs:
+          type: number
+          format: double
+          nullable: true
+        p95Ms:
+          type: number
+          format: double
+          nullable: true
+        series:
+          type: array
+          items:
+            $ref: "#/components/schemas/LatencyPoint"
+    Check:
+      type: object
+      additionalProperties: false
+      required: [checkedAt, location, ok, httpStatus, responseMs, errorKind]
+      properties:
+        checkedAt:
+          type: string
+          format: date-time
+        location:
+          type: string
+          description: Code of the probe location
+          example: home-eu-central-1
+        ok:
+          type: boolean
+        httpStatus:
+          type: integer
+          nullable: true
+        responseMs:
+          type: integer
+          nullable: true
+        errorKind:
+          type: string
+          nullable: true
+    CheckList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Check"
+    IncidentList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Incident"
+    SlackSettings:
+      type: object
+      additionalProperties: false
+      required: [configured]
+      properties:
+        configured:
+          type: boolean
+          description: Whether a webhook is stored (the URL itself is never returned)
+    SlackSettingsUpdate:
+      type: object
+      additionalProperties: false
+      required: [webhookUrl]
+      properties:
+        webhookUrl:
+          type: string
+          format: password
+          description: Slack Incoming Webhook URL, `https://hooks.slack.com/services/...`; write-only
+          minLength: 1
+          maxLength: 2048
+    FieldError:
+      type: object
+      additionalProperties: false
+      required: [field, message]
+      properties:
+        field:
+          type: string
+          description: Dotted path of the request body field
+          example: url
+        message:
+          type: string
+          example: must use https
     Problem:
       type: object
       description: RFC 9457 problem details
@@ -256,3 +1061,8 @@ components:
           type: string
         request_id:
           type: string
+        fieldErrors:
+          type: array
+          description: Per-field validation errors (400 and 422)
+          items:
+            $ref: "#/components/schemas/FieldError"

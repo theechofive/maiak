@@ -6,7 +6,10 @@ package gen
 import (
 	"bytes"
 	"compress/flate"
+	"context"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -16,6 +19,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/go-chi/chi/v5"
+	"github.com/oapi-codegen/runtime"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
@@ -58,6 +62,83 @@ func (e MembershipRole) Valid() bool {
 	}
 }
 
+// Defines values for MonitorStatus.
+const (
+	Down    MonitorStatus = "down"
+	Unknown MonitorStatus = "unknown"
+	Up      MonitorStatus = "up"
+)
+
+// Valid indicates whether the value is a known member of the MonitorStatus enum.
+func (e MonitorStatus) Valid() bool {
+	switch e {
+	case Down:
+		return true
+	case Unknown:
+		return true
+	case Up:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for StatsRange.
+const (
+	N24h StatsRange = "24h"
+	N30d StatsRange = "30d"
+	N7d  StatsRange = "7d"
+)
+
+// Valid indicates whether the value is a known member of the StatsRange enum.
+func (e StatsRange) Valid() bool {
+	switch e {
+	case N24h:
+		return true
+	case N30d:
+		return true
+	case N7d:
+		return true
+	default:
+		return false
+	}
+}
+
+// Check defines model for Check.
+type Check struct {
+	CheckedAt  time.Time `json:"checkedAt"`
+	ErrorKind  *string   `json:"errorKind"`
+	HttpStatus *int      `json:"httpStatus"`
+
+	// Location Code of the probe location
+	//
+	// Example: home-eu-central-1
+	Location   string `json:"location"`
+	Ok         bool   `json:"ok"`
+	ResponseMs *int   `json:"responseMs"`
+}
+
+// CheckList defines model for CheckList.
+type CheckList struct {
+	Items []Check `json:"items"`
+}
+
+// ExpectedStatus `2xx` (any 200-299) or one exact HTTP status code from 100 to 599, as a string
+//
+// Example: 2xx
+type ExpectedStatus = string
+
+// FieldError defines model for FieldError.
+type FieldError struct {
+	// Field Dotted path of the request body field
+	//
+	// Example: url
+	Field string `json:"field"`
+
+	// Message Example: must use https
+	Message string `json:"message"`
+}
+
 // Health defines model for Health.
 type Health struct {
 	// Commit Example: 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b
@@ -71,6 +152,33 @@ type Health struct {
 // HealthStatus defines model for Health.Status.
 type HealthStatus string
 
+// Incident defines model for Incident.
+type Incident struct {
+	Id openapi_types.UUID `json:"id"`
+
+	// Reason Why the monitor went down (the error kind of the failing checks, for example `timeout` or `http_status`)
+	Reason     string     `json:"reason"`
+	ResolvedAt *time.Time `json:"resolvedAt"`
+	StartedAt  time.Time  `json:"startedAt"`
+}
+
+// IncidentList defines model for IncidentList.
+type IncidentList struct {
+	Items []Incident `json:"items"`
+}
+
+// LatencyPoint defines model for LatencyPoint.
+type LatencyPoint struct {
+	// AvgMs Average response time of the bucket; null when no check succeeded in it
+	AvgMs *float64 `json:"avgMs"`
+
+	// OkRatio Share of successful checks in the bucket; null when no check ran
+	OkRatio *float64 `json:"okRatio"`
+
+	// T Start of the bucket (UTC)
+	T time.Time `json:"t"`
+}
+
 // LoginRequest defines model for LoginRequest.
 type LoginRequest struct {
 	// Email Example: admin@example.com
@@ -81,13 +189,160 @@ type LoginRequest struct {
 // MembershipRole defines model for MembershipRole.
 type MembershipRole string
 
+// MonitorCreate defines model for MonitorCreate.
+type MonitorCreate struct {
+	// ExpectedStatus `2xx` (any 200-299) or one exact HTTP status code from 100 to 599, as a string
+	//
+	// Example: 2xx
+	ExpectedStatus *ExpectedStatus `json:"expectedStatus,omitempty"`
+
+	// FailureThreshold Consecutive failures before the monitor is down
+	FailureThreshold *int `json:"failureThreshold,omitempty"`
+
+	// IntervalSeconds Check interval; only 60 is accepted in the MVP
+	IntervalSeconds *int `json:"intervalSeconds,omitempty"`
+
+	// Name Example: Website
+	Name        string `json:"name"`
+	NotifySlack *bool  `json:"notifySlack,omitempty"`
+
+	// TimeoutSeconds Request deadline including redirects; only 10 is accepted in the MVP
+	TimeoutSeconds *int `json:"timeoutSeconds,omitempty"`
+
+	// Url HTTPS URL on port 443, without credentials; hosts that are private IP literals or internal names are rejected
+	//
+	// Example: https://example.com/health
+	Url string `json:"url"`
+}
+
+// MonitorDetail defines model for MonitorDetail.
+type MonitorDetail struct {
+	CreatedAt time.Time `json:"createdAt"`
+
+	// ExpectedStatus `2xx` (any 200-299) or one exact HTTP status code from 100 to 599, as a string
+	//
+	// Example: 2xx
+	ExpectedStatus   ExpectedStatus     `json:"expectedStatus"`
+	FailureThreshold int                `json:"failureThreshold"`
+	Id               openapi_types.UUID `json:"id"`
+	IntervalSeconds  int                `json:"intervalSeconds"`
+	LastCheckedAt    *time.Time         `json:"lastCheckedAt"`
+	LastErrorKind    *string            `json:"lastErrorKind"`
+	Name             string             `json:"name"`
+	NotifySlack      bool               `json:"notifySlack"`
+
+	// OngoingIncident The open incident of a monitor; null when there is none
+	OngoingIncident *OngoingIncident `json:"ongoingIncident"`
+	Paused          bool             `json:"paused"`
+
+	// Status Aggregated status. `unknown` until the first check after creation or resume.
+	Status         MonitorStatus `json:"status"`
+	StatusSince    time.Time     `json:"statusSince"`
+	TimeoutSeconds int           `json:"timeoutSeconds"`
+	TlsExpiresAt   *time.Time    `json:"tlsExpiresAt"`
+	UpdatedAt      time.Time     `json:"updatedAt"`
+
+	// Uptime Percentage of successful checks per window; null when no check ran in it
+	Uptime Uptime `json:"uptime"`
+	Url    string `json:"url"`
+}
+
+// MonitorList defines model for MonitorList.
+type MonitorList struct {
+	Items []MonitorListItem `json:"items"`
+
+	// Summary Counts over all non-deleted monitors. A paused monitor counts only as paused.
+	Summary MonitorSummary `json:"summary"`
+}
+
+// MonitorListItem defines model for MonitorListItem.
+type MonitorListItem struct {
+	// ExpectedStatus `2xx` (any 200-299) or one exact HTTP status code from 100 to 599, as a string
+	//
+	// Example: 2xx
+	ExpectedStatus   ExpectedStatus     `json:"expectedStatus"`
+	FailureThreshold int                `json:"failureThreshold"`
+	Id               openapi_types.UUID `json:"id"`
+	IntervalSeconds  int                `json:"intervalSeconds"`
+	LastCheckedAt    *time.Time         `json:"lastCheckedAt"`
+
+	// LastErrorKind Error kind of the last failed check, null after a success
+	LastErrorKind *string `json:"lastErrorKind"`
+
+	// LastResponseMs Response time of the last check in milliseconds; null when no check ran
+	LastResponseMs *int   `json:"lastResponseMs"`
+	Name           string `json:"name"`
+	NotifySlack    bool   `json:"notifySlack"`
+
+	// OngoingIncident The open incident of a monitor; null when there is none
+	OngoingIncident *OngoingIncident `json:"ongoingIncident"`
+	Paused          bool             `json:"paused"`
+
+	// Status Aggregated status. `unknown` until the first check after creation or resume.
+	Status MonitorStatus `json:"status"`
+
+	// StatusSince When the status last changed
+	StatusSince    time.Time `json:"statusSince"`
+	TimeoutSeconds int       `json:"timeoutSeconds"`
+
+	// TlsExpiresAt Expiry of the certificate seen by the last successful check
+	TlsExpiresAt *time.Time `json:"tlsExpiresAt"`
+
+	// Uptime24h Percentage of successful checks in the last 24 h; null when no check ran
+	Uptime24h *float64 `json:"uptime24h"`
+	Url       string   `json:"url"`
+}
+
+// MonitorStats defines model for MonitorStats.
+type MonitorStats struct {
+	AvgMs  *float64       `json:"avgMs"`
+	P95Ms  *float64       `json:"p95Ms"`
+	Range  StatsRange     `json:"range"`
+	Series []LatencyPoint `json:"series"`
+}
+
+// MonitorStatus Aggregated status. `unknown` until the first check after creation or resume.
+type MonitorStatus string
+
+// MonitorSummary Counts over all non-deleted monitors. A paused monitor counts only as paused.
+type MonitorSummary struct {
+	Down    int `json:"down"`
+	Paused  int `json:"paused"`
+	Unknown int `json:"unknown"`
+	Up      int `json:"up"`
+}
+
+// MonitorUpdate Only the given fields change. `intervalSeconds` and `timeoutSeconds` are accepted only with their current value.
+type MonitorUpdate struct {
+	// ExpectedStatus `2xx` (any 200-299) or one exact HTTP status code from 100 to 599, as a string
+	//
+	// Example: 2xx
+	ExpectedStatus   *ExpectedStatus `json:"expectedStatus,omitempty"`
+	FailureThreshold *int            `json:"failureThreshold,omitempty"`
+	IntervalSeconds  *int            `json:"intervalSeconds,omitempty"`
+	Name             *string         `json:"name,omitempty"`
+	NotifySlack      *bool           `json:"notifySlack,omitempty"`
+	TimeoutSeconds   *int            `json:"timeoutSeconds,omitempty"`
+	Url              *string         `json:"url,omitempty"`
+}
+
+// OngoingIncident The open incident of a monitor; null when there is none
+type OngoingIncident struct {
+	Id        openapi_types.UUID `json:"id"`
+	Reason    string             `json:"reason"`
+	StartedAt time.Time          `json:"startedAt"`
+}
+
 // Problem RFC 9457 problem details
 type Problem struct {
-	Detail    *string `json:"detail,omitempty"`
-	Instance  *string `json:"instance,omitempty"`
-	RequestId *string `json:"request_id,omitempty"`
-	Status    int     `json:"status"`
-	Title     string  `json:"title"`
+	Detail *string `json:"detail,omitempty"`
+
+	// FieldErrors Per-field validation errors (400 and 422)
+	FieldErrors *[]FieldError `json:"fieldErrors,omitempty"`
+	Instance    *string       `json:"instance,omitempty"`
+	RequestId   *string       `json:"request_id,omitempty"`
+	Status      int           `json:"status"`
+	Title       string        `json:"title"`
 
 	// Type URI reference identifying the problem type
 	//
@@ -105,11 +360,33 @@ type SessionInfo struct {
 	User      User           `json:"user"`
 }
 
+// SlackSettings defines model for SlackSettings.
+type SlackSettings struct {
+	// Configured Whether a webhook is stored (the URL itself is never returned)
+	Configured bool `json:"configured"`
+}
+
+// SlackSettingsUpdate defines model for SlackSettingsUpdate.
+type SlackSettingsUpdate struct {
+	// WebhookUrl Slack Incoming Webhook URL, `https://hooks.slack.com/services/...`; write-only
+	WebhookUrl string `json:"webhookUrl"`
+}
+
+// StatsRange defines model for StatsRange.
+type StatsRange string
+
 // Tenant defines model for Tenant.
 type Tenant struct {
 	Id   openapi_types.UUID `json:"id"`
 	Name string             `json:"name"`
 	Slug string             `json:"slug"`
+}
+
+// Uptime Percentage of successful checks per window; null when no check ran in it
+type Uptime struct {
+	D30 *float64 `json:"d30"`
+	D7  *float64 `json:"d7"`
+	H24 *float64 `json:"h24"`
 }
 
 // User defines model for User.
@@ -119,8 +396,17 @@ type User struct {
 	Id          openapi_types.UUID `json:"id"`
 }
 
+// CsrfToken defines model for CsrfToken.
+type CsrfToken = string
+
+// MonitorId defines model for MonitorId.
+type MonitorId = openapi_types.UUID
+
 // BadRequest RFC 9457 problem details
 type BadRequest = Problem
+
+// Conflict RFC 9457 problem details
+type Conflict = Problem
 
 // Error RFC 9457 problem details
 type Error = Problem
@@ -128,14 +414,89 @@ type Error = Problem
 // Forbidden RFC 9457 problem details
 type Forbidden = Problem
 
+// NotFound RFC 9457 problem details
+type NotFound = Problem
+
 // TooManyRequests RFC 9457 problem details
 type TooManyRequests = Problem
 
 // Unauthorized RFC 9457 problem details
 type Unauthorized = Problem
 
+// UnprocessableEntity RFC 9457 problem details
+type UnprocessableEntity = Problem
+
+// LogoutParams defines parameters for Logout.
+type LogoutParams struct {
+	// XCSRFToken The `csrf_token` of the session (from login or `GET /api/v1/auth/me`)
+	XCSRFToken CsrfToken `json:"X-CSRF-Token"`
+}
+
+// CreateMonitorParams defines parameters for CreateMonitor.
+type CreateMonitorParams struct {
+	// XCSRFToken The `csrf_token` of the session (from login or `GET /api/v1/auth/me`)
+	XCSRFToken CsrfToken `json:"X-CSRF-Token"`
+}
+
+// DeleteMonitorParams defines parameters for DeleteMonitor.
+type DeleteMonitorParams struct {
+	// XCSRFToken The `csrf_token` of the session (from login or `GET /api/v1/auth/me`)
+	XCSRFToken CsrfToken `json:"X-CSRF-Token"`
+}
+
+// UpdateMonitorParams defines parameters for UpdateMonitor.
+type UpdateMonitorParams struct {
+	// XCSRFToken The `csrf_token` of the session (from login or `GET /api/v1/auth/me`)
+	XCSRFToken CsrfToken `json:"X-CSRF-Token"`
+}
+
+// ListMonitorChecksParams defines parameters for ListMonitorChecks.
+type ListMonitorChecksParams struct {
+	// Limit Maximum number of checks to return
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// PauseMonitorParams defines parameters for PauseMonitor.
+type PauseMonitorParams struct {
+	// XCSRFToken The `csrf_token` of the session (from login or `GET /api/v1/auth/me`)
+	XCSRFToken CsrfToken `json:"X-CSRF-Token"`
+}
+
+// ResumeMonitorParams defines parameters for ResumeMonitor.
+type ResumeMonitorParams struct {
+	// XCSRFToken The `csrf_token` of the session (from login or `GET /api/v1/auth/me`)
+	XCSRFToken CsrfToken `json:"X-CSRF-Token"`
+}
+
+// GetMonitorStatsParams defines parameters for GetMonitorStats.
+type GetMonitorStatsParams struct {
+	// Range Time range ending now
+	Range *StatsRange `form:"range,omitempty" json:"range,omitempty"`
+}
+
+// PutSlackSettingsParams defines parameters for PutSlackSettings.
+type PutSlackSettingsParams struct {
+	// XCSRFToken The `csrf_token` of the session (from login or `GET /api/v1/auth/me`)
+	XCSRFToken CsrfToken `json:"X-CSRF-Token"`
+}
+
+// TestSlackParams defines parameters for TestSlack.
+type TestSlackParams struct {
+	// XCSRFToken The `csrf_token` of the session (from login or `GET /api/v1/auth/me`)
+	XCSRFToken CsrfToken `json:"X-CSRF-Token"`
+}
+
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
+
+// CreateMonitorJSONRequestBody defines body for CreateMonitor for application/json ContentType.
+type CreateMonitorJSONRequestBody = MonitorCreate
+
+// UpdateMonitorJSONRequestBody defines body for UpdateMonitor for application/json ContentType.
+type UpdateMonitorJSONRequestBody = MonitorUpdate
+
+// PutSlackSettingsJSONRequestBody defines body for PutSlackSettings for application/json ContentType.
+type PutSlackSettingsJSONRequestBody = SlackSettingsUpdate
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -144,13 +505,52 @@ type ServerInterface interface {
 	Login(w http.ResponseWriter, r *http.Request)
 	// Logout Log out
 	// (POST /api/v1/auth/logout)
-	Logout(w http.ResponseWriter, r *http.Request)
+	Logout(w http.ResponseWriter, r *http.Request, params LogoutParams)
 	// GetMe Current user and session
 	// (GET /api/v1/auth/me)
 	GetMe(w http.ResponseWriter, r *http.Request)
 	// GetHealth Service health and build info
 	// (GET /api/v1/health)
 	GetHealth(w http.ResponseWriter, r *http.Request)
+	// ListMonitors List monitors with their current status
+	// (GET /api/v1/monitors)
+	ListMonitors(w http.ResponseWriter, r *http.Request)
+	// CreateMonitor Create a monitor
+	// (POST /api/v1/monitors)
+	CreateMonitor(w http.ResponseWriter, r *http.Request, params CreateMonitorParams)
+	// DeleteMonitor Delete a monitor
+	// (DELETE /api/v1/monitors/{monitorId})
+	DeleteMonitor(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params DeleteMonitorParams)
+	// GetMonitor One monitor with status and uptime
+	// (GET /api/v1/monitors/{monitorId})
+	GetMonitor(w http.ResponseWriter, r *http.Request, monitorId MonitorId)
+	// UpdateMonitor Edit a monitor
+	// (PATCH /api/v1/monitors/{monitorId})
+	UpdateMonitor(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params UpdateMonitorParams)
+	// ListMonitorChecks Recent checks
+	// (GET /api/v1/monitors/{monitorId}/checks)
+	ListMonitorChecks(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params ListMonitorChecksParams)
+	// ListMonitorIncidents Incidents of a monitor
+	// (GET /api/v1/monitors/{monitorId}/incidents)
+	ListMonitorIncidents(w http.ResponseWriter, r *http.Request, monitorId MonitorId)
+	// PauseMonitor Pause a monitor
+	// (POST /api/v1/monitors/{monitorId}/pause)
+	PauseMonitor(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params PauseMonitorParams)
+	// ResumeMonitor Resume a paused monitor
+	// (POST /api/v1/monitors/{monitorId}/resume)
+	ResumeMonitor(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params ResumeMonitorParams)
+	// GetMonitorStats Response time statistics
+	// (GET /api/v1/monitors/{monitorId}/stats)
+	GetMonitorStats(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params GetMonitorStatsParams)
+	// GetSlackSettings Slack notification settings
+	// (GET /api/v1/settings/slack)
+	GetSlackSettings(w http.ResponseWriter, r *http.Request)
+	// PutSlackSettings Set the Slack webhook
+	// (PUT /api/v1/settings/slack)
+	PutSlackSettings(w http.ResponseWriter, r *http.Request, params PutSlackSettingsParams)
+	// TestSlack Send a Slack test message
+	// (POST /api/v1/settings/slack/test)
+	TestSlack(w http.ResponseWriter, r *http.Request, params TestSlackParams)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -165,7 +565,7 @@ func (_ Unimplemented) Login(w http.ResponseWriter, r *http.Request) {
 
 // Logout Log out
 // (POST /api/v1/auth/logout)
-func (_ Unimplemented) Logout(w http.ResponseWriter, r *http.Request) {
+func (_ Unimplemented) Logout(w http.ResponseWriter, r *http.Request, params LogoutParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -178,6 +578,84 @@ func (_ Unimplemented) GetMe(w http.ResponseWriter, r *http.Request) {
 // GetHealth Service health and build info
 // (GET /api/v1/health)
 func (_ Unimplemented) GetHealth(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListMonitors List monitors with their current status
+// (GET /api/v1/monitors)
+func (_ Unimplemented) ListMonitors(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// CreateMonitor Create a monitor
+// (POST /api/v1/monitors)
+func (_ Unimplemented) CreateMonitor(w http.ResponseWriter, r *http.Request, params CreateMonitorParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// DeleteMonitor Delete a monitor
+// (DELETE /api/v1/monitors/{monitorId})
+func (_ Unimplemented) DeleteMonitor(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params DeleteMonitorParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetMonitor One monitor with status and uptime
+// (GET /api/v1/monitors/{monitorId})
+func (_ Unimplemented) GetMonitor(w http.ResponseWriter, r *http.Request, monitorId MonitorId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// UpdateMonitor Edit a monitor
+// (PATCH /api/v1/monitors/{monitorId})
+func (_ Unimplemented) UpdateMonitor(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params UpdateMonitorParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListMonitorChecks Recent checks
+// (GET /api/v1/monitors/{monitorId}/checks)
+func (_ Unimplemented) ListMonitorChecks(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params ListMonitorChecksParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListMonitorIncidents Incidents of a monitor
+// (GET /api/v1/monitors/{monitorId}/incidents)
+func (_ Unimplemented) ListMonitorIncidents(w http.ResponseWriter, r *http.Request, monitorId MonitorId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// PauseMonitor Pause a monitor
+// (POST /api/v1/monitors/{monitorId}/pause)
+func (_ Unimplemented) PauseMonitor(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params PauseMonitorParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ResumeMonitor Resume a paused monitor
+// (POST /api/v1/monitors/{monitorId}/resume)
+func (_ Unimplemented) ResumeMonitor(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params ResumeMonitorParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetMonitorStats Response time statistics
+// (GET /api/v1/monitors/{monitorId}/stats)
+func (_ Unimplemented) GetMonitorStats(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params GetMonitorStatsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetSlackSettings Slack notification settings
+// (GET /api/v1/settings/slack)
+func (_ Unimplemented) GetSlackSettings(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// PutSlackSettings Set the Slack webhook
+// (PUT /api/v1/settings/slack)
+func (_ Unimplemented) PutSlackSettings(w http.ResponseWriter, r *http.Request, params PutSlackSettingsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// TestSlack Send a Slack test message
+// (POST /api/v1/settings/slack/test)
+func (_ Unimplemented) TestSlack(w http.ResponseWriter, r *http.Request, params TestSlackParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -207,8 +685,39 @@ func (siw *ServerInterfaceWrapper) Login(w http.ResponseWriter, r *http.Request)
 // Logout operation middleware
 func (siw *ServerInterfaceWrapper) Logout(w http.ResponseWriter, r *http.Request) {
 
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params LogoutParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CsrfToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-CSRF-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-CSRF-Token", Err: err})
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		err := fmt.Errorf("Header parameter X-CSRF-Token is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-CSRF-Token", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.Logout(w, r)
+		siw.Handler.Logout(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -237,6 +746,521 @@ func (siw *ServerInterfaceWrapper) GetHealth(w http.ResponseWriter, r *http.Requ
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetHealth(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListMonitors operation middleware
+func (siw *ServerInterfaceWrapper) ListMonitors(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMonitors(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateMonitor operation middleware
+func (siw *ServerInterfaceWrapper) CreateMonitor(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CreateMonitorParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CsrfToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-CSRF-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-CSRF-Token", Err: err})
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		err := fmt.Errorf("Header parameter X-CSRF-Token is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-CSRF-Token", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateMonitor(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteMonitor operation middleware
+func (siw *ServerInterfaceWrapper) DeleteMonitor(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "monitorId" -------------
+	var monitorId MonitorId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "monitorId", chi.URLParam(r, "monitorId"), &monitorId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "monitorId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteMonitorParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CsrfToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-CSRF-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-CSRF-Token", Err: err})
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		err := fmt.Errorf("Header parameter X-CSRF-Token is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-CSRF-Token", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteMonitor(w, r, monitorId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetMonitor operation middleware
+func (siw *ServerInterfaceWrapper) GetMonitor(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "monitorId" -------------
+	var monitorId MonitorId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "monitorId", chi.URLParam(r, "monitorId"), &monitorId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "monitorId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMonitor(w, r, monitorId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateMonitor operation middleware
+func (siw *ServerInterfaceWrapper) UpdateMonitor(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "monitorId" -------------
+	var monitorId MonitorId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "monitorId", chi.URLParam(r, "monitorId"), &monitorId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "monitorId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params UpdateMonitorParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CsrfToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-CSRF-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-CSRF-Token", Err: err})
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		err := fmt.Errorf("Header parameter X-CSRF-Token is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-CSRF-Token", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateMonitor(w, r, monitorId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListMonitorChecks operation middleware
+func (siw *ServerInterfaceWrapper) ListMonitorChecks(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "monitorId" -------------
+	var monitorId MonitorId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "monitorId", chi.URLParam(r, "monitorId"), &monitorId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "monitorId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListMonitorChecksParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMonitorChecks(w, r, monitorId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListMonitorIncidents operation middleware
+func (siw *ServerInterfaceWrapper) ListMonitorIncidents(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "monitorId" -------------
+	var monitorId MonitorId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "monitorId", chi.URLParam(r, "monitorId"), &monitorId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "monitorId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMonitorIncidents(w, r, monitorId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PauseMonitor operation middleware
+func (siw *ServerInterfaceWrapper) PauseMonitor(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "monitorId" -------------
+	var monitorId MonitorId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "monitorId", chi.URLParam(r, "monitorId"), &monitorId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "monitorId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params PauseMonitorParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CsrfToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-CSRF-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-CSRF-Token", Err: err})
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		err := fmt.Errorf("Header parameter X-CSRF-Token is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-CSRF-Token", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PauseMonitor(w, r, monitorId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResumeMonitor operation middleware
+func (siw *ServerInterfaceWrapper) ResumeMonitor(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "monitorId" -------------
+	var monitorId MonitorId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "monitorId", chi.URLParam(r, "monitorId"), &monitorId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "monitorId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ResumeMonitorParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CsrfToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-CSRF-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-CSRF-Token", Err: err})
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		err := fmt.Errorf("Header parameter X-CSRF-Token is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-CSRF-Token", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResumeMonitor(w, r, monitorId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetMonitorStats operation middleware
+func (siw *ServerInterfaceWrapper) GetMonitorStats(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "monitorId" -------------
+	var monitorId MonitorId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "monitorId", chi.URLParam(r, "monitorId"), &monitorId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "monitorId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetMonitorStatsParams
+
+	// ------------- Optional query parameter "range" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "range", r.URL.Query(), &params.Range, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "range"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "range", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMonitorStats(w, r, monitorId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetSlackSettings operation middleware
+func (siw *ServerInterfaceWrapper) GetSlackSettings(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSlackSettings(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutSlackSettings operation middleware
+func (siw *ServerInterfaceWrapper) PutSlackSettings(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params PutSlackSettingsParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CsrfToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-CSRF-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-CSRF-Token", Err: err})
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		err := fmt.Errorf("Header parameter X-CSRF-Token is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-CSRF-Token", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutSlackSettings(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// TestSlack operation middleware
+func (siw *ServerInterfaceWrapper) TestSlack(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params TestSlackParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CsrfToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-CSRF-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-CSRF-Token", Err: err})
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		err := fmt.Errorf("Header parameter X-CSRF-Token is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-CSRF-Token", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.TestSlack(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -371,8 +1395,2024 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/v1/auth/me", wrapper.GetMe)
 	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/monitors", wrapper.ListMonitors)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/monitors", wrapper.CreateMonitor)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/v1/monitors/{monitorId}", wrapper.DeleteMonitor)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/monitors/{monitorId}", wrapper.GetMonitor)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/api/v1/monitors/{monitorId}", wrapper.UpdateMonitor)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/monitors/{monitorId}/pause", wrapper.PauseMonitor)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/monitors/{monitorId}/resume", wrapper.ResumeMonitor)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/monitors/{monitorId}/stats", wrapper.GetMonitorStats)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/monitors/{monitorId}/checks", wrapper.ListMonitorChecks)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/monitors/{monitorId}/incidents", wrapper.ListMonitorIncidents)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/settings/slack", wrapper.GetSlackSettings)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/api/v1/settings/slack", wrapper.PutSlackSettings)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/settings/slack/test", wrapper.TestSlack)
+	})
 
 	return r
+}
+
+type BadRequestApplicationProblemPlusJSONResponse Problem
+
+type ConflictApplicationProblemPlusJSONResponse Problem
+
+type ErrorApplicationProblemPlusJSONResponse Problem
+
+type ForbiddenApplicationProblemPlusJSONResponse Problem
+
+type NotFoundApplicationProblemPlusJSONResponse Problem
+
+type TooManyRequestsResponseHeaders struct {
+	RetryAfter *int
+}
+type TooManyRequestsApplicationProblemPlusJSONResponse struct {
+	Body Problem
+
+	Headers TooManyRequestsResponseHeaders
+}
+
+type UnauthorizedApplicationProblemPlusJSONResponse Problem
+
+type UnprocessableEntityApplicationProblemPlusJSONResponse Problem
+
+type LoginRequestObject struct {
+	Body *LoginJSONRequestBody
+}
+
+type LoginResponseObject interface {
+	VisitLoginResponse(w http.ResponseWriter) error
+}
+
+type Login200ResponseHeaders struct {
+	SetCookie *string
+}
+
+type Login200JSONResponse struct {
+	Body    SessionInfo
+	Headers Login200ResponseHeaders
+}
+
+func (response Login200JSONResponse) VisitLoginResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.SetCookie != nil {
+		w.Header().Set("Set-Cookie", fmt.Sprint(*response.Headers.SetCookie))
+	}
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type Login400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response Login400ApplicationProblemPlusJSONResponse) VisitLoginResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type Login401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response Login401ApplicationProblemPlusJSONResponse) VisitLoginResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type Login429ApplicationProblemPlusJSONResponse struct {
+	TooManyRequestsApplicationProblemPlusJSONResponse
+}
+
+func (response Login429ApplicationProblemPlusJSONResponse) VisitLoginResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.RetryAfter != nil {
+		w.Header().Set("Retry-After", fmt.Sprint(*response.Headers.RetryAfter))
+	}
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type LogindefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response LogindefaultApplicationProblemPlusJSONResponse) VisitLoginResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type LogoutRequestObject struct {
+	Params LogoutParams
+}
+
+type LogoutResponseObject interface {
+	VisitLogoutResponse(w http.ResponseWriter) error
+}
+
+type Logout204ResponseHeaders struct {
+	SetCookie *string
+}
+
+type Logout204Response struct {
+	Headers Logout204ResponseHeaders
+}
+
+func (response Logout204Response) VisitLogoutResponse(w http.ResponseWriter) error {
+	if response.Headers.SetCookie != nil {
+		w.Header().Set("Set-Cookie", fmt.Sprint(*response.Headers.SetCookie))
+	}
+	w.WriteHeader(204)
+	return nil
+}
+
+type Logout401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response Logout401ApplicationProblemPlusJSONResponse) VisitLogoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type Logout403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response Logout403ApplicationProblemPlusJSONResponse) VisitLogoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type LogoutdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response LogoutdefaultApplicationProblemPlusJSONResponse) VisitLogoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMeRequestObject struct {
+}
+
+type GetMeResponseObject interface {
+	VisitGetMeResponse(w http.ResponseWriter) error
+}
+
+type GetMe200JSONResponse SessionInfo
+
+func (response GetMe200JSONResponse) VisitGetMeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMe401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response GetMe401ApplicationProblemPlusJSONResponse) VisitGetMeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMedefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response GetMedefaultApplicationProblemPlusJSONResponse) VisitGetMeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetHealthRequestObject struct {
+}
+
+type GetHealthResponseObject interface {
+	VisitGetHealthResponse(w http.ResponseWriter) error
+}
+
+type GetHealth200JSONResponse Health
+
+func (response GetHealth200JSONResponse) VisitGetHealthResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetHealthdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response GetHealthdefaultApplicationProblemPlusJSONResponse) VisitGetHealthResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMonitorsRequestObject struct {
+}
+
+type ListMonitorsResponseObject interface {
+	VisitListMonitorsResponse(w http.ResponseWriter) error
+}
+
+type ListMonitors200JSONResponse MonitorList
+
+func (response ListMonitors200JSONResponse) VisitListMonitorsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMonitors401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response ListMonitors401ApplicationProblemPlusJSONResponse) VisitListMonitorsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMonitorsdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ListMonitorsdefaultApplicationProblemPlusJSONResponse) VisitListMonitorsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateMonitorRequestObject struct {
+	Params CreateMonitorParams
+	Body   *CreateMonitorJSONRequestBody
+}
+
+type CreateMonitorResponseObject interface {
+	VisitCreateMonitorResponse(w http.ResponseWriter) error
+}
+
+type CreateMonitor201JSONResponse MonitorDetail
+
+func (response CreateMonitor201JSONResponse) VisitCreateMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateMonitor400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response CreateMonitor400ApplicationProblemPlusJSONResponse) VisitCreateMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateMonitor401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response CreateMonitor401ApplicationProblemPlusJSONResponse) VisitCreateMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateMonitor403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response CreateMonitor403ApplicationProblemPlusJSONResponse) VisitCreateMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateMonitor409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response CreateMonitor409ApplicationProblemPlusJSONResponse) VisitCreateMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateMonitor422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableEntityApplicationProblemPlusJSONResponse
+}
+
+func (response CreateMonitor422ApplicationProblemPlusJSONResponse) VisitCreateMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateMonitordefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response CreateMonitordefaultApplicationProblemPlusJSONResponse) VisitCreateMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteMonitorRequestObject struct {
+	MonitorId MonitorId `json:"monitorId"`
+	Params    DeleteMonitorParams
+}
+
+type DeleteMonitorResponseObject interface {
+	VisitDeleteMonitorResponse(w http.ResponseWriter) error
+}
+
+type DeleteMonitor204Response struct {
+}
+
+func (response DeleteMonitor204Response) VisitDeleteMonitorResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteMonitor401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response DeleteMonitor401ApplicationProblemPlusJSONResponse) VisitDeleteMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteMonitor403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response DeleteMonitor403ApplicationProblemPlusJSONResponse) VisitDeleteMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteMonitor404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response DeleteMonitor404ApplicationProblemPlusJSONResponse) VisitDeleteMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteMonitordefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response DeleteMonitordefaultApplicationProblemPlusJSONResponse) VisitDeleteMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMonitorRequestObject struct {
+	MonitorId MonitorId `json:"monitorId"`
+}
+
+type GetMonitorResponseObject interface {
+	VisitGetMonitorResponse(w http.ResponseWriter) error
+}
+
+type GetMonitor200JSONResponse MonitorDetail
+
+func (response GetMonitor200JSONResponse) VisitGetMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMonitor401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response GetMonitor401ApplicationProblemPlusJSONResponse) VisitGetMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMonitor404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response GetMonitor404ApplicationProblemPlusJSONResponse) VisitGetMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMonitordefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response GetMonitordefaultApplicationProblemPlusJSONResponse) VisitGetMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateMonitorRequestObject struct {
+	MonitorId MonitorId `json:"monitorId"`
+	Params    UpdateMonitorParams
+	Body      *UpdateMonitorJSONRequestBody
+}
+
+type UpdateMonitorResponseObject interface {
+	VisitUpdateMonitorResponse(w http.ResponseWriter) error
+}
+
+type UpdateMonitor200JSONResponse MonitorDetail
+
+func (response UpdateMonitor200JSONResponse) VisitUpdateMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateMonitor400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response UpdateMonitor400ApplicationProblemPlusJSONResponse) VisitUpdateMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateMonitor401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response UpdateMonitor401ApplicationProblemPlusJSONResponse) VisitUpdateMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateMonitor403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response UpdateMonitor403ApplicationProblemPlusJSONResponse) VisitUpdateMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateMonitor404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response UpdateMonitor404ApplicationProblemPlusJSONResponse) VisitUpdateMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateMonitor422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableEntityApplicationProblemPlusJSONResponse
+}
+
+func (response UpdateMonitor422ApplicationProblemPlusJSONResponse) VisitUpdateMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateMonitordefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response UpdateMonitordefaultApplicationProblemPlusJSONResponse) VisitUpdateMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMonitorChecksRequestObject struct {
+	MonitorId MonitorId `json:"monitorId"`
+	Params    ListMonitorChecksParams
+}
+
+type ListMonitorChecksResponseObject interface {
+	VisitListMonitorChecksResponse(w http.ResponseWriter) error
+}
+
+type ListMonitorChecks200JSONResponse CheckList
+
+func (response ListMonitorChecks200JSONResponse) VisitListMonitorChecksResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMonitorChecks400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response ListMonitorChecks400ApplicationProblemPlusJSONResponse) VisitListMonitorChecksResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMonitorChecks401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response ListMonitorChecks401ApplicationProblemPlusJSONResponse) VisitListMonitorChecksResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMonitorChecks404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response ListMonitorChecks404ApplicationProblemPlusJSONResponse) VisitListMonitorChecksResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMonitorChecksdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ListMonitorChecksdefaultApplicationProblemPlusJSONResponse) VisitListMonitorChecksResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMonitorIncidentsRequestObject struct {
+	MonitorId MonitorId `json:"monitorId"`
+}
+
+type ListMonitorIncidentsResponseObject interface {
+	VisitListMonitorIncidentsResponse(w http.ResponseWriter) error
+}
+
+type ListMonitorIncidents200JSONResponse IncidentList
+
+func (response ListMonitorIncidents200JSONResponse) VisitListMonitorIncidentsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMonitorIncidents401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response ListMonitorIncidents401ApplicationProblemPlusJSONResponse) VisitListMonitorIncidentsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMonitorIncidents404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response ListMonitorIncidents404ApplicationProblemPlusJSONResponse) VisitListMonitorIncidentsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMonitorIncidentsdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ListMonitorIncidentsdefaultApplicationProblemPlusJSONResponse) VisitListMonitorIncidentsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PauseMonitorRequestObject struct {
+	MonitorId MonitorId `json:"monitorId"`
+	Params    PauseMonitorParams
+}
+
+type PauseMonitorResponseObject interface {
+	VisitPauseMonitorResponse(w http.ResponseWriter) error
+}
+
+type PauseMonitor200JSONResponse MonitorDetail
+
+func (response PauseMonitor200JSONResponse) VisitPauseMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PauseMonitor401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response PauseMonitor401ApplicationProblemPlusJSONResponse) VisitPauseMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PauseMonitor403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response PauseMonitor403ApplicationProblemPlusJSONResponse) VisitPauseMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PauseMonitor404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response PauseMonitor404ApplicationProblemPlusJSONResponse) VisitPauseMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PauseMonitordefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response PauseMonitordefaultApplicationProblemPlusJSONResponse) VisitPauseMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResumeMonitorRequestObject struct {
+	MonitorId MonitorId `json:"monitorId"`
+	Params    ResumeMonitorParams
+}
+
+type ResumeMonitorResponseObject interface {
+	VisitResumeMonitorResponse(w http.ResponseWriter) error
+}
+
+type ResumeMonitor200JSONResponse MonitorDetail
+
+func (response ResumeMonitor200JSONResponse) VisitResumeMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResumeMonitor401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response ResumeMonitor401ApplicationProblemPlusJSONResponse) VisitResumeMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResumeMonitor403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response ResumeMonitor403ApplicationProblemPlusJSONResponse) VisitResumeMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResumeMonitor404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response ResumeMonitor404ApplicationProblemPlusJSONResponse) VisitResumeMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResumeMonitordefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ResumeMonitordefaultApplicationProblemPlusJSONResponse) VisitResumeMonitorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMonitorStatsRequestObject struct {
+	MonitorId MonitorId `json:"monitorId"`
+	Params    GetMonitorStatsParams
+}
+
+type GetMonitorStatsResponseObject interface {
+	VisitGetMonitorStatsResponse(w http.ResponseWriter) error
+}
+
+type GetMonitorStats200JSONResponse MonitorStats
+
+func (response GetMonitorStats200JSONResponse) VisitGetMonitorStatsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMonitorStats400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response GetMonitorStats400ApplicationProblemPlusJSONResponse) VisitGetMonitorStatsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMonitorStats401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response GetMonitorStats401ApplicationProblemPlusJSONResponse) VisitGetMonitorStatsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMonitorStats404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response GetMonitorStats404ApplicationProblemPlusJSONResponse) VisitGetMonitorStatsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMonitorStatsdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response GetMonitorStatsdefaultApplicationProblemPlusJSONResponse) VisitGetMonitorStatsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetSlackSettingsRequestObject struct {
+}
+
+type GetSlackSettingsResponseObject interface {
+	VisitGetSlackSettingsResponse(w http.ResponseWriter) error
+}
+
+type GetSlackSettings200JSONResponse SlackSettings
+
+func (response GetSlackSettings200JSONResponse) VisitGetSlackSettingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetSlackSettings401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response GetSlackSettings401ApplicationProblemPlusJSONResponse) VisitGetSlackSettingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetSlackSettingsdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response GetSlackSettingsdefaultApplicationProblemPlusJSONResponse) VisitGetSlackSettingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutSlackSettingsRequestObject struct {
+	Params PutSlackSettingsParams
+	Body   *PutSlackSettingsJSONRequestBody
+}
+
+type PutSlackSettingsResponseObject interface {
+	VisitPutSlackSettingsResponse(w http.ResponseWriter) error
+}
+
+type PutSlackSettings200JSONResponse SlackSettings
+
+func (response PutSlackSettings200JSONResponse) VisitPutSlackSettingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutSlackSettings400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response PutSlackSettings400ApplicationProblemPlusJSONResponse) VisitPutSlackSettingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutSlackSettings401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response PutSlackSettings401ApplicationProblemPlusJSONResponse) VisitPutSlackSettingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutSlackSettings403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response PutSlackSettings403ApplicationProblemPlusJSONResponse) VisitPutSlackSettingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutSlackSettings422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableEntityApplicationProblemPlusJSONResponse
+}
+
+func (response PutSlackSettings422ApplicationProblemPlusJSONResponse) VisitPutSlackSettingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutSlackSettingsdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response PutSlackSettingsdefaultApplicationProblemPlusJSONResponse) VisitPutSlackSettingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type TestSlackRequestObject struct {
+	Params TestSlackParams
+}
+
+type TestSlackResponseObject interface {
+	VisitTestSlackResponse(w http.ResponseWriter) error
+}
+
+type TestSlack204Response struct {
+}
+
+func (response TestSlack204Response) VisitTestSlackResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type TestSlack401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response TestSlack401ApplicationProblemPlusJSONResponse) VisitTestSlackResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type TestSlack403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response TestSlack403ApplicationProblemPlusJSONResponse) VisitTestSlackResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type TestSlack409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response TestSlack409ApplicationProblemPlusJSONResponse) VisitTestSlackResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type TestSlack429ApplicationProblemPlusJSONResponse struct {
+	TooManyRequestsApplicationProblemPlusJSONResponse
+}
+
+func (response TestSlack429ApplicationProblemPlusJSONResponse) VisitTestSlackResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.RetryAfter != nil {
+		w.Header().Set("Retry-After", fmt.Sprint(*response.Headers.RetryAfter))
+	}
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type TestSlackdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response TestSlackdefaultApplicationProblemPlusJSONResponse) VisitTestSlackResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+// StrictServerInterface represents all server handlers.
+type StrictServerInterface interface {
+	// Login Log in with email and password
+	// (POST /api/v1/auth/login)
+	Login(ctx context.Context, request LoginRequestObject) (LoginResponseObject, error)
+	// Logout Log out
+	// (POST /api/v1/auth/logout)
+	Logout(ctx context.Context, request LogoutRequestObject) (LogoutResponseObject, error)
+	// GetMe Current user and session
+	// (GET /api/v1/auth/me)
+	GetMe(ctx context.Context, request GetMeRequestObject) (GetMeResponseObject, error)
+	// GetHealth Service health and build info
+	// (GET /api/v1/health)
+	GetHealth(ctx context.Context, request GetHealthRequestObject) (GetHealthResponseObject, error)
+	// ListMonitors List monitors with their current status
+	// (GET /api/v1/monitors)
+	ListMonitors(ctx context.Context, request ListMonitorsRequestObject) (ListMonitorsResponseObject, error)
+	// CreateMonitor Create a monitor
+	// (POST /api/v1/monitors)
+	CreateMonitor(ctx context.Context, request CreateMonitorRequestObject) (CreateMonitorResponseObject, error)
+	// DeleteMonitor Delete a monitor
+	// (DELETE /api/v1/monitors/{monitorId})
+	DeleteMonitor(ctx context.Context, request DeleteMonitorRequestObject) (DeleteMonitorResponseObject, error)
+	// GetMonitor One monitor with status and uptime
+	// (GET /api/v1/monitors/{monitorId})
+	GetMonitor(ctx context.Context, request GetMonitorRequestObject) (GetMonitorResponseObject, error)
+	// UpdateMonitor Edit a monitor
+	// (PATCH /api/v1/monitors/{monitorId})
+	UpdateMonitor(ctx context.Context, request UpdateMonitorRequestObject) (UpdateMonitorResponseObject, error)
+	// ListMonitorChecks Recent checks
+	// (GET /api/v1/monitors/{monitorId}/checks)
+	ListMonitorChecks(ctx context.Context, request ListMonitorChecksRequestObject) (ListMonitorChecksResponseObject, error)
+	// ListMonitorIncidents Incidents of a monitor
+	// (GET /api/v1/monitors/{monitorId}/incidents)
+	ListMonitorIncidents(ctx context.Context, request ListMonitorIncidentsRequestObject) (ListMonitorIncidentsResponseObject, error)
+	// PauseMonitor Pause a monitor
+	// (POST /api/v1/monitors/{monitorId}/pause)
+	PauseMonitor(ctx context.Context, request PauseMonitorRequestObject) (PauseMonitorResponseObject, error)
+	// ResumeMonitor Resume a paused monitor
+	// (POST /api/v1/monitors/{monitorId}/resume)
+	ResumeMonitor(ctx context.Context, request ResumeMonitorRequestObject) (ResumeMonitorResponseObject, error)
+	// GetMonitorStats Response time statistics
+	// (GET /api/v1/monitors/{monitorId}/stats)
+	GetMonitorStats(ctx context.Context, request GetMonitorStatsRequestObject) (GetMonitorStatsResponseObject, error)
+	// GetSlackSettings Slack notification settings
+	// (GET /api/v1/settings/slack)
+	GetSlackSettings(ctx context.Context, request GetSlackSettingsRequestObject) (GetSlackSettingsResponseObject, error)
+	// PutSlackSettings Set the Slack webhook
+	// (PUT /api/v1/settings/slack)
+	PutSlackSettings(ctx context.Context, request PutSlackSettingsRequestObject) (PutSlackSettingsResponseObject, error)
+	// TestSlack Send a Slack test message
+	// (POST /api/v1/settings/slack/test)
+	TestSlack(ctx context.Context, request TestSlackRequestObject) (TestSlackResponseObject, error)
+}
+
+type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
+type StrictMiddlewareFunc func(f StrictHandlerFunc, operationID string) StrictHandlerFunc
+
+type StrictHTTPServerOptions struct {
+	RequestErrorHandlerFunc  func(w http.ResponseWriter, r *http.Request, err error)
+	ResponseErrorHandlerFunc func(w http.ResponseWriter, r *http.Request, err error)
+}
+
+func NewStrictHandler(ssi StrictServerInterface, middlewares []StrictMiddlewareFunc) ServerInterface {
+	return &strictHandler{ssi: ssi, middlewares: middlewares, options: StrictHTTPServerOptions{
+		RequestErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		},
+		ResponseErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		},
+	}}
+}
+
+func NewStrictHandlerWithOptions(ssi StrictServerInterface, middlewares []StrictMiddlewareFunc, options StrictHTTPServerOptions) ServerInterface {
+	if options.RequestErrorHandlerFunc == nil {
+		options.RequestErrorHandlerFunc = func(w http.ResponseWriter, r *http.Request, err error) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		}
+	}
+	if options.ResponseErrorHandlerFunc == nil {
+		options.ResponseErrorHandlerFunc = func(w http.ResponseWriter, r *http.Request, err error) {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	}
+	return &strictHandler{ssi: ssi, middlewares: middlewares, options: options}
+}
+
+type strictHandler struct {
+	ssi         StrictServerInterface
+	middlewares []StrictMiddlewareFunc
+	options     StrictHTTPServerOptions
+}
+
+// Login operation middleware
+func (sh *strictHandler) Login(w http.ResponseWriter, r *http.Request) {
+	var request LoginRequestObject
+
+	var body LoginJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.Login(ctx, request.(LoginRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "Login")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(LoginResponseObject); ok {
+		if err := validResponse.VisitLoginResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// Logout operation middleware
+func (sh *strictHandler) Logout(w http.ResponseWriter, r *http.Request, params LogoutParams) {
+	var request LogoutRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.Logout(ctx, request.(LogoutRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "Logout")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(LogoutResponseObject); ok {
+		if err := validResponse.VisitLogoutResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetMe operation middleware
+func (sh *strictHandler) GetMe(w http.ResponseWriter, r *http.Request) {
+	var request GetMeRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetMe(ctx, request.(GetMeRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetMe")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetMeResponseObject); ok {
+		if err := validResponse.VisitGetMeResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetHealth operation middleware
+func (sh *strictHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
+	var request GetHealthRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetHealth(ctx, request.(GetHealthRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetHealth")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetHealthResponseObject); ok {
+		if err := validResponse.VisitGetHealthResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListMonitors operation middleware
+func (sh *strictHandler) ListMonitors(w http.ResponseWriter, r *http.Request) {
+	var request ListMonitorsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListMonitors(ctx, request.(ListMonitorsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListMonitors")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListMonitorsResponseObject); ok {
+		if err := validResponse.VisitListMonitorsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateMonitor operation middleware
+func (sh *strictHandler) CreateMonitor(w http.ResponseWriter, r *http.Request, params CreateMonitorParams) {
+	var request CreateMonitorRequestObject
+
+	request.Params = params
+
+	var body CreateMonitorJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateMonitor(ctx, request.(CreateMonitorRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateMonitor")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateMonitorResponseObject); ok {
+		if err := validResponse.VisitCreateMonitorResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteMonitor operation middleware
+func (sh *strictHandler) DeleteMonitor(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params DeleteMonitorParams) {
+	var request DeleteMonitorRequestObject
+
+	request.MonitorId = monitorId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteMonitor(ctx, request.(DeleteMonitorRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteMonitor")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteMonitorResponseObject); ok {
+		if err := validResponse.VisitDeleteMonitorResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetMonitor operation middleware
+func (sh *strictHandler) GetMonitor(w http.ResponseWriter, r *http.Request, monitorId MonitorId) {
+	var request GetMonitorRequestObject
+
+	request.MonitorId = monitorId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetMonitor(ctx, request.(GetMonitorRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetMonitor")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetMonitorResponseObject); ok {
+		if err := validResponse.VisitGetMonitorResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateMonitor operation middleware
+func (sh *strictHandler) UpdateMonitor(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params UpdateMonitorParams) {
+	var request UpdateMonitorRequestObject
+
+	request.MonitorId = monitorId
+	request.Params = params
+
+	var body UpdateMonitorJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateMonitor(ctx, request.(UpdateMonitorRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateMonitor")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateMonitorResponseObject); ok {
+		if err := validResponse.VisitUpdateMonitorResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListMonitorChecks operation middleware
+func (sh *strictHandler) ListMonitorChecks(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params ListMonitorChecksParams) {
+	var request ListMonitorChecksRequestObject
+
+	request.MonitorId = monitorId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListMonitorChecks(ctx, request.(ListMonitorChecksRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListMonitorChecks")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListMonitorChecksResponseObject); ok {
+		if err := validResponse.VisitListMonitorChecksResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListMonitorIncidents operation middleware
+func (sh *strictHandler) ListMonitorIncidents(w http.ResponseWriter, r *http.Request, monitorId MonitorId) {
+	var request ListMonitorIncidentsRequestObject
+
+	request.MonitorId = monitorId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListMonitorIncidents(ctx, request.(ListMonitorIncidentsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListMonitorIncidents")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListMonitorIncidentsResponseObject); ok {
+		if err := validResponse.VisitListMonitorIncidentsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PauseMonitor operation middleware
+func (sh *strictHandler) PauseMonitor(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params PauseMonitorParams) {
+	var request PauseMonitorRequestObject
+
+	request.MonitorId = monitorId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PauseMonitor(ctx, request.(PauseMonitorRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PauseMonitor")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PauseMonitorResponseObject); ok {
+		if err := validResponse.VisitPauseMonitorResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ResumeMonitor operation middleware
+func (sh *strictHandler) ResumeMonitor(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params ResumeMonitorParams) {
+	var request ResumeMonitorRequestObject
+
+	request.MonitorId = monitorId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ResumeMonitor(ctx, request.(ResumeMonitorRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ResumeMonitor")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ResumeMonitorResponseObject); ok {
+		if err := validResponse.VisitResumeMonitorResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetMonitorStats operation middleware
+func (sh *strictHandler) GetMonitorStats(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params GetMonitorStatsParams) {
+	var request GetMonitorStatsRequestObject
+
+	request.MonitorId = monitorId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetMonitorStats(ctx, request.(GetMonitorStatsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetMonitorStats")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetMonitorStatsResponseObject); ok {
+		if err := validResponse.VisitGetMonitorStatsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetSlackSettings operation middleware
+func (sh *strictHandler) GetSlackSettings(w http.ResponseWriter, r *http.Request) {
+	var request GetSlackSettingsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetSlackSettings(ctx, request.(GetSlackSettingsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetSlackSettings")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetSlackSettingsResponseObject); ok {
+		if err := validResponse.VisitGetSlackSettingsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PutSlackSettings operation middleware
+func (sh *strictHandler) PutSlackSettings(w http.ResponseWriter, r *http.Request, params PutSlackSettingsParams) {
+	var request PutSlackSettingsRequestObject
+
+	request.Params = params
+
+	var body PutSlackSettingsJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PutSlackSettings(ctx, request.(PutSlackSettingsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PutSlackSettings")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PutSlackSettingsResponseObject); ok {
+		if err := validResponse.VisitPutSlackSettingsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// TestSlack operation middleware
+func (sh *strictHandler) TestSlack(w http.ResponseWriter, r *http.Request, params TestSlackParams) {
+	var request TestSlackRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.TestSlack(ctx, request.(TestSlackRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "TestSlack")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(TestSlackResponseObject); ok {
+		if err := validResponse.VisitTestSlackResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
 }
 
 // Base64 encoded, compressed with deflate, json marshaled OpenAPI spec.
@@ -380,38 +3420,95 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
+	"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",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

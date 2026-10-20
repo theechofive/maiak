@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/theechofive/maiak/backend/internal/auth"
+	"github.com/theechofive/maiak/backend/internal/platform/validation"
 )
 
 func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -30,11 +31,15 @@ func newTestHandler(t *testing.T) http.Handler {
 }
 
 type problem struct {
-	Type      string `json:"type"`
-	Title     string `json:"title"`
-	Status    int    `json:"status"`
-	Detail    string `json:"detail"`
-	RequestID string `json:"request_id"`
+	Type        string `json:"type"`
+	Title       string `json:"title"`
+	Status      int    `json:"status"`
+	Detail      string `json:"detail"`
+	RequestID   string `json:"request_id"`
+	FieldErrors []struct {
+		Field   string `json:"field"`
+		Message string `json:"message"`
+	} `json:"fieldErrors"`
 }
 
 func do(t *testing.T, h http.Handler, method, path, body string, hdr map[string]string) (*httptest.ResponseRecorder, problem) {
@@ -107,6 +112,9 @@ func TestLoginValidationDoesNotEchoPassword(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "s3cr3t") {
 		t.Fatal("validation error echoes the password")
 	}
+	if len(p.FieldErrors) != 1 || p.FieldErrors[0].Field != "password" {
+		t.Fatalf("field errors = %+v, want one for password", p.FieldErrors)
+	}
 
 	for name, body := range map[string]string{
 		"missing field": `{"email":"a@example.com"}`,
@@ -136,6 +144,8 @@ func TestWriteErrorMapping(t *testing.T) {
 		{&auth.RateLimitedError{RetryAfter: 1500 * time.Millisecond}, 429, problemRateLimited},
 		{&badRequestError{detail: "x"}, 400, problemBadRequest},
 		{errNotFound, 404, problemNotFound},
+		{errNotImplemented, 501, problemNotImplemented},
+		{&validation.Error{Fields: []validation.FieldError{{Field: "url", Message: "must use https"}}}, 422, problemValidation},
 		{errors.New("database exploded: password=hunter2"), 500, problemInternal},
 	}
 	for _, c := range cases {
@@ -154,6 +164,9 @@ func TestWriteErrorMapping(t *testing.T) {
 		}
 		if c.status == 500 && (strings.Contains(rec.Body.String(), "hunter2") || p.Detail != "") {
 			t.Errorf("internal error leaks detail: %s", rec.Body)
+		}
+		if c.status == 422 && (len(p.FieldErrors) != 1 || p.FieldErrors[0].Field != "url" || p.FieldErrors[0].Message != "must use https") {
+			t.Errorf("422 field errors = %+v", p.FieldErrors)
 		}
 		if c.status == 429 && rec.Header().Get("Retry-After") != "2" {
 			t.Errorf("Retry-After = %q, want 2", rec.Header().Get("Retry-After"))

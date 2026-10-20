@@ -1,6 +1,9 @@
 # oapi-codegen config. Run from the repository root via `make generate`.
+# The strict server decodes request bodies and encodes typed responses; handlers return errors
+# that internal/api maps to problem+json in one place.
 package: gen
 generate:
   chi-server: true
+  strict-server: true
   models: true
   embedded-spec: true
