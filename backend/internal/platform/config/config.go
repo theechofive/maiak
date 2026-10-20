@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/mail"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -83,6 +84,9 @@ type API struct {
 // Worker is the configuration of cmd/worker and cmd/jobs.
 type Worker struct {
 	Server
+	// BlockedCIDRs are blocked by the SSRF guard in addition to its built-in ranges
+	// (MAIAK_BLOCKED_CIDRS, comma-separated, ADR-0016).
+	BlockedCIDRs []netip.Prefix
 }
 
 // Migrate is the configuration of cmd/migrate.
@@ -130,7 +134,7 @@ func LoadAPI(lookup LookupFunc) (API, error) {
 // LoadWorker loads the worker (and jobs) configuration.
 func LoadWorker(lookup LookupFunc) (Worker, error) {
 	l := &loader{lookup: lookup}
-	cfg := Worker{Server: l.server(5)}
+	cfg := Worker{Server: l.server(5), BlockedCIDRs: l.cidrs("MAIAK_BLOCKED_CIDRS")}
 	return cfg, l.err()
 }
 
@@ -306,6 +310,23 @@ func (l *loader) integer(name string, def, minimum, maximum int) int {
 		return def
 	}
 	return n
+}
+
+func (l *loader) cidrs(name string) []netip.Prefix {
+	var out []netip.Prefix
+	for _, part := range strings.Split(l.optional(name), ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(part)
+		if err != nil {
+			l.fail(name, fmt.Sprintf("%q is not a CIDR such as 10.0.0.0/8", part))
+			continue
+		}
+		out = append(out, p.Masked())
+	}
+	return out
 }
 
 func (l *loader) oneOf(name, def string, allowed ...string) string {

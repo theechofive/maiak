@@ -148,6 +148,22 @@ func TestLoadWorkerAndMigrate(t *testing.T) {
 	}
 }
 
+func TestLoadWorkerBlockedCIDRs(t *testing.T) {
+	e := apiEnv(t)
+	e["MAIAK_BLOCKED_CIDRS"] = " 203.0.113.7/24, ,2001:db8::/32 "
+	cfg, err := LoadWorker(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.BlockedCIDRs) != 2 || cfg.BlockedCIDRs[0].String() != "203.0.113.0/24" || cfg.BlockedCIDRs[1].String() != "2001:db8::/32" {
+		t.Fatalf("blocked cidrs = %v", cfg.BlockedCIDRs)
+	}
+	e["MAIAK_BLOCKED_CIDRS"] = "10.0.0.0/8,not-a-cidr"
+	if _, err := LoadWorker(env(e)); err == nil || !strings.Contains(err.Error(), "MAIAK_BLOCKED_CIDRS") {
+		t.Fatalf("invalid cidr accepted: %v", err)
+	}
+}
+
 func TestLoadBootstrap(t *testing.T) {
 	cfg, err := LoadBootstrap(env(map[string]string{
 		"MAIAK_BOOTSTRAP_HOST":           "db.example.internal",
