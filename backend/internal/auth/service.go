@@ -65,25 +65,25 @@ type Options struct {
 	Clock      clock.Clock
 	Logger     *slog.Logger
 	Registerer prometheus.Registerer
-	// IPLimiter and EmailLimiter default to 30 and 10 failures per 15 minutes.
+	// IPLimiter and LoginLimiter default to 30 and 10 failures per 15 minutes.
 	IPLimiter    *Limiter
-	EmailLimiter *Limiter
+	LoginLimiter *Limiter
 	// HashQueueWait defaults to 5 s.
 	HashQueueWait time.Duration
 }
 
 // Service implements authentication.
 type Service struct {
-	pool      *db.Pool
-	ttl       time.Duration
-	clock     clock.Clock
-	log       *slog.Logger
-	ipLimit   *Limiter
-	mailLimit *Limiter
-	hashSem   chan struct{}
-	hashWait  time.Duration
+	pool       *db.Pool
+	ttl        time.Duration
+	clock      clock.Clock
+	log        *slog.Logger
+	ipLimit    *Limiter
+	loginLimit *Limiter
+	hashSem    chan struct{}
+	hashWait   time.Duration
 	// dummy is verified for unknown or password-less users. BootstrapAdmin builds it with the
-	// admin hash's parameters, so both cost the same and timing does not reveal the email.
+	// admin hash's parameters, so both cost the same and timing does not reveal the login.
 	dummy  *crypto.ParsedHash
 	logins *prometheus.CounterVec
 
@@ -102,21 +102,21 @@ func NewService(pool *db.Pool, opts Options) (*Service, error) {
 	if opts.IPLimiter == nil {
 		opts.IPLimiter = NewLimiter(30, 15*time.Minute, 100_000, opts.Clock)
 	}
-	if opts.EmailLimiter == nil {
-		opts.EmailLimiter = NewLimiter(10, 15*time.Minute, 100_000, opts.Clock)
+	if opts.LoginLimiter == nil {
+		opts.LoginLimiter = NewLimiter(10, 15*time.Minute, 100_000, opts.Clock)
 	}
 	if opts.HashQueueWait <= 0 {
 		opts.HashQueueWait = defaultHashQueueWait
 	}
 	s := &Service{
-		pool:      pool,
-		ttl:       opts.SessionTTL,
-		clock:     opts.Clock,
-		log:       opts.Logger,
-		ipLimit:   opts.IPLimiter,
-		mailLimit: opts.EmailLimiter,
-		hashSem:   make(chan struct{}, maxConcurrentHashes),
-		hashWait:  opts.HashQueueWait,
+		pool:       pool,
+		ttl:        opts.SessionTTL,
+		clock:      opts.Clock,
+		log:        opts.Logger,
+		ipLimit:    opts.IPLimiter,
+		loginLimit: opts.LoginLimiter,
+		hashSem:    make(chan struct{}, maxConcurrentHashes),
+		hashWait:   opts.HashQueueWait,
 		logins: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "maiak_auth_logins_total",
 			Help: "Login attempts by result (succeeded, failed, rate_limited).",
@@ -133,9 +133,11 @@ func NewService(pool *db.Pool, opts Options) (*Service, error) {
 // BootstrapAdmin upserts the default tenant, the admin user and its owner membership in one
 // transaction. It is idempotent and safe to run from several replicas at once. When the hash
 // in the Secret changes, the stored hash is replaced (this is how the password is reset) and
-// the admin's sessions are deleted. When the email changes, the previous owners of the default
-// tenant are disabled and their sessions deleted.
-func (s *Service) BootstrapAdmin(ctx context.Context, email, passwordHash string) error {
+// the admin's sessions are deleted. When the login changes, the previous owners of the default
+// tenant are disabled and their sessions deleted. The login is stored lowercased in users.email
+// (the column holds the login identifier, ADR-0009).
+func (s *Service) BootstrapAdmin(ctx context.Context, login, passwordHash string) error {
+	login = normalizeLogin(login)
 	parsed, err := crypto.ParseArgon2idHash(passwordHash)
 	if err != nil {
 		return fmt.Errorf("auth: admin password hash: %w", err)
@@ -163,11 +165,11 @@ func (s *Service) BootstrapAdmin(ctx context.Context, email, passwordHash string
 		}
 		q := authdb.New(tx)
 		if err := q.InsertUserIfMissing(ctx, authdb.InsertUserIfMissingParams{
-			ID: uuidv7.New(), Email: email, PasswordHash: &passwordHash, DisplayName: "Admin",
+			ID: uuidv7.New(), Email: login, PasswordHash: &passwordHash, DisplayName: "Admin",
 		}); err != nil {
 			return fmt.Errorf("insert admin user: %w", err)
 		}
-		u, err := q.GetUserByEmail(ctx, email)
+		u, err := q.GetUserByEmail(ctx, login)
 		if err != nil {
 			return fmt.Errorf("get admin user: %w", err)
 		}
@@ -182,7 +184,7 @@ func (s *Service) BootstrapAdmin(ctx context.Context, email, passwordHash string
 			}
 			s.log.InfoContext(ctx, "admin password hash updated from configuration; sessions revoked", "user_id", u.ID, "sessions", n)
 		}
-		// A configured admin is always active (rotating back to an earlier email re-enables it).
+		// A configured admin is always active (rotating back to an earlier login re-enables it).
 		if _, err := q.ActivateUser(ctx, u.ID); err != nil {
 			return fmt.Errorf("activate admin user: %w", err)
 		}
@@ -200,7 +202,7 @@ func (s *Service) BootstrapAdmin(ctx context.Context, email, passwordHash string
 }
 
 // retirePreviousOwners disables every other active owner of the tenant (the admin from an
-// earlier MAIAK_ADMIN_EMAIL), deletes their sessions and audits it.
+// earlier MAIAK_ADMIN_LOGIN), deletes their sessions and audits it.
 func (s *Service) retirePreviousOwners(ctx context.Context, tx pgx.Tx, q *authdb.Queries, tenantID, adminID uuid.UUID) error {
 	others, err := q.ListOtherActiveOwners(ctx, authdb.ListOtherActiveOwnersParams{TenantID: tenantID, UserID: adminID})
 	if err != nil {
@@ -220,14 +222,14 @@ func (s *Service) retirePreviousOwners(ctx context.Context, tx pgx.Tx, q *authdb
 		}); err != nil {
 			return err
 		}
-		s.log.InfoContext(ctx, "previous admin disabled after MAIAK_ADMIN_EMAIL change", "user_id", old, "new_user_id", adminID)
+		s.log.InfoContext(ctx, "previous admin disabled after MAIAK_ADMIN_LOGIN change", "user_id", old, "new_user_id", adminID)
 	}
 	return nil
 }
 
 // LoginInput is a login attempt.
 type LoginInput struct {
-	Email     string
+	Login     string
 	Password  string
 	IP        netip.Addr
 	UserAgent string
@@ -236,7 +238,7 @@ type LoginInput struct {
 // User is the public view of a user.
 type User struct {
 	ID          uuid.UUID
-	Email       string
+	Login       string
 	DisplayName string
 }
 
@@ -273,22 +275,22 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 	if in.IP.IsValid() {
 		ipKey = "ip:" + in.IP.String()
 	}
-	mailKey := strings.ToLower(strings.TrimSpace(in.Email))
+	loginKey := normalizeLogin(in.Login)
 	// Attempts are reserved before the verification and stay counted when it fails; a success
 	// or an attempt that never reached a verdict is refunded.
 	if ok, wait := s.ipLimit.Reserve(ipKey); !ok {
 		return LoginResult{}, s.rateLimited(ctx, wait)
 	}
-	if ok, wait := s.mailLimit.Reserve(mailKey); !ok {
+	if ok, wait := s.loginLimit.Reserve(loginKey); !ok {
 		s.ipLimit.Refund(ipKey)
 		return LoginResult{}, s.rateLimited(ctx, wait)
 	}
 	refund := func() {
 		s.ipLimit.Refund(ipKey)
-		s.mailLimit.Refund(mailKey)
+		s.loginLimit.Refund(loginKey)
 	}
 
-	user, ok, err := s.checkPassword(ctx, mailKey, in.Password)
+	user, ok, err := s.checkPassword(ctx, loginKey, in.Password)
 	if err != nil {
 		refund()
 		return LoginResult{}, err
@@ -299,7 +301,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 		if user != nil {
 			actor = &user.ID
 		}
-		// The attempted email is not recorded: users sometimes type a password into it.
+		// The attempted login is not recorded: users sometimes type a password into it.
 		if err := s.auditFailure(ctx, actor, in.IP, "invalid_credentials"); err != nil {
 			return LoginResult{}, err
 		}
@@ -369,18 +371,18 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 		return LoginResult{}, fmt.Errorf("auth: login: %w", err)
 	}
 	s.ipLimit.Refund(ipKey)
-	s.mailLimit.Reset(mailKey)
+	s.loginLimit.Reset(loginKey)
 	s.logins.WithLabelValues("succeeded").Inc()
 	return res, nil
 }
 
 // checkPassword looks the user up and verifies the password. It always runs one argon2
 // verification (against a dummy hash for unknown or password-less users), so the response
-// time does not reveal whether the email exists.
-func (s *Service) checkPassword(ctx context.Context, email, password string) (*User, bool, error) {
+// time does not reveal whether the login exists.
+func (s *Service) checkPassword(ctx context.Context, login, password string) (*User, bool, error) {
 	var row *authdb.GetUserByEmailRow
 	err := db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
-		r, err := authdb.New(tx).GetUserByEmail(ctx, email)
+		r, err := authdb.New(tx).GetUserByEmail(ctx, login)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -411,9 +413,15 @@ func (s *Service) checkPassword(ctx context.Context, email, password string) (*U
 	if row == nil {
 		return nil, false, nil
 	}
-	u := &User{ID: row.ID, Email: row.Email, DisplayName: row.DisplayName}
+	u := &User{ID: row.ID, Login: row.Email, DisplayName: row.DisplayName}
 	ok := match && hash != s.dummy && row.Status == userStatusActive
 	return u, ok, nil
+}
+
+// normalizeLogin is the one place logins are made case-insensitive: bootstrap, lookup and
+// rate-limit keys all use it, so "Admin" and "admin" are the same user and the same bucket.
+func normalizeLogin(login string) string {
+	return strings.ToLower(strings.TrimSpace(login))
 }
 
 // acquireHash takes a verification slot, waiting at most hashWait.
@@ -511,7 +519,7 @@ func (s *Service) Me(ctx context.Context, p Principal) (SessionInfo, error) {
 			return err
 		}
 		info = SessionInfo{
-			User:   User{ID: u.ID, Email: u.Email, DisplayName: u.DisplayName},
+			User:   User{ID: u.ID, Login: u.Email, DisplayName: u.DisplayName},
 			Tenant: t, Role: role, CSRFToken: p.CSRFToken, ExpiresAt: p.ExpiresAt,
 		}
 		return nil

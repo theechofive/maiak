@@ -8,7 +8,7 @@ import (
 // Domain errors. They are mapped to HTTP problems in one place (internal/api).
 var (
 	// ErrInvalidCredentials is returned for every login failure, whatever the cause, so the
-	// response does not reveal whether the email exists.
+	// response does not reveal whether the login exists.
 	ErrInvalidCredentials = errors.New("auth: invalid credentials")
 	// ErrUnauthenticated means no valid session.
 	ErrUnauthenticated = errors.New("auth: not authenticated")

@@ -2,10 +2,10 @@ package secretsbootstrap
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
 	"strings"
 
+	"github.com/theechofive/maiak/backend/internal/platform/config"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
 )
@@ -75,9 +75,11 @@ func LoadConfig(lookup func(string) (string, bool)) (Config, error) {
 		CryptoKeyID:            get("MAIAK_SECRETS_CRYPTO_KEY_ID", "k1"),
 	}
 	if o.AdminMode == ModeGenerate {
-		if err := ValidateLogin(o.AdminLogin); err != nil {
+		login, err := config.NormalizeLogin(o.AdminLogin)
+		if err != nil {
 			fail("MAIAK_SECRETS_ADMIN_LOGIN", err.Error())
 		}
+		o.AdminLogin = login
 	}
 	if o.AdminSecretName == o.AdminInitialSecretName {
 		fail("MAIAK_SECRETS_ADMIN_INITIAL_SECRET_NAME", "must differ from MAIAK_SECRETS_ADMIN_SECRET_NAME")
@@ -90,19 +92,6 @@ func LoadConfig(lookup func(string) (string, bool)) (Config, error) {
 		return c, errors.New("invalid configuration:\n  " + strings.Join(errs, "\n  "))
 	}
 	return c, nil
-}
-
-// ValidateLogin accepts 1-64 characters of [a-z0-9._@-] (lowercase, no spaces).
-func ValidateLogin(s string) error {
-	if len(s) == 0 || len(s) > 64 {
-		return fmt.Errorf("login must be 1-64 characters, got %d", len(s))
-	}
-	for _, c := range s {
-		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && !strings.ContainsRune("._@-", c) {
-			return errors.New("login must contain only lowercase letters, digits and . _ @ -")
-		}
-	}
-	return nil
 }
 
 func isDNSLabel(s string) bool {

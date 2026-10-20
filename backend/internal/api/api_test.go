@@ -93,7 +93,7 @@ func TestAPIResponsesCarrySecurityHeaders(t *testing.T) {
 		{http.MethodGet, "/api/v1/nope", "", nil, http.StatusNotFound},
 		{http.MethodDelete, "/api/v1/health", "", nil, http.StatusMethodNotAllowed},
 		{http.MethodGet, "/api/v1/auth/me", "", nil, http.StatusUnauthorized},
-		{http.MethodPost, "/api/v1/auth/login", `{"email":1}`, jsonCT, http.StatusBadRequest},
+		{http.MethodPost, "/api/v1/auth/login", `{"login":1}`, jsonCT, http.StatusBadRequest},
 	} {
 		rec, _ := do(t, h, c.method, c.path, c.body, c.hdr)
 		if rec.Code != c.code {
@@ -135,7 +135,7 @@ func TestLoginValidationDoesNotEchoPassword(t *testing.T) {
 	h := newTestHandler(t)
 	secret := strings.Repeat("s3cr3t", 200) // longer than maxLength 1024
 	rec, p := do(t, h, http.MethodPost, "/api/v1/auth/login",
-		fmt.Sprintf(`{"email":"a@example.com","password":%q}`, secret), map[string]string{"Content-Type": "application/json"})
+		fmt.Sprintf(`{"login":"a@example.com","password":%q}`, secret), map[string]string{"Content-Type": "application/json"})
 	if rec.Code != http.StatusBadRequest || p.Type != problemBadRequest {
 		t.Fatalf("code=%d problem=%+v", rec.Code, p)
 	}
@@ -147,16 +147,19 @@ func TestLoginValidationDoesNotEchoPassword(t *testing.T) {
 	}
 
 	for name, body := range map[string]string{
-		"missing field": `{"email":"a@example.com"}`,
-		"unknown field": `{"email":"a@example.com","password":"x","admin":true}`,
-		"not json":      `email=a`,
+		"missing field":  `{"login":"a@example.com"}`,
+		"unknown field":  `{"login":"a@example.com","password":"x","admin":true}`,
+		"not json":       `login=a`,
+		"empty login":    `{"login":"","password":"x"}`,
+		"login space":    `{"login":"ad min","password":"x"}`,
+		"login too long": `{"login":"` + strings.Repeat("a", 65) + `","password":"x"}`,
 	} {
 		rec, p := do(t, h, http.MethodPost, "/api/v1/auth/login", body, map[string]string{"Content-Type": "application/json"})
 		if rec.Code != http.StatusBadRequest || p.Type != problemBadRequest {
 			t.Errorf("%s: code=%d problem=%+v", name, rec.Code, p)
 		}
 	}
-	rec, _ = do(t, h, http.MethodPost, "/api/v1/auth/login", `{"email":"a@example.com","password":"x"}`, map[string]string{"Content-Type": "text/plain"})
+	rec, _ = do(t, h, http.MethodPost, "/api/v1/auth/login", `{"login":"a@example.com","password":"x"}`, map[string]string{"Content-Type": "text/plain"})
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("wrong content type: code=%d", rec.Code)
 	}

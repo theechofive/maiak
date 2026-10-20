@@ -80,7 +80,7 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 	case errors.Is(err, auth.ErrUnauthenticated):
 		p.Type, p.Title, p.Status = problemUnauthenticated, "Not authenticated", http.StatusUnauthorized
 	case errors.Is(err, auth.ErrInvalidCredentials):
-		p.Type, p.Title, p.Status = problemInvalidCredentials, "Invalid email or password", http.StatusUnauthorized
+		p.Type, p.Title, p.Status = problemInvalidCredentials, "Wrong login or password", http.StatusUnauthorized
 	case errors.As(err, &rateErr):
 		secs := int(math.Ceil(rateErr.RetryAfter.Seconds()))
 		w.Header().Set("Retry-After", strconv.Itoa(max(secs, 1)))

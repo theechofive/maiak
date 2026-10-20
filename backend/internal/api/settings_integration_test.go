@@ -68,7 +68,7 @@ func newSlackServer(t *testing.T, env *pgtest.Env, sender *fakeSlack, logs *lock
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.BootstrapAdmin(ctx, adminEmail, hash); err != nil {
+	if err := svc.BootstrapAdmin(ctx, adminLogin, hash); err != nil {
 		t.Fatal(err)
 	}
 	keys, err := crypto.NewKeyring(map[string][]byte{"k1": bytes.Repeat([]byte{7}, 32)}, "k1")

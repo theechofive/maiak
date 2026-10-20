@@ -32,16 +32,15 @@ import (
 	"strings"
 
 	"github.com/theechofive/maiak/backend/internal/dbbootstrap"
+	"github.com/theechofive/maiak/backend/internal/platform/config"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
 )
 
 // Secret keys. The admin and crypto keys are what the chart maps to MAIAK_ADMIN_* and
-// MAIAK_ENCRYPTION_* through secretKeyRef. The admin Secret keeps the key name `email` (it holds
-// the login) so the workloads need no change until B-24 renames it (L-152).
+// MAIAK_ENCRYPTION_* through secretKeyRef. Both admin Secrets store the login under KeyLogin.
 const (
-	KeyEmail        = "email"
-	KeyPasswordHash = "password_hash"
 	KeyLogin        = "login"
+	KeyPasswordHash = "password_hash"
 	KeyPassword     = "password"
 	KeyKeys         = "keys"
 	KeyActiveKeyID  = "active_key_id"
@@ -117,9 +116,11 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		o.Logger.Info("crypto secret skipped (mode skip)", "secret", o.CryptoSecretName)
 	}
 	if o.AdminMode == ModeGenerate {
-		if err := ValidateLogin(o.AdminLogin); err != nil {
-			return res, err
+		login, err := config.NormalizeLogin(o.AdminLogin)
+		if err != nil {
+			return res, fmt.Errorf("secretsbootstrap: %w", err)
 		}
+		o.AdminLogin = login
 		if err := o.ensureAdmin(ctx, &res); err != nil {
 			return res, err
 		}
@@ -193,10 +194,10 @@ func (o *Options) adminOnce(ctx context.Context, res *Result) (bool, error) {
 		return false, err
 	}
 	if found {
-		if err := complete(admin, data, KeyEmail, KeyPasswordHash); err != nil {
+		if err := complete(admin, data, KeyLogin, KeyPasswordHash); err != nil {
 			return false, err
 		}
-		if string(data[KeyEmail]) != o.AdminLogin {
+		if !strings.EqualFold(string(data[KeyLogin]), o.AdminLogin) {
 			o.Logger.Warn("admin secret login differs from the configured login; the existing secret wins (delete both admin secrets and re-sync to reset)",
 				"secret", admin)
 		}
@@ -214,7 +215,7 @@ func (o *Options) adminOnce(ctx context.Context, res *Result) (bool, error) {
 		if err := complete(initial, init, KeyLogin, KeyPassword); err != nil {
 			return false, err
 		}
-		if string(init[KeyLogin]) != o.AdminLogin {
+		if !strings.EqualFold(string(init[KeyLogin]), o.AdminLogin) {
 			return false, fmt.Errorf("secretsbootstrap: secret %s/%s holds a different login than the configured one and %s does not exist; delete %s and re-run",
 				o.Namespace, initial, admin, initial)
 		}
@@ -247,7 +248,7 @@ func (o *Options) adminOnce(ctx context.Context, res *Result) (bool, error) {
 		return false, err
 	}
 	err = o.Secrets.CreateAnnotated(ctx, o.Namespace, admin, map[string][]byte{
-		KeyEmail:        []byte(o.AdminLogin),
+		KeyLogin:        []byte(o.AdminLogin),
 		KeyPasswordHash: []byte(hash),
 	}, nil)
 	if errors.Is(err, dbbootstrap.ErrSecretExists) {
@@ -257,7 +258,7 @@ func (o *Options) adminOnce(ctx context.Context, res *Result) (bool, error) {
 		return false, err
 	}
 	res.AdminCreated = true
-	o.Logger.Info("secret created", "secret", admin, "keys", []string{KeyEmail, KeyPasswordHash})
+	o.Logger.Info("secret created", "secret", admin, "keys", []string{KeyLogin, KeyPasswordHash})
 	return true, nil
 }
 

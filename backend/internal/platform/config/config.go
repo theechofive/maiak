@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/mail"
 	"net/netip"
 	"net/url"
 	"strconv"
@@ -88,8 +87,9 @@ type API struct {
 	Server
 	Encryption
 	Guard
-	HTTPAddr          string
-	AdminEmail        string
+	HTTPAddr string
+	// AdminLogin is the admin's login (MAIAK_ADMIN_LOGIN), lowercased (ADR-0009).
+	AdminLogin        string
 	AdminPasswordHash Secret
 	SessionTTL        time.Duration
 	CookieSecure      bool
@@ -158,7 +158,7 @@ func LoadAPI(lookup LookupFunc) (API, error) {
 		Encryption:        l.encryption(),
 		Guard:             l.guard(),
 		HTTPAddr:          l.addr("MAIAK_HTTP_ADDR", ":8080"),
-		AdminEmail:        l.email("MAIAK_ADMIN_EMAIL"),
+		AdminLogin:        l.login("MAIAK_ADMIN_LOGIN"),
 		AdminPasswordHash: l.passwordHash("MAIAK_ADMIN_PASSWORD_HASH"),
 		SessionTTL:        l.duration("MAIAK_SESSION_TTL", 12*time.Hour, 5*time.Minute, 30*24*time.Hour),
 		CookieSecure:      l.boolean("MAIAK_COOKIE_SECURE", true),
@@ -326,16 +326,31 @@ func (l *loader) publicURL(name string) string {
 	return v
 }
 
-func (l *loader) email(name string) string {
+func (l *loader) login(name string) string {
 	v := l.required(name)
 	if v == "" {
 		return ""
 	}
-	a, err := mail.ParseAddress(v)
-	if err != nil || a.Address != v || len(v) > 320 {
-		l.fail(name, "must be a plain email address")
+	n, err := NormalizeLogin(v)
+	if err != nil {
+		l.fail(name, err.Error())
 	}
-	return v
+	return n
+}
+
+// NormalizeLogin lowercases a login and checks that it is 1-64 characters of [a-z0-9._@-]
+// (ADR-0009). Logins are case-insensitive: every input is normalised with this function.
+func NormalizeLogin(s string) (string, error) {
+	if len(s) == 0 || len(s) > 64 {
+		return "", fmt.Errorf("login must be 1-64 characters, got %d", len(s))
+	}
+	// Checked before lowercasing: strings.ToLower maps some non-ASCII runes (the Kelvin sign) to ASCII.
+	for _, c := range s {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && !strings.ContainsRune("._@-", c) {
+			return "", errors.New("login must contain only letters, digits and . _ @ -")
+		}
+	}
+	return strings.ToLower(s), nil
 }
 
 func (l *loader) passwordHash(name string) Secret {

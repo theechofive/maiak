@@ -48,7 +48,7 @@ import (
 )
 
 const (
-	adminEmail    = "admin@example.com"
+	adminLogin    = "admin"
 	adminPassword = "e2e correct horse battery staple"
 	publicURL     = "https://maiak.example.com"
 	targetHost    = "status.e2e-target.test"
@@ -250,7 +250,7 @@ func TestIntegrationEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := authSvc.BootstrapAdmin(ctx, adminEmail, hash); err != nil {
+	if err := authSvc.BootstrapAdmin(ctx, adminLogin, hash); err != nil {
 		t.Fatal(err)
 	}
 	sched := scheduler.New()
@@ -294,7 +294,7 @@ func TestIntegrationEndToEnd(t *testing.T) {
 	}
 
 	// Session and CSRF.
-	lr := c.do(http.MethodPost, "/api/v1/auth/login", `{"email":"`+adminEmail+`","password":"`+adminPassword+`"}`, nil)
+	lr := c.do(http.MethodPost, "/api/v1/auth/login", `{"login":"`+adminLogin+`","password":"`+adminPassword+`"}`, nil)
 	if lr.code != http.StatusOK {
 		t.Fatalf("login: %d %s", lr.code, lr.raw)
 	}

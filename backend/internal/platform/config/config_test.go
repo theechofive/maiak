@@ -28,7 +28,7 @@ func apiEnv(t *testing.T) map[string]string {
 	key := base64.StdEncoding.EncodeToString(make([]byte, 32))
 	return map[string]string{
 		"MAIAK_DATABASE_URL":             "postgres://maiak_api:pw@db:5432/maiak?sslmode=require",
-		"MAIAK_ADMIN_EMAIL":              "admin@example.com",
+		"MAIAK_ADMIN_LOGIN":              "admin",
 		"MAIAK_ADMIN_PASSWORD_HASH":      validHash(t),
 		"MAIAK_ENCRYPTION_KEYS":          fmt.Sprintf(`{"k1":%q}`, key),
 		"MAIAK_ENCRYPTION_ACTIVE_KEY_ID": "k1",
@@ -76,7 +76,7 @@ func TestLoadAPIReportsAllErrors(t *testing.T) {
 	_, err := LoadAPI(env(map[string]string{
 		"MAIAK_ENV":                      "prod",
 		"MAIAK_LOG_LEVEL":                "loud",
-		"MAIAK_ADMIN_EMAIL":              "Admin <admin@example.com>",
+		"MAIAK_ADMIN_LOGIN":              "Admin <admin@example.com>",
 		"MAIAK_ADMIN_PASSWORD_HASH":      "plaintext-password",
 		"MAIAK_SESSION_TTL":              "forever",
 		"MAIAK_COOKIE_SECURE":            "maybe",
@@ -90,7 +90,7 @@ func TestLoadAPIReportsAllErrors(t *testing.T) {
 	}
 	msg := err.Error()
 	for _, name := range []string{
-		"MAIAK_ENV", "MAIAK_LOG_LEVEL", "MAIAK_ADMIN_EMAIL", "MAIAK_ADMIN_PASSWORD_HASH", "MAIAK_SESSION_TTL",
+		"MAIAK_ENV", "MAIAK_LOG_LEVEL", "MAIAK_ADMIN_LOGIN", "MAIAK_ADMIN_PASSWORD_HASH", "MAIAK_SESSION_TTL",
 		"MAIAK_COOKIE_SECURE", "MAIAK_TRUSTED_PROXY_HOPS", "MAIAK_ENCRYPTION_KEYS", "MAIAK_DATABASE_URL", "MAIAK_ADMIN_ADDR",
 	} {
 		if !strings.Contains(msg, name) {
@@ -282,5 +282,34 @@ func TestPublicURL(t *testing.T) {
 				t.Errorf("missing MAIAK_PUBLIC_URL accepted: %v", err)
 			}
 		})
+	}
+}
+
+func TestAdminLogin(t *testing.T) {
+	for in, want := range map[string]string{
+		"admin": "admin", "Admin": "admin", " ADMIN ": "admin", "owner@example.com": "owner@example.com",
+		"ops.team_1-a": "ops.team_1-a", strings.Repeat("a", 64): strings.Repeat("a", 64),
+	} {
+		e := apiEnv(t)
+		e["MAIAK_ADMIN_LOGIN"] = in
+		cfg, err := LoadAPI(env(e))
+		if err != nil {
+			t.Fatalf("%q: %v", in, err)
+		}
+		if cfg.AdminLogin != want {
+			t.Fatalf("%q: AdminLogin = %q, want %q", in, cfg.AdminLogin, want)
+		}
+	}
+	for _, in := range []string{"ad min", "adm!n", "Admin <a@example.com>", strings.Repeat("a", 65), "Kdmin", "admín"} {
+		e := apiEnv(t)
+		e["MAIAK_ADMIN_LOGIN"] = in
+		if _, err := LoadAPI(env(e)); err == nil || !strings.Contains(err.Error(), "MAIAK_ADMIN_LOGIN") {
+			t.Fatalf("%q accepted or error does not name the variable: %v", in, err)
+		}
+	}
+	e := apiEnv(t)
+	delete(e, "MAIAK_ADMIN_LOGIN")
+	if _, err := LoadAPI(env(e)); err == nil || !strings.Contains(err.Error(), "MAIAK_ADMIN_LOGIN: is required") {
+		t.Fatalf("missing login: %v", err)
 	}
 }

@@ -30,7 +30,7 @@ config:
   blockedCIDRs: []
 
 # Admin login and encryption keys (ADR-0091). Workloads always read the Secrets `<fullname>-admin`
-# (email, password_hash) and `<fullname>-crypto` (keys, active_key_id). Per Secret, `source` picks
+# (login, password_hash) and `<fullname>-crypto` (keys, active_key_id). Per Secret, `source` picks
 # who creates it:
 #   generate        (default) the secrets bootstrap hook Job creates it in the cluster if absent and
 #                   never overwrites it. The admin password is generated and readable ONCE from the
@@ -41,9 +41,9 @@ config:
 secrets:
   admin:
     source: generate
-    # System admin login (generate mode). Stored under the Secret key `email` until B-24 (L-152).
+    # System admin login (generate mode), 1-64 of [a-z0-9._@-]; the app treats logins case-insensitively.
     login: admin
-    # externalSecret mode: JSON secret with properties email, password_hash
+    # externalSecret mode: JSON secret with properties login, password_hash
     remoteKey: platform/maiak/admin
   crypto:
     source: generate

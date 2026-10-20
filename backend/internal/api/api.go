@@ -238,7 +238,7 @@ func (s *server) Login(ctx context.Context, req gen.LoginRequestObject) (gen.Log
 		ip = netip.Addr{}
 	}
 	res, err := s.auth.Login(ctx, auth.LoginInput{
-		Email:     req.Body.Email,
+		Login:     req.Body.Login,
 		Password:  req.Body.Password,
 		IP:        ip,
 		UserAgent: r.UserAgent(),
@@ -310,7 +310,7 @@ func (s *server) sessionCookie(token string, expires time.Time) *http.Cookie {
 
 func toSessionInfo(i auth.SessionInfo) gen.SessionInfo {
 	return gen.SessionInfo{
-		User:      gen.User{Id: i.User.ID, Email: i.User.Email, DisplayName: i.User.DisplayName},
+		User:      gen.User{Id: i.User.ID, Login: i.User.Login, DisplayName: i.User.DisplayName},
 		Tenant:    gen.Tenant{Id: i.Tenant.ID, Slug: i.Tenant.Slug, Name: i.Tenant.Name},
 		Role:      gen.MembershipRole(i.Role),
 		CsrfToken: i.CSRFToken,

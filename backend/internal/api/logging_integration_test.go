@@ -43,7 +43,7 @@ func TestIntegrationRequestLogsCarryNoSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.BootstrapAdmin(ctx, adminEmail, hash); err != nil {
+	if err := svc.BootstrapAdmin(ctx, adminLogin, hash); err != nil {
 		t.Fatal(err)
 	}
 	keys, err := crypto.NewKeyring(map[string][]byte{"k1": bytes.Repeat([]byte{7}, 32)}, "k1")
@@ -63,7 +63,7 @@ func TestIntegrationRequestLogsCarryNoSecrets(t *testing.T) {
 	t.Cleanup(srv.Close)
 	c := &client{t: t, srv: srv}
 
-	r := c.do(http.MethodPost, "/api/v1/auth/login", `{"email":"`+adminEmail+`","password":"`+adminPassword+`"}`, map[string]string{"X-Request-Id": "req-login-1"})
+	r := c.do(http.MethodPost, "/api/v1/auth/login", `{"login":"`+adminLogin+`","password":"`+adminPassword+`"}`, map[string]string{"X-Request-Id": "req-login-1"})
 	if r.code != http.StatusOK || r.header.Get("X-Request-Id") != "req-login-1" {
 		t.Fatalf("login: %d %s (request id %q)", r.code, r.raw, r.header.Get("X-Request-Id"))
 	}

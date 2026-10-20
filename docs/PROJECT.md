@@ -60,12 +60,12 @@ Each slice ends with: lint and tests green, generated code up to date, `helm lin
 ## Who does what
 | Owner | Responsibilities |
 |---|---|
-| Product owner (repo owner) | The repository and GitHub settings, DNS record `maiak.klr-ops.net` in Cloudflare, the PR registering the ArgoCD Application in `devops-charts-infra`, secrets `platform/maiak/admin` (email and password hash) and `platform/maiak/crypto`, the ghcr pull-secret decision (L-002) |
+| Product owner (repo owner) | The repository and GitHub settings, DNS record `maiak.klr-ops.net` in Cloudflare, the PR registering the ArgoCD Application in `devops-charts-infra`, the optional secrets `platform/maiak/admin` (login and password hash) and `platform/maiak/crypto` (only with `externalSecret` mode; by default the cluster generates both, ADR-0091), the ghcr pull-secret decision (L-002) |
 | Engineering (AI agents and the owner) | Code, chart, CI, documentation, ledger. Agents work from `CLAUDE.md`; independent review is a separate pass from authoring |
 
 ## Before the first deploy (blocking)
 1. Decide the ghcr pull secret (L-002).
-2. Create the secrets `platform/maiak/admin` and `platform/maiak/crypto` in AWS Secrets Manager.
+2. Optional, only with `externalSecret` mode: create the secrets `platform/maiak/admin` (`login`, `password_hash`) and `platform/maiak/crypto` in AWS Secrets Manager. By default the cluster generates both (ADR-0091) and the admin logs in as `admin` with the one-time password from `maiak-admin-initial`.
 3. Add the Cloudflare CNAME for `maiak.klr-ops.net` to the internal NLB.
 4. Merge the `Application` into `devops-charts-infra`.
 5. After the first successful sync, set `dbBootstrap.enabled: false` (risk R-009).

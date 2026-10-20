@@ -10,7 +10,9 @@ import sys
 import yaml
 
 ENV_NAMES_ENCRYPTION = {"MAIAK_ENCRYPTION_KEYS", "MAIAK_ENCRYPTION_ACTIVE_KEY_ID"}
-ADMIN_ENV = {"MAIAK_ADMIN_EMAIL", "MAIAK_ADMIN_PASSWORD_HASH"}
+ADMIN_ENV = {"MAIAK_ADMIN_LOGIN", "MAIAK_ADMIN_PASSWORD_HASH"}
+# The api reads the admin Secret by these keys; the ExternalSecret (externalSecret mode) must map exactly them.
+ADMIN_SECRET_KEYS = {"MAIAK_ADMIN_LOGIN": "login", "MAIAK_ADMIN_PASSWORD_HASH": "password_hash"}
 # The worker is the only process that runs tenant-supplied targets; the processes below must
 # not see anything the worker has not been given (ADR-0016, L-042).
 ENCRYPTION_COMPONENTS = {"api", "jobs"}
@@ -136,11 +138,15 @@ def check(path):
         if n not in worker:
             fail(f"worker lacks {n}")
     api, jobs = env_of("api"), env_of("jobs")
-    for n in ("MAIAK_ADMIN_EMAIL", "MAIAK_ADMIN_PASSWORD_HASH", "MAIAK_SESSION_TTL", "MAIAK_COOKIE_SECURE", "MAIAK_TRUSTED_PROXY_HOPS", "MAIAK_PUBLIC_URL", "MAIAK_HTTP_ADDR"):
+    for n in ("MAIAK_ADMIN_LOGIN", "MAIAK_ADMIN_PASSWORD_HASH", "MAIAK_SESSION_TTL", "MAIAK_COOKIE_SECURE", "MAIAK_TRUSTED_PROXY_HOPS", "MAIAK_PUBLIC_URL", "MAIAK_HTTP_ADDR"):
         if n not in api:
             fail(f"api lacks {n}")
     if ADMIN_ENV & set(jobs):
         fail("jobs has admin credentials")
+    for n, key in ADMIN_SECRET_KEYS.items():
+        ref = api.get(n, {}).get("valueFrom", {}).get("secretKeyRef", {})
+        if api and (ref.get("name") != "maiak-admin" or ref.get("key") != key):
+            fail(f"api {n} must come from secret maiak-admin key {key}, got {ref}")
     for n in ("MAIAK_PUBLIC_URL", "MAIAK_ENCRYPTION_KEYS"):
         if n not in jobs:
             fail(f"jobs lacks {n}")
@@ -219,6 +225,12 @@ def check(path):
     if bool(sb_jobs) != has_role:
         fail("secrets-bootstrap Job and Role must be rendered together")
     es_names = {d["metadata"]["name"] for d in docs if d["kind"] == "ExternalSecret"}
+    for d in docs:
+        if d["kind"] == "ExternalSecret" and d["metadata"]["name"] == "maiak-admin":
+            props = {(x["secretKey"], x["remoteRef"].get("property")) for x in d["spec"]["data"]}
+            want = {(k, k) for k in ADMIN_SECRET_KEYS.values()}
+            if props != want:
+                fail(f"ExternalSecret maiak-admin maps {sorted(props)}, want {sorted(want)}")
     for mode_key, secret in (("ADMIN", "maiak-admin"), ("CRYPTO", "maiak-crypto")):
         generated = modes.get(mode_key) == "generate"
         if generated and secret in es_names:

@@ -115,11 +115,11 @@ keys (ADR-0016, L-042). Arg: root context
 {{- define "maiak.env.api" -}}
 - name: MAIAK_HTTP_ADDR
   value: {{ printf ":%d" (int .Values.api.httpPort) | quote }}
-- name: MAIAK_ADMIN_EMAIL
+- name: MAIAK_ADMIN_LOGIN
   valueFrom:
     secretKeyRef:
       name: {{ include "maiak.secret.admin" . }}
-      key: email
+      key: login
 - name: MAIAK_ADMIN_PASSWORD_HASH
   valueFrom:
     secretKeyRef:

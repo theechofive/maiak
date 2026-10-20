@@ -69,7 +69,7 @@ func assertNoSecretMaterial(t *testing.T, logs string, f *pgtest.FakeSecrets) {
 			continue
 		}
 		for k, v := range d {
-			if k == KeyEmail || k == KeyLogin || k == KeyActiveKeyID {
+			if k == KeyLogin || k == KeyActiveKeyID {
 				continue // not secret
 			}
 			values = append(values, string(v), base64.StdEncoding.EncodeToString(v))
@@ -119,7 +119,7 @@ func TestFreshGenerate(t *testing.T) {
 	}
 
 	admin := mustGet(t, f, "maiak-admin")
-	if len(admin) != 2 || string(admin[KeyEmail]) != "admin" {
+	if len(admin) != 2 || string(admin[KeyLogin]) != "admin" {
 		t.Fatalf("admin secret keys: %v", sortedKeys(admin))
 	}
 	h, err := crypto.ParseArgon2idHash(string(admin[KeyPasswordHash]))
@@ -217,7 +217,7 @@ func TestIncompleteSecretFails(t *testing.T) {
 	}{
 		{"maiak-crypto", map[string][]byte{KeyKeys: []byte(`{"k1":"x"}`)}, "lacks key(s) active_key_id"},
 		{"maiak-crypto", map[string][]byte{KeyKeys: {}, KeyActiveKeyID: []byte("k1")}, "lacks key(s) keys"},
-		{"maiak-admin", map[string][]byte{KeyEmail: []byte("admin")}, "lacks key(s) password_hash"},
+		{"maiak-admin", map[string][]byte{KeyLogin: []byte("admin")}, "lacks key(s) password_hash"},
 		{"maiak-admin-initial", map[string][]byte{KeyLogin: []byte("admin")}, "lacks key(s) password"},
 	}
 	for _, tc := range cases {
@@ -290,7 +290,7 @@ func TestSkipModes(t *testing.T) {
 }
 
 func TestBadLogin(t *testing.T) {
-	for _, login := range []string{"", "Admin", "ad min", "admin\n", strings.Repeat("a", 65), "adm!n"} {
+	for _, login := range []string{"", "ad min", "admin\n", strings.Repeat("a", 65), "adm!n"} {
 		f := pgtest.NewFakeSecrets()
 		o := opts(f, nil)
 		o.AdminLogin = login
@@ -302,9 +302,17 @@ func TestBadLogin(t *testing.T) {
 			t.Fatalf("login %q: %d secrets created", login, f.Creates)
 		}
 	}
-	for _, login := range []string{"admin", "ops.team_1", "owner@example.com", strings.Repeat("a", 64)} {
-		if err := ValidateLogin(login); err != nil {
-			t.Fatalf("login %q rejected: %v", login, err)
+	// Logins are case-insensitive: the configured login is stored lowercased in both Secrets.
+	f := pgtest.NewFakeSecrets()
+	o := opts(f, nil)
+	o.AdminLogin = "Owner@Example.com"
+	o.CryptoMode = ModeSkip
+	if _, err := Run(context.Background(), o); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"maiak-admin", "maiak-admin-initial"} {
+		if d, _, _ := f.Get(context.Background(), ns, name); string(d[KeyLogin]) != "owner@example.com" {
+			t.Fatalf("%s login = %q, want it lowercased", name, d[KeyLogin])
 		}
 	}
 }
@@ -340,7 +348,7 @@ func TestCreateRace409(t *testing.T) {
 		case "maiak-admin-initial":
 			f.Put(ns, name, map[string][]byte{KeyLogin: []byte("admin"), KeyPassword: []byte("winner-pw")})
 		case "maiak-admin":
-			f.Put(ns, name, map[string][]byte{KeyEmail: []byte("admin"), KeyPasswordHash: []byte(winnerHash)})
+			f.Put(ns, name, map[string][]byte{KeyLogin: []byte("admin"), KeyPasswordHash: []byte(winnerHash)})
 		}
 	}}
 	o := opts(r, nil)
@@ -433,6 +441,10 @@ func TestLoadConfig(t *testing.T) {
 	_, err = LoadConfig(env(map[string]string{"MAIAK_SECRETS_ADMIN_LOGIN": "Bad Login"}))
 	if err == nil || !strings.Contains(err.Error(), "MAIAK_SECRETS_ADMIN_LOGIN") {
 		t.Fatalf("err = %v", err)
+	}
+	c, err = LoadConfig(env(map[string]string{"MAIAK_SECRETS_ADMIN_LOGIN": "Admin"}))
+	if err != nil || c.Options.AdminLogin != "admin" {
+		t.Fatalf("login not normalised: %q, %v", c.Options.AdminLogin, err)
 	}
 	c, err = LoadConfig(env(map[string]string{"MAIAK_SECRETS_ADMIN_MODE": "skip", "MAIAK_SECRETS_ADMIN_LOGIN": "Bad Login", "MAIAK_SECRETS_NAMESPACE": "maiak"}))
 	if err != nil || c.Namespace != "maiak" {

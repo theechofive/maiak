@@ -32,7 +32,7 @@ Source of truth: `backend/internal/platform/config/config.go`.
 | `MAIAK_ENV`, `MAIAK_LOG_LEVEL` | x | x | x | x | x |
 | `MAIAK_ADMIN_ADDR`, `MAIAK_DATABASE_URL` (`api_url` / `worker_url`) | x | x | x | | |
 | `MAIAK_ENCRYPTION_KEYS`, `MAIAK_ENCRYPTION_ACTIVE_KEY_ID` (`maiak-crypto`) | x | **never** | x | | |
-| `MAIAK_ADMIN_EMAIL`, `MAIAK_ADMIN_PASSWORD_HASH` (`maiak-admin`) | x | **never** | **never** | | |
+| `MAIAK_ADMIN_LOGIN`, `MAIAK_ADMIN_PASSWORD_HASH` (`maiak-admin`) | x | **never** | **never** | | |
 | `MAIAK_HTTP_ADDR`, `MAIAK_SESSION_TTL`, `MAIAK_COOKIE_SECURE`, `MAIAK_TRUSTED_PROXY_HOPS` | x | | | | |
 | `MAIAK_PUBLIC_URL` (`config.publicUrl`, default `https://maiak.klr-ops.net`) | x | | x | | |
 | `MAIAK_BLOCKED_CIDRS` (`config.blockedCIDRs`, only rendered when non-empty) | x | x | x | | |
@@ -61,13 +61,13 @@ Only the migrate Job reads `owner_url`.
 
 ## Secrets
 
-Workloads always read `maiak-admin` (`email`, `password_hash`) and `maiak-crypto` (`keys`, `active_key_id`).
+Workloads always read `maiak-admin` (`login`, `password_hash`) and `maiak-crypto` (`keys`, `active_key_id`).
 `secrets.admin.source` and `secrets.crypto.source` choose, per Secret, who creates them (ADR-0091):
 
 - `generate` (default): the secrets bootstrap hook Job (`/app/maiakctl secrets bootstrap`) creates the Secret
   in the cluster when it is absent and never overwrites it (an incomplete existing Secret fails the Job).
-  - admin: login `secrets.admin.login` (default `admin`, stored under the key `email` until B-24, L-152), a random
-    password whose argon2id hash goes to `maiak-admin`; the plaintext goes ONCE to `maiak-admin-initial`
+  - admin: login `secrets.admin.login` (default `admin`, stored under the key `login`), a random password whose
+    argon2id hash goes to `maiak-admin`; the plaintext goes ONCE to `maiak-admin-initial`
     (`login`, `password`). Read it, log in, delete `maiak-admin-initial`. It is never recreated.
   - crypto: one random 32-byte key with id `secrets.crypto.keyId` (default `k1`). It lives only in the cluster;
     deleting the namespace loses it (it only encrypts the Slack webhook URLs, which can be re-entered).
@@ -75,7 +75,7 @@ Workloads always read `maiak-admin` (`email`, `password_hash`) and `maiak-crypto
 
 | Remote key (values-driven) | Properties | K8s Secret |
 |---|---|---|
-| `secrets.admin.remoteKey` (`platform/maiak/admin`) | `email`, `password_hash` | `maiak-admin` |
+| `secrets.admin.remoteKey` (`platform/maiak/admin`) | `login`, `password_hash` | `maiak-admin` |
 | `secrets.crypto.remoteKey` (`platform/maiak/crypto`) | `keys` (JSON string), `active_key_id` | `maiak-crypto` |
 
 The secrets Job (`maiak-secrets-bootstrap`, rendered when any source is `generate`) has its own ServiceAccount

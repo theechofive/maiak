@@ -62,7 +62,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if err := authSvc.BootstrapAdmin(ctx, cfg.AdminEmail, cfg.AdminPasswordHash.Value()); err != nil {
+	if err := authSvc.BootstrapAdmin(ctx, cfg.AdminLogin, cfg.AdminPasswordHash.Value()); err != nil {
 		return err
 	}
 	log.Info("admin bootstrap done")

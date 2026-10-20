@@ -11,7 +11,7 @@ Conventions for every command:
 
 1. Images exist and the values file points at them. `values-platform.yaml` ships the placeholder tag `"0000000"` for `image.tag` and `web.image.tag`. `release.yml` (never executed yet, L-102, R-010) must have built `ghcr.io/theechofive/maiak-backend:<sha>` and `maiak-web:<sha>` and committed the real tags. With the placeholder the first sync ends in `ImagePullBackOff`.
 2. The pull-secret decision (section 2) is made and implemented.
-3. The admin login is decided (section 1: until B-24 lands it must be email-shaped, L-152). The two Maiak Secrets Manager secrets are OPTIONAL: by default the cluster generates the admin password and the encryption key.
+3. The two Maiak Secrets Manager secrets are OPTIONAL (only for `externalSecret` mode): by default the cluster generates the admin password (login `admin`) and the encryption key.
 4. The DNS record (section 3) exists or you accept that the host does not resolve yet.
 
 ## 1. Admin login and encryption key
@@ -19,11 +19,11 @@ Conventions for every command:
 `platform/grafana/db` already exists in AWS Secrets Manager (the db bootstrap Job reads the RDS master login from it; there is no copy). Nothing else has to be created in AWS: by default (`secrets.admin.source` and `secrets.crypto.source` are `generate`, ADR-0091) the hook Job `maiak-secrets-bootstrap` (wave -3) creates in namespace `maiak`:
 
 - `maiak-crypto` (`keys`, `active_key_id`): one random 32-byte key with id `k1`. It exists only in the cluster: deleting the namespace or the Secret loses it, and the Slack webhook URL stored in the database must then be re-entered in Settings (nothing else is encrypted).
-- `maiak-admin-initial` (`login`, `password`): the one-time admin password in plaintext, and `maiak-admin` (`email` = the login, `password_hash`) for the api.
+- `maiak-admin-initial` (`login`, `password`): the one-time admin password in plaintext, and `maiak-admin` (`login`, `password_hash`) for the api.
 
 The Job never overwrites a Secret. If one exists but lacks keys, the Job fails and names them: fix or delete that Secret.
 
-**Login, and the B-24 dependency (L-152).** The login is `secrets.admin.login`, default `admin`. Until task B-24 lands, the application still validates `MAIAK_ADMIN_EMAIL` as an email address, so with `admin` the api pods fail at startup with `MAIAK_ADMIN_EMAIL: must be a plain email address`. Until then set an email-shaped login in `deploy/helm/maiak/values-platform.yaml` before the first sync (lowercase, for example `secrets.admin.login: owner@example.com`), or let B-24 land first.
+**Login.** The login is `secrets.admin.login`, default `admin` (a system user, like Grafana; 1-64 of `[a-z0-9._@-]`). The api reads it as `MAIAK_ADMIN_LOGIN` and logins are case-insensitive. Keep the default unless you have a reason; changing it later disables the previous admin and revokes its sessions (ADR-0009).
 
 ### Read the one-time admin password (after wave -3)
 
@@ -55,10 +55,10 @@ Set `secrets.admin.source: externalSecret` and/or `secrets.crypto.source: extern
 JSON shape (exactly two properties):
 
 ```json
-{ "email": "admin@example.com", "password_hash": "$argon2id$v=19$m=...,t=...,p=...$<salt>$<hash>" }
+{ "login": "admin", "password_hash": "$argon2id$v=19$m=...,t=...,p=...$<salt>$<hash>" }
 ```
 
-`email` must be a plain address (no display name). `password_hash` is an argon2id PHC string produced by `maiakctl hashpw`, which prompts twice without echo on a terminal (pipe mode reads one line from stdin and would leave the password in your history, so use the prompt). Two ways to run it, pick one:
+`login` is 1-64 of `[a-z0-9._@-]` (write it in lowercase; the api lowercases it anyway). `password_hash` is an argon2id PHC string produced by `maiakctl hashpw`, which prompts twice without echo on a terminal (pipe mode reads one line from stdin and would leave the password in your history, so use the prompt). Two ways to run it, pick one:
 
 ```sh
 # a) with Go, from a checkout of this repository
@@ -72,7 +72,7 @@ Write the secret from a file (**writes**):
 ```sh
 umask 077
 printf 'Paste the hash, then Enter: ' && IFS= read -r HASH
-jq -n --arg e 'admin@example.com' --arg h "$HASH" '{email:$e,password_hash:$h}' > /tmp/maiak-admin.json
+jq -n --arg l 'admin' --arg h "$HASH" '{login:$l,password_hash:$h}' > /tmp/maiak-admin.json
 aws --profile <platform profile> secretsmanager create-secret --name platform/maiak/admin --secret-string file:///tmp/maiak-admin.json
 rm -f /tmp/maiak-admin.json; unset HASH
 ```
@@ -141,7 +141,7 @@ Sync waves (all hooks are `Sync` hooks, so the very first sync works; the hook J
 |---|---|---|
 | -4 | ExternalSecret `maiak-db-admin` (hook, deleted on success), db and secrets bootstrap ServiceAccount, Role, RoleBinding | `kubectl --context CTX -n maiak get externalsecret maiak-db-admin` is `SecretSynced`; `get sa,role,rolebinding -l app.kubernetes.io/component=db-bootstrap` |
 | -3 | Job `maiak-db-bootstrap` | `kubectl --context CTX -n maiak logs job/maiak-db-bootstrap` shows three `maiak_*` roles with `rolsuper=f`, `rolbypassrls=f` and database `maiak` owned by `maiak_owner`; `kubectl --context CTX -n maiak get secret maiak-db -o json \| jq '.data \| keys'` lists `api_password api_url owner_password owner_url worker_password worker_url` (keys only: never print values); `get secret maiak-db-admin` must be NotFound after the Job (L-022) |
-| -3 | Job `maiak-secrets-bootstrap` (only when a source is `generate`) | `kubectl --context CTX -n maiak logs job/maiak-secrets-bootstrap` lists each Secret as `secret created` or `left untouched` (names only); `get secret maiak-admin maiak-crypto -o json \| jq '.items[].data \| keys'` shows `email password_hash` and `active_key_id keys` |
+| -3 | Job `maiak-secrets-bootstrap` (only when a source is `generate`) | `kubectl --context CTX -n maiak logs job/maiak-secrets-bootstrap` lists each Secret as `secret created` or `left untouched` (names only); `get secret maiak-admin maiak-crypto -o json \| jq '.items[].data \| keys'` shows `login password_hash` and `active_key_id keys` |
 | -2 | ExternalSecrets `maiak-admin` / `maiak-crypto` (only with source `externalSecret`); migrate ServiceAccount | `kubectl --context CTX -n maiak get externalsecret` each `SecretSynced`; same key check as above |
 | -1 | Job `maiak-migrate` (owner role) | `kubectl --context CTX -n maiak logs job/maiak-migrate` ends with the applied goose versions and no error |
 | 0 | ServiceAccounts, Services, Deployments `maiak-api`, `maiak-worker`, `maiak-jobs`, `maiak-web`, HTTPRoute `maiak` | `kubectl --context CTX -n maiak get deploy,pods`; `kubectl --context CTX -n maiak rollout status deploy/maiak-api --timeout=120s` (same for worker, jobs, web); `kubectl --context CTX -n maiak get httproute maiak -o jsonpath='{.status.parents[*].conditions[*].type}{"\n"}'` shows `Accepted` and `ResolvedRefs` |
@@ -159,7 +159,7 @@ curl -fsS https://maiak.klr-ops.net/api/v1/health      # JSON with build info; d
 curl -fsS https://maiak.klr-ops.net/healthz            # answered by nginx in the web pod (route "/"), prints ok
 ```
 
-Open `https://maiak.klr-ops.net/` in a browser, sign in with the admin login and the one-time password from `maiak-admin-initial` (section 1; with Secrets Manager mode, the email from `platform/maiak/admin` and the password you hashed), delete `maiak-admin-initial`, create a monitor against a public HTTPS site, and watch its status turn `up` within about a minute (worker), then set the Slack webhook in Settings and use "Send test" (api, needs the encryption keys). The logs show the worker claiming checks (`kubectl --context CTX -n maiak logs deploy/maiak-worker --tail=20`); metrics stay on the admin port 9090 and are not routed (self-monitoring is L-003).
+Open `https://maiak.klr-ops.net/` in a browser, sign in with the login `admin` and the one-time password from `maiak-admin-initial` (section 1; with Secrets Manager mode, the login from `platform/maiak/admin` and the password you hashed), delete `maiak-admin-initial`, create a monitor against a public HTTPS site, and watch its status turn `up` within about a minute (worker), then set the Slack webhook in Settings and use "Send test" (api, needs the encryption keys). The logs show the worker claiming checks (`kubectl --context CTX -n maiak logs deploy/maiak-worker --tail=20`); metrics stay on the admin port 9090 and are not routed (self-monitoring is L-003).
 
 The web UI has never run against the real API (L-052) and the nginx image has never run read-only in a cluster (L-023); a blank page or a CSP error in the browser console are the first things to look at.
 
@@ -187,6 +187,6 @@ The bootstrap ServiceAccount, Role and RoleBinding were created as hooks and Arg
 - **L-022** unverified at the first sync: that ArgoCD deletes `maiak-db-admin` after the Job (`HookSucceeded`), that the bootstrap RBAC is sufficient, that ESO resolves `platform/grafana/db`, and the real RDS path of the bootstrap (tested only with a superuser and a `CREATEROLE CREATEDB` approximation).
 - **L-023** the web image was never built or run: nginx as uid 65532 with a read-only root filesystem and only `/tmp` writable, the `/healthz` probes, the CSP.
 - **L-002** the pull secret (section 2) blocks the first pod.
-- **L-152** until B-24 the api accepts only an email-shaped admin login (section 1). **R-110** the one-time admin password stays readable in `maiak-admin-initial` until you delete it.
+- **R-110** the one-time admin password stays readable in `maiak-admin-initial` until you delete it.
 - **L-102 / R-010 / R-008** the release workflow has never run; the bump commit needs a `main` without branch protection for the bot.
 - **R-001** a failure or maintenance window of the shared RDS `grafana` takes Maiak and Grafana down together; **R-003** memory requests total 512Mi with the platform replicas, on a memory-tight cluster; **R-002** NetworkPolicy is not enforced (see L-100 for extra blocked CIDRs); **L-052** the SPA has never run against the real API.

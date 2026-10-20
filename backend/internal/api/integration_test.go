@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	adminEmail    = "admin@example.com"
+	adminLogin    = "admin"
 	adminPassword = "correct horse battery staple"
 )
 
@@ -92,7 +92,7 @@ func newServer(t *testing.T, env *pgtest.Env, opts auth.Options) *client {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.BootstrapAdmin(ctx, adminEmail, hash); err != nil {
+	if err := svc.BootstrapAdmin(ctx, adminLogin, hash); err != nil {
 		t.Fatal(err)
 	}
 	sched := scheduler.New()
@@ -115,19 +115,19 @@ func TestIntegrationLoginMeLogout(t *testing.T) {
 
 	// Wrong password and unknown user give the same generic answer.
 	for _, body := range []string{
-		`{"email":"admin@example.com","password":"wrong"}`,
-		`{"email":"nobody@example.com","password":"wrong"}`,
+		`{"login":"admin","password":"wrong"}`,
+		`{"login":"nobody@example.com","password":"wrong"}`,
 	} {
 		r := c.do(http.MethodPost, "/api/v1/auth/login", body, xff)
 		if r.code != http.StatusUnauthorized || r.body["type"] != "urn:maiak:problem:invalid-credentials" {
 			t.Fatalf("bad login: %d %s", r.code, r.raw)
 		}
 		if strings.Contains(r.raw, "nobody") {
-			t.Fatal("error echoes the email")
+			t.Fatal("error echoes the login")
 		}
 	}
 
-	r := c.do(http.MethodPost, "/api/v1/auth/login", `{"email":"Admin@Example.com","password":"`+adminPassword+`"}`, xff)
+	r := c.do(http.MethodPost, "/api/v1/auth/login", `{"login":"Admin","password":"`+adminPassword+`"}`, xff)
 	if r.code != http.StatusOK {
 		t.Fatalf("login: %d %s", r.code, r.raw)
 	}
@@ -164,7 +164,7 @@ func TestIntegrationLoginMeLogout(t *testing.T) {
 	if me.code != http.StatusOK || me.body["csrf_token"] != csrf {
 		t.Fatalf("me: %d %s", me.code, me.raw)
 	}
-	if user, _ := me.body["user"].(map[string]any); user["email"] != adminEmail {
+	if user, _ := me.body["user"].(map[string]any); user["login"] != adminLogin {
 		t.Fatalf("me user: %v", me.body["user"])
 	}
 
@@ -220,16 +220,16 @@ func TestIntegrationLoginRateLimit(t *testing.T) {
 	c := newServer(t, env, auth.Options{
 		Clock:        fake,
 		IPLimiter:    auth.NewLimiter(100, time.Minute, 100, fake),
-		EmailLimiter: auth.NewLimiter(2, time.Minute, 100, fake),
+		LoginLimiter: auth.NewLimiter(2, time.Minute, 100, fake),
 	})
-	bad := `{"email":"admin@example.com","password":"wrong"}`
+	bad := `{"login":"admin","password":"wrong"}`
 	for i := 0; i < 2; i++ {
 		if r := c.do(http.MethodPost, "/api/v1/auth/login", bad, nil); r.code != http.StatusUnauthorized {
 			t.Fatalf("attempt %d: %d", i, r.code)
 		}
 	}
-	// Even the right password is refused while the email is limited.
-	good := `{"email":"admin@example.com","password":"` + adminPassword + `"}`
+	// Even the right password is refused while the login is limited.
+	good := `{"login":"admin","password":"` + adminPassword + `"}`
 	r := c.do(http.MethodPost, "/api/v1/auth/login", good, nil)
 	if r.code != http.StatusTooManyRequests || r.header.Get("Retry-After") == "" || r.body["type"] != "urn:maiak:problem:rate-limited" {
 		t.Fatalf("limited: %d %v %s", r.code, r.header, r.raw)
@@ -248,10 +248,10 @@ func TestIntegrationLoginWithoutForwardedForUsesSharedKey(t *testing.T) {
 	c := newServer(t, env, auth.Options{
 		Clock:        fake,
 		IPLimiter:    auth.NewLimiter(2, time.Minute, 100, fake),
-		EmailLimiter: auth.NewLimiter(100, time.Minute, 100, fake),
+		LoginLimiter: auth.NewLimiter(100, time.Minute, 100, fake),
 	})
-	login := func(email string, hdr map[string]string) int {
-		return c.do(http.MethodPost, "/api/v1/auth/login", `{"email":"`+email+`","password":"wrong"}`, hdr).code
+	login := func(name string, hdr map[string]string) int {
+		return c.do(http.MethodPost, "/api/v1/auth/login", `{"login":"`+name+`","password":"wrong"}`, hdr).code
 	}
 	if code := login("a@example.com", nil); code != http.StatusUnauthorized {
 		t.Fatalf("first: %d", code)
@@ -279,7 +279,7 @@ func TestIntegrationLoginWithoutForwardedForUsesSharedKey(t *testing.T) {
 // login returns the session cookie header and CSRF token of the admin.
 func (c *client) login() (map[string]string, string) {
 	c.t.Helper()
-	r := c.do(http.MethodPost, "/api/v1/auth/login", `{"email":"`+adminEmail+`","password":"`+adminPassword+`"}`, nil)
+	r := c.do(http.MethodPost, "/api/v1/auth/login", `{"login":"`+adminLogin+`","password":"`+adminPassword+`"}`, nil)
 	if r.code != http.StatusOK {
 		c.t.Fatalf("login: %d %s", r.code, r.raw)
 	}
