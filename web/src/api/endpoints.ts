@@ -26,8 +26,8 @@ export const queryKeys = {
   slack: ["settings", "slack"] as const,
 };
 
-export async function login(email: string, password: string): Promise<SessionInfo> {
-  const session = await unwrap(client.POST("/api/v1/auth/login", { body: { email, password } }));
+export async function login(login: string, password: string): Promise<SessionInfo> {
+  const session = await unwrap(client.POST("/api/v1/auth/login", { body: { login, password } }));
   setCsrfToken(session.csrf_token);
   return session;
 }

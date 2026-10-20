@@ -414,7 +414,7 @@ describe("settings", () => {
     expect(await screen.findByText(/No webhook is configured/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send test message" })).toBeDisabled();
     expect(screen.getByText(/Signed in as/)).toHaveTextContent(
-      "Signed in as admin@example.com. The password is managed outside the app.",
+      "Signed in as admin. The password is managed outside the app.",
     );
 
     const input = screen.getByLabelText("Slack webhook URL");

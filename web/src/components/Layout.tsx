@@ -33,7 +33,7 @@ export default function Layout() {
           </ul>
           <ul>
             <li>
-              <small>{auth.session?.user.email}</small>
+              <small>{auth.session?.user.login}</small>
             </li>
             <li>
               <button type="button" className="outline secondary" onClick={onLogout}>

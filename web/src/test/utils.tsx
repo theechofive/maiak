@@ -34,7 +34,7 @@ export function mockApi(routes: Record<string, Handler>) {
 }
 
 export const session = {
-  user: { id: "u1", email: "admin@example.com", display_name: "Admin" },
+  user: { id: "u1", login: "admin", display_name: "Admin" },
   tenant: { id: "t1", slug: "acme", name: "Acme" },
   role: "owner",
   csrf_token: "csrf-1",

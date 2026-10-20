@@ -16,7 +16,7 @@ export default function Settings() {
       <section aria-labelledby="account-heading">
         <h2 id="account-heading">Account</h2>
         <p>
-          Signed in as <strong>{auth.session?.user.email}</strong>. The password is managed outside
+          Signed in as <strong>{auth.session?.user.login}</strong>. The password is managed outside
           the app.
         </p>
       </section>

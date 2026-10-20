@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { getCsrfToken } from "./api/client";
 import { listMonitors } from "./api/endpoints";
@@ -19,7 +19,11 @@ describe("auth guard", () => {
     renderApp("/settings");
 
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
-    await userEvent.type(screen.getByLabelText("Email"), "admin@example.com");
+    const loginField = screen.getByLabelText("Login");
+    expect(loginField).toHaveAttribute("type", "text");
+    expect(loginField).toHaveAttribute("autocomplete", "username");
+    expect(loginField).toHaveValue("");
+    await userEvent.type(loginField, " admin ");
     await userEvent.type(screen.getByLabelText("Password"), "secret");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
@@ -28,7 +32,7 @@ describe("auth guard", () => {
     const loginCall = fetchMock.mock.calls
       .map(([r]) => r as Request)
       .find((r) => r.url.endsWith("/auth/login"));
-    expect(await loginCall?.json()).toEqual({ email: "admin@example.com", password: "secret" });
+    expect(await loginCall?.json()).toEqual({ login: "admin", password: "secret" });
   });
 
   it("shows the generic error on wrong credentials", async () => {
@@ -37,11 +41,11 @@ describe("auth guard", () => {
       "POST /api/v1/auth/login": () => problem(401, "Invalid credentials"),
     });
     renderApp("/login");
-    await userEvent.type(await screen.findByLabelText("Email"), "a@b.c");
+    await userEvent.type(await screen.findByLabelText("Login"), "nobody");
     await userEvent.type(screen.getByLabelText("Password"), "nope");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Wrong email or password. Try again.",
+      "Wrong login or password. Try again.",
     );
   });
 
@@ -50,6 +54,8 @@ describe("auth guard", () => {
     renderApp("/settings");
     expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
     expect(getCsrfToken()).toBe("csrf-1");
+    // The top bar shows the login.
+    expect(within(screen.getByRole("banner")).getByText("admin")).toBeInTheDocument();
   });
 
   it("goes back to login when any request answers 401", async () => {
@@ -117,7 +123,7 @@ describe("login rate limit", () => {
 
   const submit = async () => {
     renderApp("/login");
-    await userEvent.type(await screen.findByLabelText("Email"), "admin@example.com");
+    await userEvent.type(await screen.findByLabelText("Login"), "admin");
     await userEvent.type(screen.getByLabelText("Password"), "wrong");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
   };

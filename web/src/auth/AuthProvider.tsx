@@ -10,7 +10,7 @@ export interface AuthValue {
   session: SessionInfo | null;
   error: unknown;
   retry: () => void;
-  login: (email: string, password: string) => Promise<void>;
+  login: (login: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -43,8 +43,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       session: me.data ?? null,
       error: me.error,
       retry: () => void me.refetch(),
-      login: async (email, password) => {
-        const session = await api.login(email, password);
+      login: async (login, password) => {
+        const session = await api.login(login, password);
         queryClient.setQueryData(queryKeys.me, session);
       },
       logout: async () => {

@@ -34,10 +34,11 @@ export interface paths {
     get?: never;
     put?: never;
     /**
-     * Log in with email and password
-     * @description Creates a session and sets the `maiak_session` cookie. Failures always return the same
-     *     generic error. Attempts are rate limited per client IP and per email. This is the only
-     *     unsafe operation without a CSRF token (there is no session yet).
+     * Log in with login and password
+     * @description Creates a session and sets the `maiak_session` cookie. The login is case-insensitive
+     *     (normalised to lowercase). Failures always return the same generic error. Attempts are
+     *     rate limited per client IP and per normalised login. This is the only unsafe operation
+     *     without a CSRF token (there is no session yet).
      */
     post: operations["login"];
     delete?: never;
@@ -324,8 +325,11 @@ export interface components {
       commit: string;
     };
     LoginRequest: {
-      /** @example admin@example.com */
-      email: string;
+      /**
+       * @description The user's login, case-insensitive (the default admin is `admin`)
+       * @example admin
+       */
+      login: string;
       /** Format: password */
       password: string;
     };
@@ -341,7 +345,11 @@ export interface components {
     User: {
       /** Format: uuid */
       id: string;
-      email: string;
+      /**
+       * @description Lowercase login (the default admin is `admin`)
+       * @example admin
+       */
+      login: string;
       display_name: string;
     };
     Tenant: {

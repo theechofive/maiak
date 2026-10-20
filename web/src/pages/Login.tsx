@@ -7,7 +7,7 @@ import { formatDuration } from "../lib/format";
 
 function loginErrorMessage(err: unknown): string {
   if (err instanceof ApiError && (err.status === 401 || err.status === 400)) {
-    return "Wrong email or password. Try again.";
+    return "Wrong login or password. Try again.";
   }
   if (err instanceof ApiError && err.status === 429) {
     return err.retryAfter
@@ -20,7 +20,7 @@ function loginErrorMessage(err: unknown): string {
 export default function Login() {
   const auth = useAuth();
   const location = useLocation();
-  const [email, setEmail] = useState("");
+  const [login, setLogin] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -33,7 +33,8 @@ export default function Login() {
     setError(null);
     try {
       // On success the session is set and the redirect above takes over.
-      await auth.login(email.trim(), password);
+      // Logins are case-insensitive; the server lowercases them.
+      await auth.login(login.trim(), password);
     } catch (err) {
       setError(loginErrorMessage(err));
       setSubmitting(false);
@@ -45,14 +46,16 @@ export default function Login() {
       <h1>Sign in</h1>
       <form onSubmit={onSubmit}>
         <label>
-          Email
+          Login
           <input
-            type="email"
-            name="email"
+            type="text"
+            name="login"
             autoComplete="username"
+            autoCapitalize="none"
+            spellCheck={false}
             required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            value={login}
+            onChange={(e) => setLogin(e.target.value)}
           />
         </label>
         <label>
