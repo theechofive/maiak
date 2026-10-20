@@ -1,0 +1,2 @@
+{{- $env := include "maiak.env.common" (dict "ctx" . "dbKey" .Values.jobs.databaseUrlKey) -}}
+{{ include "maiak.backendDeployment" (dict "ctx" . "component" "jobs" "cfg" .Values.jobs "env" $env "httpPort" 0) }}

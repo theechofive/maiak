@@ -1,0 +1,45 @@
+{{- if .Values.serviceMonitor.enabled }}
+{{- /* Ledger L-003: requires Prometheus Operator CRDs. Services expose only the admin port. */}}
+{{- range $c := list "api" "worker" "jobs" }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "maiak.componentName" (dict "ctx" $ "component" $c) }}-metrics
+  labels:
+    {{- include "maiak.labels" (dict "ctx" $ "component" $c) | nindent 4 }}
+    maiak.klr.io/metrics: "true"
+spec:
+  type: ClusterIP
+  ports:
+    - name: admin
+      port: {{ $.Values.config.adminPort }}
+      targetPort: admin
+      protocol: TCP
+  selector:
+    {{- include "maiak.selectorLabels" (dict "ctx" $ "component" $c) | nindent 4 }}
+{{- end }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "maiak.fullname" . }}
+  labels:
+    {{- include "maiak.labels" (dict "ctx" . "component" "api") | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "maiak.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      maiak.klr.io/metrics: "true"
+  endpoints:
+    - port: admin
+      path: {{ .Values.serviceMonitor.path }}
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

@@ -1,0 +1,115 @@
+name: release
+
+# Builds and pushes the multi-arch backend image, then bumps image.tag in values-platform.yaml.
+# `paths` (not paths-ignore) is used: GitHub does not allow both on one event. deploy/** is not listed,
+# so the bump commit cannot re-trigger this workflow; it also carries [skip ci].
+on:
+  push:
+    branches: [main]
+    paths:
+      - backend/**
+      - api/**
+      - Dockerfile
+  workflow_dispatch:
+
+# Serialise releases; never cancel a run that is pushing an image / bump.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  IMAGE: ghcr.io/theechofive/maiak-backend
+
+jobs:
+  backend-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4 # TODO pin to SHA
+      - name: Compute short SHA
+        id: vars
+        run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3 # TODO pin to SHA
+      - uses: docker/setup-buildx-action@v3 # TODO pin to SHA
+      - uses: docker/login-action@v3 # TODO pin to SHA
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6 # TODO pin to SHA
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.vars.outputs.sha }}
+            ${{ env.IMAGE }}:main
+          build-args: |
+            VERSION=${{ steps.vars.outputs.sha }}
+            COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Bump image.tag in values-platform.yaml
+        env:
+          SHA: ${{ steps.vars.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          FILE=deploy/helm/maiak/values-platform.yaml
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+            # Rewrite only `tag:` inside the top-level `image:` block.
+            sed -i '/^image:/,/^[^ #]/ s/^\(  tag: \)"[^"]*"/\1"'"${SHA}"'"/' "$FILE"
+            grep -q "^  tag: \"${SHA}\"" "$FILE" || { echo "image.tag rewrite failed"; exit 1; }
+            if git diff --quiet -- "$FILE"; then
+              echo "image.tag already ${SHA}; nothing to commit."
+              exit 0
+            fi
+            git add "$FILE"
+            git commit -m "chore(deploy): maiak-backend ${SHA} [skip ci]"
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "push raced (attempt ${attempt}); retrying"
+            sleep $((attempt * 3))
+          done
+          echo "failed to push image.tag bump after 3 attempts"
+          exit 1
+
+  # DISABLED placeholder (ledger L-015): the web/ frontend stack is not chosen yet.
+  # Enable by removing `if: false` once web/ and its nginx Dockerfile exist, then add
+  # web.enabled=true + web.image.tag handling to the bump step.
+  # Kept as a real job (not commented out) so the YAML stays lint-checked; it never runs.
+  web-image:
+    if: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      WEB_IMAGE: ghcr.io/theechofive/maiak-web
+    steps:
+      - uses: actions/checkout@v4 # TODO pin to SHA
+      - uses: docker/setup-qemu-action@v3 # TODO pin to SHA
+      - uses: docker/setup-buildx-action@v3 # TODO pin to SHA
+      - uses: docker/login-action@v3 # TODO pin to SHA
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6 # TODO pin to SHA
+        with:
+          context: web
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.WEB_IMAGE }}:${{ github.sha }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web

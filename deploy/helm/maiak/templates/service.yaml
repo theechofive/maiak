@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "maiak.componentName" (dict "ctx" . "component" "api") }}
+  labels:
+    {{- include "maiak.labels" (dict "ctx" . "component" "api") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.api.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "maiak.selectorLabels" (dict "ctx" . "component" "api") | nindent 4 }}
+{{- if .Values.web.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "maiak.componentName" (dict "ctx" . "component" "web") }}
+  labels:
+    {{- include "maiak.labels" (dict "ctx" . "component" "web") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.web.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "maiak.selectorLabels" (dict "ctx" . "component" "web") | nindent 4 }}
+{{- end }}

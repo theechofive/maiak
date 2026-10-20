@@ -1,0 +1,185 @@
+# Generic defaults. Cluster-specific overrides live in values-platform.yaml.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/theechofive/maiak-backend
+  # Empty -> Chart.appVersion. In values-platform.yaml this is CI-managed.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# TODO(L-002): ghcr pull-secret decision is OPEN and blocks the first deploy.
+# The `theechofive` packages may be private. Once decided, list the secret names here,
+# e.g. [{name: ghcr-pull}].
+imagePullSecrets: []
+
+# Application configuration (env contract read by the backend).
+config:
+  env: production
+  logLevel: info
+  adminPort: 9090          # MAIAK_ADMIN_ADDR (health + metrics), shared by api/worker/jobs
+  sessionTTL: 24h          # MAIAK_SESSION_TTL (api only)
+  cookieSecure: true       # MAIAK_COOKIE_SECURE (api only)
+  trustedProxyHops: 1      # MAIAK_TRUSTED_PROXY_HOPS (api only); 1 = Envoy Gateway
+
+# Secrets are materialised by External Secrets Operator from AWS Secrets Manager.
+externalSecrets:
+  enabled: true
+  apiVersion: external-secrets.io/v1
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: aws-secrets
+  refreshInterval: "0"
+  creationPolicy: Owner
+  db:
+    # JSON secret with properties: api_url, worker_url, owner_url
+    remoteKey: platform/maiak/db
+  admin:
+    # JSON secret with properties: email, password_hash
+    remoteKey: platform/maiak/admin
+  crypto:
+    # JSON secret with properties: keys (JSON string), active_key_id
+    remoteKey: platform/maiak/crypto
+
+podAnnotations: {}
+podLabels: {}
+
+# Applied to all pods. Nodes are labelled workload-type=general without taints, so none are set by default.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+  seccompProfile:
+    type: RuntimeDefault
+
+strategy:
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+revisionHistoryLimit: 3
+terminationGracePeriodSeconds: 30
+
+serviceAccount:
+  annotations: {}
+
+api:
+  replicas: 2
+  command: ["/app/api"]
+  # Key in Secret <fullname>-db used for MAIAK_DATABASE_URL.
+  databaseUrlKey: api_url
+  httpPort: 8080
+  resources:
+    requests: {cpu: 50m, memory: 96Mi}
+    limits: {cpu: 500m, memory: 384Mi}
+  env: []                  # extra env vars (list of EnvVar)
+  service:
+    port: 8080
+  pdb:
+    enabled: false
+    minAvailable: 1
+
+worker:
+  # SECURITY: the worker must NEVER run with hostNetwork. The IMDS hop-limit protection
+  # (IMDSv2 hop limit 1) assumes pod traffic cannot reach the node metadata endpoint, and
+  # the worker executes tenant-supplied monitor targets (SSRF surface). hostNetwork is
+  # deliberately not templated for any workload.
+  replicas: 2
+  command: ["/app/worker"]
+  databaseUrlKey: worker_url
+  resources:
+    requests: {cpu: 50m, memory: 96Mi}
+    limits: {cpu: 500m, memory: 384Mi}
+  env: []
+
+jobs:
+  replicas: 1
+  command: ["/app/jobs"]
+  # ASSUMPTION: least privilege (worker role). Switch to owner_url if the jobs binary needs it.
+  databaseUrlKey: worker_url
+  resources:
+    requests: {cpu: 25m, memory: 64Mi}
+    limits: {cpu: 500m, memory: 256Mi}
+  env: []
+
+# Frontend (React, nginx static). Not built yet -> disabled.
+web:
+  enabled: false
+  replicas: 2
+  image:
+    repository: ghcr.io/theechofive/maiak-web
+    tag: ""                # empty -> falls back to image.tag
+  port: 8080
+  service:
+    port: 8080
+  resources:
+    requests: {cpu: 10m, memory: 32Mi}
+    limits: {cpu: 200m, memory: 128Mi}
+  env: []
+
+# Database migration (ArgoCD hook running /app/migrate).
+migration:
+  # PreSync | Sync.
+  # NOTE: with PreSync, the migrate ServiceAccount is also a PreSync hook, but the ExternalSecret
+  # (Secret maiak-db) is a regular resource and does NOT exist yet on the very first sync.
+  # For the first deploy either sync the ExternalSecrets first (selective sync) or set `Sync`
+  # (runs in wave 1, after the ExternalSecrets in wave -1).
+  hookPhase: PreSync
+  command: ["/app/migrate"]
+  # Key in Secret <fullname>-db used for MAIAK_MIGRATE_DATABASE_URL.
+  databaseUrlKey: owner_url
+  backoffLimit: 2
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 3600
+  resources:
+    requests: {cpu: 25m, memory: 64Mi}
+    limits: {cpu: 500m, memory: 256Mi}
+
+# Gateway API routing (NO Ingress objects).
+httpRoute:
+  enabled: true
+  hostnames:
+    - maiak.klr-ops.net
+  parentRef:
+    name: envoy-gateway-internal
+    namespace: envoy-gateway
+    sectionName: https
+  apiPathPrefix: /api
+  apiRequestTimeout: 60s
+
+# --- Optional resources, all disabled by default ---
+
+# NetworkPolicy (ingress only). WARNING (risk R-002): the klr-platform CNI does NOT enforce
+# NetworkPolicy today, so enabling this gives no real protection until that changes.
+networkPolicy:
+  enabled: false
+  gatewayNamespace: envoy-gateway      # namespace of the Envoy proxies allowed to reach api/web
+  monitoringNamespace: monitoring      # namespace allowed to scrape the admin port
+
+# ServiceMonitor for api/worker/jobs admin port /metrics (ledger L-003: Prometheus Operator CRDs
+# availability / scrape setup undecided). Also creates one metrics Service per component.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  path: /metrics
+  labels: {}
+
+# Spread api/worker replicas across a topology key.
+topologySpread:
+  enabled: false
+  topologyKey: kubernetes.io/hostname
+  maxSkew: 1
+  whenUnsatisfiable: ScheduleAnyway

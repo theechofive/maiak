@@ -1,0 +1,17 @@
+# Overrides for the klr-platform cluster (EKS arm64, ArgoCD, Envoy Gateway internal).
+
+image:
+  # CI-MANAGED: rewritten by .github/workflows/release.yml on every backend image build.
+  # Do not edit by hand and keep this key at exactly `image.tag` (2-space indent, double quotes).
+  tag: "0000000"
+
+httpRoute:
+  hostnames:
+    - maiak.klr-ops.net
+  parentRef:
+    name: envoy-gateway-internal
+    namespace: envoy-gateway
+    sectionName: https
+
+web:
+  enabled: false

@@ -1,0 +1,60 @@
+{{- $name := include "maiak.componentName" (dict "ctx" . "component" "migrate") }}
+{{- $sel := dict "ctx" . "component" "migrate" }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "maiak.labels" $sel | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: {{ .Values.migration.hookPhase }}
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    {{- if ne .Values.migration.hookPhase "PreSync" }}
+    argocd.argoproj.io/sync-wave: "1"
+    {{- end }}
+spec:
+  backoffLimit: {{ .Values.migration.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migration.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ .Values.migration.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "maiak.labels" $sel | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "maiak.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            {{- toYaml .Values.migration.command | nindent 12 }}
+          env:
+            - name: MAIAK_ENV
+              value: {{ .Values.config.env | quote }}
+            - name: MAIAK_LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: MAIAK_MIGRATE_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "maiak.secret.db" . }}
+                  key: {{ .Values.migration.databaseUrlKey }}
+          resources:
+            {{- toYaml .Values.migration.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+      {{- include "maiak.scheduling" $sel | nindent 6 }}

@@ -1,0 +1,7 @@
+apiVersion: v2
+name: maiak
+description: Maiak - multi-tenant uptime-monitoring SaaS (api, worker, jobs, optional web)
+type: application
+version: 0.1.0
+# Placeholder. The image tag is normally set via values `image.tag` (CI-managed in values-platform.yaml).
+appVersion: "0.0.0"

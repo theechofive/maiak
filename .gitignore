@@ -1,0 +1,28 @@
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Tooling state
+.omc/
+.claude/settings.local.json
+
+# Go
+*.test
+*.out
+coverage.*
+/backend/bin/
+/bin/
+
+# Node / web
+node_modules/
+web/dist/
+web/.vite/
+
+# Secrets and local env
+.env
+.env.*
+!.env.example
+*.pem
+*.key

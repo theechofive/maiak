@@ -1,0 +1,5 @@
+paths:
+  workflows/release.yml:
+    ignore:
+      # Intentional: the disabled web-image placeholder job (ledger L-015).
+      - 'constant expression "false" in condition'

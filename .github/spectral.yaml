@@ -1,0 +1,2 @@
+# Spectral ruleset for the OpenAPI contract lint (used by ci.yml api-contract job).
+extends: ["spectral:oas"]

@@ -1,0 +1,147 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+env:
+  # Path of the OpenAPI contract (adjust if the api/ layout differs).
+  OPENAPI_SPEC: api/openapi.yaml
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      api: ${{ steps.filter.outputs.api }}
+      helm: ${{ steps.filter.outputs.helm }}
+    steps:
+      - uses: actions/checkout@v4 # TODO pin to SHA
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@v3 # TODO pin to SHA
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - 'api/**'
+              - 'sqlc.yaml'
+              - 'Dockerfile'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
+            api:
+              - 'api/**'
+              - '.github/spectral.yaml'
+              - '.github/workflows/ci.yml'
+            helm:
+              - 'deploy/helm/**'
+              - '.github/workflows/ci.yml'
+
+  backend:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: maiak
+          POSTGRES_PASSWORD: maiak
+          POSTGRES_DB: maiak_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U maiak -d maiak_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Throwaway CI database; credentials are not secrets.
+      TEST_DATABASE_URL: postgres://maiak:maiak@localhost:5432/maiak_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4 # TODO pin to SHA
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5 # TODO pin to SHA
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Generated code is up to date
+        run: make check-generated
+      # Deviation from `make lint`: the action installs golangci-lint (with its cache) and runs it
+      # in backend/. Keep flags in sync with the Makefile `lint` target.
+      - uses: golangci/golangci-lint-action@v8 # TODO pin to SHA
+        with:
+          version: latest # TODO pin golangci-lint version
+          working-directory: backend
+      - name: Test
+        run: make test
+
+  api-contract:
+    needs: changes
+    if: needs.changes.outputs.api == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4 # TODO pin to SHA
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Lint OpenAPI (spectral)
+        run: npx --yes @stoplight/spectral-cli@6.11.1 lint "$OPENAPI_SPEC" --ruleset .github/spectral.yaml --fail-severity warn
+      - uses: actions/setup-go@v5 # TODO pin to SHA
+        if: github.event_name == 'pull_request'
+        with:
+          go-version: stable
+          cache: false
+      - name: Breaking-change check (oasdiff vs base branch)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if ! git cat-file -e "origin/${BASE_REF}:${OPENAPI_SPEC}" 2>/dev/null; then
+            echo "No ${OPENAPI_SPEC} on base branch; skipping breaking-change check."
+            exit 0
+          fi
+          git show "origin/${BASE_REF}:${OPENAPI_SPEC}" > "${RUNNER_TEMP}/base-openapi.yaml"
+          go install github.com/oasdiff/oasdiff@latest # TODO pin oasdiff version
+          "$(go env GOPATH)/bin/oasdiff" breaking "${RUNNER_TEMP}/base-openapi.yaml" "$OPENAPI_SPEC" --fail-on ERR
+
+  helm:
+    needs: changes
+    if: needs.changes.outputs.helm == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4 # TODO pin to SHA
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@v4 # TODO pin to SHA
+      - name: Lint
+        run: |
+          helm lint deploy/helm/maiak
+          helm lint deploy/helm/maiak -f deploy/helm/maiak/values-platform.yaml
+          helm lint deploy/helm/maiak -f deploy/helm/maiak/values-platform.yaml --set web.enabled=true
+      - name: Template
+        run: |
+          helm template maiak deploy/helm/maiak -n maiak -f deploy/helm/maiak/values-platform.yaml > /dev/null
+          helm template maiak deploy/helm/maiak -n maiak -f deploy/helm/maiak/values-platform.yaml --set web.enabled=true > /dev/null

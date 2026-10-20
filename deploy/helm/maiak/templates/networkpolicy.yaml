@@ -1,0 +1,35 @@
+{{- if .Values.networkPolicy.enabled }}
+# WARNING (risk R-002): the klr-platform CNI does not enforce NetworkPolicy today.
+# Ingress-only: egress is left open because monitor checks must reach arbitrary targets.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "maiak.fullname" . }}
+  labels:
+    {{- include "maiak.labels" (dict "ctx" . "component" "api") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "maiak.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Envoy Gateway data plane -> api / web
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.gatewayNamespace }}
+      ports:
+        - {protocol: TCP, port: {{ .Values.api.httpPort }}}
+        {{- if .Values.web.enabled }}
+        - {protocol: TCP, port: {{ .Values.web.port }}}
+        {{- end }}
+    # Metrics scraping of the admin port
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.monitoringNamespace }}
+      ports:
+        - {protocol: TCP, port: {{ .Values.config.adminPort }}}
+{{- end }}

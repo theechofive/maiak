@@ -1,0 +1,127 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["image", "config", "api", "worker", "jobs", "web", "migration", "httpRoute"],
+  "properties": {
+    "image": {
+      "type": "object",
+      "required": ["repository"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string"},
+        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}}}
+    },
+    "config": {
+      "type": "object",
+      "required": ["env", "logLevel", "adminPort"],
+      "properties": {
+        "env": {"type": "string", "minLength": 1},
+        "logLevel": {"type": "string", "enum": ["debug", "info", "warn", "error"]},
+        "adminPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "sessionTTL": {"type": "string"},
+        "cookieSecure": {"type": "boolean"},
+        "trustedProxyHops": {"type": "integer", "minimum": 0}
+      }
+    },
+    "externalSecrets": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "creationPolicy": {"type": "string", "enum": ["Owner", "Orphan", "Merge", "None"]},
+        "refreshInterval": {"type": "string"},
+        "secretStoreRef": {
+          "type": "object",
+          "required": ["kind", "name"],
+          "properties": {
+            "kind": {"type": "string", "enum": ["ClusterSecretStore", "SecretStore"]},
+            "name": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "api": {
+      "type": "object",
+      "required": ["replicas", "command", "databaseUrlKey", "httpPort", "resources"],
+      "properties": {
+        "replicas": {"type": "integer", "minimum": 0},
+        "command": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "databaseUrlKey": {"type": "string", "enum": ["api_url", "worker_url", "owner_url"]},
+        "httpPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "resources": {"type": "object"},
+        "pdb": {"type": "object", "properties": {"enabled": {"type": "boolean"}}}
+      }
+    },
+    "worker": {
+      "type": "object",
+      "required": ["replicas", "command", "databaseUrlKey", "resources"],
+      "properties": {
+        "replicas": {"type": "integer", "minimum": 0},
+        "command": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "databaseUrlKey": {"type": "string", "enum": ["api_url", "worker_url", "owner_url"]},
+        "resources": {"type": "object"}
+      }
+    },
+    "jobs": {
+      "type": "object",
+      "required": ["replicas", "command", "databaseUrlKey", "resources"],
+      "properties": {
+        "replicas": {"type": "integer", "minimum": 0, "maximum": 1, "description": "jobs must stay a singleton"},
+        "command": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "databaseUrlKey": {"type": "string", "enum": ["api_url", "worker_url", "owner_url"]},
+        "resources": {"type": "object"}
+      }
+    },
+    "web": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "replicas": {"type": "integer", "minimum": 0},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "image": {
+          "type": "object",
+          "properties": {"repository": {"type": "string", "minLength": 1}, "tag": {"type": "string"}}
+        }
+      }
+    },
+    "migration": {
+      "type": "object",
+      "required": ["hookPhase", "command", "databaseUrlKey"],
+      "properties": {
+        "hookPhase": {"type": "string", "enum": ["PreSync", "Sync"]},
+        "command": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "databaseUrlKey": {"type": "string", "enum": ["api_url", "worker_url", "owner_url"]},
+        "backoffLimit": {"type": "integer", "minimum": 0, "maximum": 6},
+        "activeDeadlineSeconds": {"type": "integer", "minimum": 1},
+        "ttlSecondsAfterFinished": {"type": "integer", "minimum": 0}
+      }
+    },
+    "httpRoute": {
+      "type": "object",
+      "required": ["enabled", "hostnames", "parentRef"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "hostnames": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "parentRef": {
+          "type": "object",
+          "required": ["name", "namespace", "sectionName"],
+          "properties": {
+            "name": {"type": "string"},
+            "namespace": {"type": "string"},
+            "sectionName": {"type": "string"}
+          }
+        },
+        "apiPathPrefix": {"type": "string", "pattern": "^/"},
+        "apiRequestTimeout": {"type": "string"}
+      }
+    },
+    "networkPolicy": {"type": "object", "properties": {"enabled": {"type": "boolean"}}},
+    "serviceMonitor": {"type": "object", "properties": {"enabled": {"type": "boolean"}}},
+    "topologySpread": {"type": "object", "properties": {"enabled": {"type": "boolean"}}}
+  }
+}
