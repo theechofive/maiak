@@ -58,7 +58,7 @@ app.kubernetes.io/managed-by: {{ .ctx.Release.Service }}
 {{- define "maiak.secret.admin" -}}{{ include "maiak.fullname" . }}-admin{{- end }}
 {{- define "maiak.secret.crypto" -}}{{ include "maiak.fullname" . }}-crypto{{- end }}
 
-{{/* Env shared by api/worker/jobs. Args: dict ctx, dbKey */}}
+{{/* Env shared by api/worker/jobs (config.Server + config.Base). Args: dict ctx, dbKey */}}
 {{- define "maiak.env.common" -}}
 - name: MAIAK_ENV
   value: {{ .ctx.Values.config.env | quote }}
@@ -71,16 +71,37 @@ app.kubernetes.io/managed-by: {{ .ctx.Release.Service }}
     secretKeyRef:
       name: {{ include "maiak.secret.db" .ctx }}
       key: {{ .dbKey }}
+{{- end }}
+
+{{/*
+Encryption keys (config.Encryption). Only api and jobs include this: the worker never gets the
+keys (ADR-0016, L-042). Arg: root context
+*/}}
+{{- define "maiak.env.encryption" -}}
 - name: MAIAK_ENCRYPTION_KEYS
   valueFrom:
     secretKeyRef:
-      name: {{ include "maiak.secret.crypto" .ctx }}
+      name: {{ include "maiak.secret.crypto" . }}
       key: keys
 - name: MAIAK_ENCRYPTION_ACTIVE_KEY_ID
   valueFrom:
     secretKeyRef:
-      name: {{ include "maiak.secret.crypto" .ctx }}
+      name: {{ include "maiak.secret.crypto" . }}
       key: active_key_id
+{{- end }}
+
+{{/* SSRF guard extra ranges (config.Guard), api/worker/jobs. Optional: rendered only when set. Arg: root context */}}
+{{- define "maiak.env.guard" -}}
+{{- with .Values.config.blockedCIDRs }}
+- name: MAIAK_BLOCKED_CIDRS
+  value: {{ join "," . | quote }}
+{{- end }}
+{{- end }}
+
+{{/* MAIAK_PUBLIC_URL (api and jobs; required there). Arg: root context */}}
+{{- define "maiak.env.publicUrl" -}}
+- name: MAIAK_PUBLIC_URL
+  value: {{ required "config.publicUrl is required" .Values.config.publicUrl | quote }}
 {{- end }}
 
 {{/* api-only env. Arg: root context */}}
@@ -103,6 +124,23 @@ app.kubernetes.io/managed-by: {{ .ctx.Release.Service }}
   value: {{ .Values.config.cookieSecure | quote }}
 - name: MAIAK_TRUSTED_PROXY_HOPS
   value: {{ .Values.config.trustedProxyHops | quote }}
+{{- end }}
+
+{{/* worker-only env (config.Worker). Arg: root context */}}
+{{- define "maiak.env.worker" -}}
+{{- $w := .Values.worker }}
+- name: MAIAK_WORKER_CLAIM_BATCH
+  value: {{ $w.claimBatch | quote }}
+- name: MAIAK_WORKER_CONCURRENCY
+  value: {{ $w.concurrency | quote }}
+- name: MAIAK_WORKER_TENANT_CONCURRENCY
+  value: {{ $w.tenantConcurrency | quote }}
+- name: MAIAK_WORKER_HOST_CONCURRENCY
+  value: {{ $w.hostConcurrency | quote }}
+{{- with $w.location }}
+- name: MAIAK_WORKER_LOCATION
+  value: {{ . | quote }}
+{{- end }}
 {{- end }}
 
 {{/*
@@ -145,7 +183,7 @@ spec:
     spec:
       serviceAccountName: {{ $name }}
       automountServiceAccountToken: false
-      terminationGracePeriodSeconds: {{ $ctx.Values.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ default $ctx.Values.terminationGracePeriodSeconds .cfg.terminationGracePeriodSeconds }}
       {{- with $ctx.Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

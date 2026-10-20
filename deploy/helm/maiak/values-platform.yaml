@@ -5,6 +5,9 @@ image:
   # Do not edit by hand and keep this key at exactly `image.tag` (2-space indent, double quotes).
   tag: "0000000"
 
+config:
+  publicUrl: https://maiak.klr-ops.net
+
 httpRoute:
   hostnames:
     - maiak.klr-ops.net
@@ -14,7 +17,7 @@ httpRoute:
     sectionName: https
 
 web:
-  enabled: false
+  enabled: true
   image:
     # CI-MANAGED: rewritten by .github/workflows/release.yml (web-image job). Keep this key at
     # exactly `web.image.tag` (4-space indent, double quotes).

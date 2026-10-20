@@ -1,4 +1,8 @@
 {{- /* SECURITY: never add hostNetwork to this pod. IMDS hop-limit protection assumes it
-       (the worker probes tenant-supplied targets; node metadata must stay unreachable). */ -}}
-{{- $env := include "maiak.env.common" (dict "ctx" . "dbKey" .Values.worker.databaseUrlKey) -}}
+       (the worker probes tenant-supplied targets; node metadata must stay unreachable).
+       The worker has NO encryption keys and NO admin credentials (ADR-0016, L-042). */ -}}
+{{- $env := join "\n" (list
+  (include "maiak.env.common" (dict "ctx" . "dbKey" .Values.worker.databaseUrlKey))
+  (include "maiak.env.guard" .)
+  (include "maiak.env.worker" .)) -}}
 {{ include "maiak.backendDeployment" (dict "ctx" . "component" "worker" "cfg" .Values.worker "env" $env "httpPort" 0) }}

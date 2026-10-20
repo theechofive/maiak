@@ -1,2 +1,7 @@
-{{- $env := include "maiak.env.common" (dict "ctx" . "dbKey" .Values.jobs.databaseUrlKey) -}}
+{{- /* jobs needs the encryption keys (decrypts the Slack webhook) and the public URL (message links). */ -}}
+{{- $env := join "\n" (list
+  (include "maiak.env.common" (dict "ctx" . "dbKey" .Values.jobs.databaseUrlKey))
+  (include "maiak.env.encryption" .)
+  (include "maiak.env.guard" .)
+  (include "maiak.env.publicUrl" .)) -}}
 {{ include "maiak.backendDeployment" (dict "ctx" . "component" "jobs" "cfg" .Values.jobs "env" $env "httpPort" 0) }}

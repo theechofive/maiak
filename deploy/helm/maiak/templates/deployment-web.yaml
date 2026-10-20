@@ -50,32 +50,34 @@ spec:
           env:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          # nginx answers /healthz itself (web/nginx.conf); `/` would serve the SPA shell.
           livenessProbe:
             httpGet:
-              path: /
+              path: /healthz
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /
+              path: /healthz
               port: http
             periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
           resources:
             {{- toYaml .Values.web.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          # nginx needs writable dirs with a read-only root filesystem.
+          # web/nginx.conf keeps the pid file and every temp path in /tmp, so /tmp is the only
+          # writable path the read-only root filesystem needs (L-023: still untested in a cluster).
           volumeMounts:
-            - {name: tmp, mountPath: /tmp}
-            - {name: nginx-cache, mountPath: /var/cache/nginx}
-            - {name: nginx-run, mountPath: /var/run}
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: tmp
-          emptyDir: {sizeLimit: 32Mi}
-        - name: nginx-cache
-          emptyDir: {sizeLimit: 64Mi}
-        - name: nginx-run
-          emptyDir: {sizeLimit: 8Mi}
+          emptyDir:
+            sizeLimit: 64Mi
       {{- include "maiak.scheduling" $sel | nindent 6 }}
 {{- end }}

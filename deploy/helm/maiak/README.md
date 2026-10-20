@@ -12,11 +12,49 @@ a DB bootstrap hook Job, ExternalSecrets and a Gateway API `HTTPRoute`. No Ingre
 ## Render / lint
 
 ```sh
+bash scripts/validate-chart.sh   # everything below plus invariants and kubeconform
 helm lint deploy/helm/maiak -f deploy/helm/maiak/values-platform.yaml
 helm template maiak deploy/helm/maiak -n maiak -f deploy/helm/maiak/values-platform.yaml
-helm template maiak deploy/helm/maiak -n maiak -f deploy/helm/maiak/values-platform.yaml --set web.enabled=true
 helm template maiak deploy/helm/maiak -n maiak -f deploy/helm/maiak/values-platform.yaml --set dbBootstrap.enabled=false
+helm template maiak deploy/helm/maiak -n maiak -f deploy/helm/maiak/values-platform.yaml --set web.enabled=false
 ```
+
+`values.schema.json` rejects, among others, a `config.publicUrl` that is not https or ends with a slash and a
+workload without `resources.requests` and `resources.limits`. `scripts/check-rendered-chart.py` asserts the
+invariants listed under "Environment per workload" and "Hardening" on every render.
+
+## Environment per workload
+
+Source of truth: `backend/internal/platform/config/config.go`.
+
+| Variable | api | worker | jobs | migrate | db-bootstrap |
+|---|---|---|---|---|---|
+| `MAIAK_ENV`, `MAIAK_LOG_LEVEL` | x | x | x | x | x |
+| `MAIAK_ADMIN_ADDR`, `MAIAK_DATABASE_URL` (`api_url` / `worker_url`) | x | x | x | | |
+| `MAIAK_ENCRYPTION_KEYS`, `MAIAK_ENCRYPTION_ACTIVE_KEY_ID` (`maiak-crypto`) | x | **never** | x | | |
+| `MAIAK_ADMIN_EMAIL`, `MAIAK_ADMIN_PASSWORD_HASH` (`maiak-admin`) | x | **never** | **never** | | |
+| `MAIAK_HTTP_ADDR`, `MAIAK_SESSION_TTL`, `MAIAK_COOKIE_SECURE`, `MAIAK_TRUSTED_PROXY_HOPS` | x | | | | |
+| `MAIAK_PUBLIC_URL` (`config.publicUrl`, default `https://maiak.klr-ops.net`) | x | | x | | |
+| `MAIAK_BLOCKED_CIDRS` (`config.blockedCIDRs`, only rendered when non-empty) | x | x | x | | |
+| `MAIAK_WORKER_CLAIM_BATCH`, `_CONCURRENCY`, `_TENANT_CONCURRENCY`, `_HOST_CONCURRENCY` | | x | | | |
+| `MAIAK_WORKER_LOCATION` (only when `worker.location` is set, L-101) | | x | | | |
+| `MAIAK_MIGRATE_DATABASE_URL` (`owner_url`) | | | | x | |
+| `MAIAK_BOOTSTRAP_*` (admin login from the hook ExternalSecret) | | | | | x |
+
+Only the migrate Job reads `owner_url`.
+
+## Hardening and resources
+
+- Every container: non-root, read-only root filesystem, `allowPrivilegeEscalation: false`, drop ALL, seccomp
+  `RuntimeDefault`; no `hostNetwork`. Only the db-bootstrap ServiceAccount and Job mount a token.
+- `terminationGracePeriodSeconds`: 45 for worker and jobs (ADR-0022, ADR-0051), 30 for api and web.
+- Probes: api, worker and jobs use `/healthz` and `/readyz` on the admin port; web uses `/healthz` on 8080 (served
+  by nginx itself). Web mounts only `/tmp` (emptyDir) because `web/nginx.conf` keeps the pid and temp files there.
+- Requests (cpu/memory): api 50m/96Mi, worker 50m/96Mi, jobs 25m/64Mi, web 10m/32Mi; memory limits are 4x. With the
+  platform replicas (2, 2, 1, 2) the memory requests total 512Mi; `klr-platform` is memory-tight (R-003), so raise
+  replicas or requests deliberately.
+- Optional and off: `api.pdb`, `serviceMonitor` (L-003), `networkPolicy` (R-002), `topologySpread`.
+- Routing: `/api` goes to the api (60 s request timeout), `/` to the web when `web.enabled`.
 
 ## Secrets
 
@@ -30,7 +68,7 @@ ExternalSecrets (`ClusterSecretStore aws-secrets`):
 The Secret `maiak-db` is NOT an ExternalSecret and NOT managed by Helm/ArgoCD: the `dbBootstrap` Job creates it
 at runtime with keys `api_url`, `worker_url`, `owner_url`, `owner_password`, `api_password`, `worker_password`
 (ADR-0014). With `dbBootstrap.enabled=false` the chart still renders and the migrate Job and workloads assume
-`maiak-db` already exists.
+`maiak-db` already exists. The first sync order and checks are in `docs/runbooks/first-deploy.md`.
 
 `MAIAK_DATABASE_URL` is mapped per workload via `<workload>.databaseUrlKey`
 (api -> `api_url`, worker/jobs -> `worker_url`); the migrate Job gets `MAIAK_MIGRATE_DATABASE_URL` from `owner_url`.

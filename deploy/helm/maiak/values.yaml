@@ -22,6 +22,12 @@ config:
   sessionTTL: 24h          # MAIAK_SESSION_TTL (api only)
   cookieSecure: true       # MAIAK_COOKIE_SECURE (api only)
   trustedProxyHops: 1      # MAIAK_TRUSTED_PROXY_HOPS (api only); 1 = Envoy Gateway
+  # MAIAK_PUBLIC_URL (api and jobs, required): https URL without trailing slash, linked from Slack messages.
+  publicUrl: https://maiak.klr-ops.net
+  # MAIAK_BLOCKED_CIDRS (api, worker, jobs): extra ranges for the SSRF guard on top of its built-in
+  # private/link-local/metadata ranges (ADR-0011, ADR-0016). Add the VPC and service CIDRs of the
+  # cluster (L-100), because NetworkPolicy is not enforced (R-002).
+  blockedCIDRs: []
 
 # Secrets are materialised by External Secrets Operator from AWS Secrets Manager (wave -2).
 externalSecrets:
@@ -100,6 +106,15 @@ worker:
   replicas: 2
   command: ["/app/worker"]
   databaseUrlKey: worker_url
+  # ADR-0022: up to 25 s for in-flight checks plus a 15 s bounded final flush.
+  terminationGracePeriodSeconds: 45
+  # MAIAK_WORKER_* (config.Worker, defaults mirrored from the code).
+  claimBatch: 100
+  concurrency: 50
+  tenantConcurrency: 5
+  hostConcurrency: 2
+  # MAIAK_WORKER_LOCATION: rendered only when set (L-101: the backend does not read it yet).
+  location: ""
   resources:
     requests: {cpu: 50m, memory: 96Mi}
     limits: {cpu: 500m, memory: 384Mi}
@@ -108,12 +123,17 @@ worker:
 jobs:
   replicas: 1
   command: ["/app/jobs"]
-  # ASSUMPTION: least privilege (worker role). Switch to owner_url if the jobs binary needs it.
+  # Least privilege (worker role): jobs claims through the SECURITY DEFINER functions (ADR-0051).
   databaseUrlKey: worker_url
+  # ADR-0051: up to 25 s for sends in flight on SIGTERM, then the lease expires.
+  terminationGracePeriodSeconds: 45
   resources:
     requests: {cpu: 25m, memory: 64Mi}
     limits: {cpu: 500m, memory: 256Mi}
   env: []
+
+# Memory limits are 3-4x the requests everywhere; requests stay small because klr-platform is
+# memory-tight (R-003). Total requests with the platform replicas: 2x96 + 2x96 + 64 + 2x32 = 512Mi.
 
 # Frontend (React, nginx static). Enabled per environment in values-platform.yaml.
 web:

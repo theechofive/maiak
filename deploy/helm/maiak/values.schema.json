@@ -1,6 +1,17 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
+  "definitions": {
+    "resources": {
+      "type": "object",
+      "required": ["requests", "limits"],
+      "properties": {
+        "requests": {"type": "object", "required": ["cpu", "memory"]},
+        "limits": {"type": "object", "required": ["memory"]}
+      }
+    },
+    "grace": {"type": "integer", "minimum": 1, "maximum": 600}
+  },
   "required": ["image", "config", "api", "worker", "jobs", "web", "migration", "httpRoute", "dbBootstrap"],
   "properties": {
     "image": {
@@ -18,14 +29,24 @@
     },
     "config": {
       "type": "object",
-      "required": ["env", "logLevel", "adminPort"],
+      "required": ["env", "logLevel", "adminPort", "publicUrl"],
       "properties": {
         "env": {"type": "string", "minLength": 1},
         "logLevel": {"type": "string", "enum": ["debug", "info", "warn", "error"]},
         "adminPort": {"type": "integer", "minimum": 1, "maximum": 65535},
         "sessionTTL": {"type": "string"},
         "cookieSecure": {"type": "boolean"},
-        "trustedProxyHops": {"type": "integer", "minimum": 0}
+        "trustedProxyHops": {"type": "integer", "minimum": 0, "maximum": 10},
+        "publicUrl": {
+          "type": "string",
+          "description": "MAIAK_PUBLIC_URL: https, no trailing slash, no user info, query or link-breaking characters",
+          "pattern": "^https://[^\\s/|<>&\"'?#@]+(/[^\\s|<>&\"'?#]*[^\\s/|<>&\"'?#])?$"
+        },
+        "blockedCIDRs": {
+          "type": "array",
+          "description": "MAIAK_BLOCKED_CIDRS: extra SSRF guard ranges",
+          "items": {"type": "string", "pattern": "^[0-9a-fA-F:.]+/[0-9]{1,3}$"}
+        }
       }
     },
     "externalSecrets": {
@@ -52,7 +73,8 @@
         "command": {"type": "array", "minItems": 1, "items": {"type": "string"}},
         "databaseUrlKey": {"type": "string", "enum": ["api_url", "worker_url", "owner_url"]},
         "httpPort": {"type": "integer", "minimum": 1, "maximum": 65535},
-        "resources": {"type": "object"},
+        "terminationGracePeriodSeconds": {"$ref": "#/definitions/grace"},
+        "resources": {"$ref": "#/definitions/resources"},
         "pdb": {"type": "object", "properties": {"enabled": {"type": "boolean"}}}
       }
     },
@@ -63,7 +85,13 @@
         "replicas": {"type": "integer", "minimum": 0},
         "command": {"type": "array", "minItems": 1, "items": {"type": "string"}},
         "databaseUrlKey": {"type": "string", "enum": ["api_url", "worker_url", "owner_url"]},
-        "resources": {"type": "object"}
+        "terminationGracePeriodSeconds": {"$ref": "#/definitions/grace"},
+        "claimBatch": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "concurrency": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "tenantConcurrency": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "hostConcurrency": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "location": {"type": "string", "description": "MAIAK_WORKER_LOCATION, rendered only when set (L-101)"},
+        "resources": {"$ref": "#/definitions/resources"}
       }
     },
     "jobs": {
@@ -73,7 +101,8 @@
         "replicas": {"type": "integer", "minimum": 0, "maximum": 1, "description": "jobs must stay a singleton"},
         "command": {"type": "array", "minItems": 1, "items": {"type": "string"}},
         "databaseUrlKey": {"type": "string", "enum": ["api_url", "worker_url", "owner_url"]},
-        "resources": {"type": "object"}
+        "terminationGracePeriodSeconds": {"$ref": "#/definitions/grace"},
+        "resources": {"$ref": "#/definitions/resources"}
       }
     },
     "web": {
@@ -83,6 +112,7 @@
         "enabled": {"type": "boolean"},
         "replicas": {"type": "integer", "minimum": 0},
         "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "resources": {"$ref": "#/definitions/resources"},
         "image": {
           "type": "object",
           "properties": {"repository": {"type": "string", "minLength": 1}, "tag": {"type": "string"}}
@@ -118,7 +148,7 @@
         "backoffLimit": {"type": "integer", "minimum": 0, "maximum": 6},
         "activeDeadlineSeconds": {"type": "integer", "minimum": 1},
         "ttlSecondsAfterFinished": {"type": "integer", "minimum": 0},
-        "resources": {"type": "object"}
+        "resources": {"$ref": "#/definitions/resources"}
       },
       "if": {"properties": {"enabled": {"const": true}}},
       "then": {"required": ["host"], "properties": {"host": {"minLength": 1}}}
@@ -132,7 +162,8 @@
         "databaseUrlKey": {"type": "string", "enum": ["api_url", "worker_url", "owner_url"]},
         "backoffLimit": {"type": "integer", "minimum": 0, "maximum": 6},
         "activeDeadlineSeconds": {"type": "integer", "minimum": 1},
-        "ttlSecondsAfterFinished": {"type": "integer", "minimum": 0}
+        "ttlSecondsAfterFinished": {"type": "integer", "minimum": 0},
+        "resources": {"$ref": "#/definitions/resources"}
       }
     },
     "httpRoute": {
