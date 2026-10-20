@@ -1,21 +1,107 @@
-import { render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
-import App from "./App";
+import { act, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { getCsrfToken } from "./api/client";
+import { listMonitors } from "./api/endpoints";
+import { redirectTarget } from "./auth/RequireAuth";
+import { json, mockApi, problem, renderApp, session, signedIn } from "./test/utils";
 
-describe("App routes", () => {
-  it.each([
-    ["/login", "Login"],
-    ["/", "Monitors"],
-    ["/monitors/new", "Add monitor"],
-    ["/monitors/42", "Monitor details"],
-    ["/monitors/42/edit", "Edit monitor"],
-    ["/settings", "Settings"],
-  ])("renders %s", (path, heading) => {
-    render(
-      <MemoryRouter initialEntries={[path]}>
-        <App />
-      </MemoryRouter>,
+describe("auth guard", () => {
+  it("redirects to login without a session and returns to the target after sign-in", async () => {
+    let loggedIn = false;
+    const fetchMock = mockApi({
+      "GET /api/v1/auth/me": () => (loggedIn ? json(session) : problem(401, "Unauthenticated")),
+      "POST /api/v1/auth/login": () => {
+        loggedIn = true;
+        return json(session);
+      },
+      "GET /api/v1/settings/slack": () => json({ configured: false }),
+    });
+    renderApp("/settings");
+
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Email"), "admin@example.com");
+    await userEvent.type(screen.getByLabelText("Password"), "secret");
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    expect(getCsrfToken()).toBe("csrf-1");
+    const loginCall = fetchMock.mock.calls
+      .map(([r]) => r as Request)
+      .find((r) => r.url.endsWith("/auth/login"));
+    expect(await loginCall?.json()).toEqual({ email: "admin@example.com", password: "secret" });
+  });
+
+  it("shows the generic error on wrong credentials", async () => {
+    mockApi({
+      "GET /api/v1/auth/me": () => problem(401, "Unauthenticated"),
+      "POST /api/v1/auth/login": () => problem(401, "Invalid credentials"),
+    });
+    renderApp("/login");
+    await userEvent.type(await screen.findByLabelText("Email"), "a@b.c");
+    await userEvent.type(screen.getByLabelText("Password"), "nope");
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Wrong email or password. Try again.",
     );
-    expect(screen.getByRole("heading", { name: heading })).toBeInTheDocument();
+  });
+
+  it("renders protected pages with a session", async () => {
+    mockApi({ ...signedIn, "GET /api/v1/settings/slack": () => json({ configured: true }) });
+    renderApp("/settings");
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    expect(getCsrfToken()).toBe("csrf-1");
+  });
+
+  it("goes back to login when any request answers 401", async () => {
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/settings/slack": () => json({ configured: true }),
+      "GET /api/v1/monitors": () => problem(401, "Session expired"),
+    });
+    renderApp("/settings");
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    await act(() => listMonitors().catch(() => undefined));
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(getCsrfToken()).toBeNull();
+  });
+
+  it("shows an error state when the session check fails for another reason", async () => {
+    mockApi({ "GET /api/v1/auth/me": () => problem(500, "Internal error") });
+    renderApp("/");
+    expect(await screen.findByRole("heading", { name: "Cannot load your session" }));
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
+
+  it("logs out and returns to login", async () => {
+    let loggedIn = true;
+    const fetchMock = mockApi({
+      "GET /api/v1/auth/me": () => (loggedIn ? json(session) : problem(401, "Unauthenticated")),
+      "POST /api/v1/auth/logout": () => {
+        loggedIn = false;
+        return new Response(null, { status: 204 });
+      },
+      "GET /api/v1/settings/slack": () => json({ configured: true }),
+    });
+    renderApp("/settings");
+    await userEvent.click(await screen.findByRole("button", { name: "Log out" }));
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    const logoutCall = fetchMock.mock.calls
+      .map(([r]) => r as Request)
+      .find((r) => r.url.endsWith("/auth/logout"));
+    expect(logoutCall?.headers.get("X-CSRF-Token")).toBe("csrf-1");
+    await waitFor(() => expect(getCsrfToken()).toBeNull());
+  });
+});
+
+describe("redirectTarget", () => {
+  it.each([
+    [{ from: "/monitors/42?x=1" }, "/monitors/42?x=1"],
+    [{ from: "//evil.example" }, "/"],
+    [{ from: "https://evil.example" }, "/"],
+    [{ from: "/login" }, "/"],
+    [null, "/"],
+    [undefined, "/"],
+  ])("maps %j to %s", (state, expected) => {
+    expect(redirectTarget(state)).toBe(expected);
   });
 });
