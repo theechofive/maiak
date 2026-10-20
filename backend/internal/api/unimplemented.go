@@ -23,15 +23,3 @@ func (unimplemented) ListMonitorChecks(context.Context, gen.ListMonitorChecksReq
 func (unimplemented) ListMonitorIncidents(context.Context, gen.ListMonitorIncidentsRequestObject) (gen.ListMonitorIncidentsResponseObject, error) {
 	return nil, errNotImplemented
 }
-
-func (unimplemented) GetSlackSettings(context.Context, gen.GetSlackSettingsRequestObject) (gen.GetSlackSettingsResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) PutSlackSettings(context.Context, gen.PutSlackSettingsRequestObject) (gen.PutSlackSettingsResponseObject, error) {
-	return nil, errNotImplemented
-}
-
-func (unimplemented) TestSlack(context.Context, gen.TestSlackRequestObject) (gen.TestSlackResponseObject, error) {
-	return nil, errNotImplemented
-}

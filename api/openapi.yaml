@@ -475,7 +475,7 @@ paths:
     post:
       operationId: testSlack
       summary: Send a Slack test message
-      description: Sends a test message to the configured webhook. Fails with 409 when no webhook is configured.
+      description: Sends a test message to the configured webhook. Fails with 409 when no webhook is configured, 429 when Slack rate-limits the webhook and 502 when Slack does not accept the message (Slack's answer is never returned).
       tags: [settings]
       security:
         - cookieAuth: []
@@ -1039,6 +1039,10 @@ components:
         configured:
           type: boolean
           description: Whether a webhook is stored (the URL itself is never returned)
+        status:
+          type: string
+          enum: [active, failed]
+          description: Present when configured. `failed` means Slack answered 404 or 410 (the webhook was revoked); alerts are not sent until a new URL is stored.
     SlackSettingsUpdate:
       type: object
       additionalProperties: false

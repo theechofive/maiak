@@ -12,8 +12,10 @@ import (
 	"github.com/theechofive/maiak/backend/internal/auth"
 	"github.com/theechofive/maiak/backend/internal/incidents"
 	"github.com/theechofive/maiak/backend/internal/monitors"
+	"github.com/theechofive/maiak/backend/internal/notify"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/config"
+	"github.com/theechofive/maiak/backend/internal/platform/crypto"
 	"github.com/theechofive/maiak/backend/internal/platform/db"
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
@@ -64,6 +66,12 @@ func run() error {
 	}
 	log.Info("admin bootstrap done")
 
+	keys, err := crypto.NewKeyring(cfg.EncryptionKeys, cfg.EncryptionKeyID)
+	if err != nil {
+		return err
+	}
+	slack := notify.NewSlackNotifier(notify.NewSlackClient(cfg.BlockedCIDRs))
+
 	sched := scheduler.New()
 	handler, err := api.NewHandler(api.Config{
 		Version:          version,
@@ -73,6 +81,7 @@ func run() error {
 	}, api.Deps{
 		Auth:     authSvc,
 		Monitors: monitors.NewService(pool, sched, incidents.NewService(sched)),
+		Slack:    notify.NewService(pool, keys, slack, cfg.PublicURL),
 		Logger:   log,
 		Metrics:  metrics.NewHTTP(reg),
 	})

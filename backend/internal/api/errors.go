@@ -16,6 +16,7 @@ import (
 
 	"github.com/theechofive/maiak/backend/internal/auth"
 	"github.com/theechofive/maiak/backend/internal/monitors"
+	"github.com/theechofive/maiak/backend/internal/notify"
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
 	"github.com/theechofive/maiak/backend/internal/platform/validation"
@@ -34,6 +35,8 @@ const (
 	problemValidation         = "urn:maiak:problem:validation"
 	problemNotImplemented     = "urn:maiak:problem:not-implemented"
 	problemLimitReached       = "urn:maiak:problem:limit-reached"
+	problemSlackNotConfigured = "urn:maiak:problem:slack-not-configured"
+	problemSlackFailed        = "urn:maiak:problem:slack-delivery-failed"
 	problemUnavailable        = "urn:maiak:problem:unavailable"
 	problemInternal           = "urn:maiak:problem:internal"
 )
@@ -59,6 +62,7 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 	var rateErr *auth.RateLimitedError
 	var valErr *validation.Error
 	var limitErr *monitors.LimitError
+	var sendErr *notify.SendError
 	switch {
 	case errors.As(err, &badReq):
 		p.Type, p.Title, p.Status, p.Detail = problemBadRequest, "Bad request", http.StatusBadRequest, badReq.detail
@@ -83,6 +87,15 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 	case errors.As(err, &limitErr):
 		p.Type, p.Title, p.Status = problemLimitReached, "Monitor limit reached", http.StatusConflict
 		p.Detail = fmt.Sprintf("This tenant can have at most %d monitors.", limitErr.Limit)
+	case errors.Is(err, notify.ErrNotConfigured):
+		p.Type, p.Title, p.Status = problemSlackNotConfigured, "Slack is not configured", http.StatusConflict
+	case errors.As(err, &sendErr) && sendErr.Kind == notify.KindRateLimited:
+		secs := int(math.Ceil(sendErr.RetryAfter.Seconds()))
+		w.Header().Set("Retry-After", strconv.Itoa(max(secs, 1)))
+		p.Type, p.Title, p.Status = problemRateLimited, "Slack is rate-limiting this webhook, try again later", http.StatusTooManyRequests
+	case errors.As(err, &sendErr):
+		// Only the kind is shown: Slack's answer and transport errors are never echoed.
+		p.Type, p.Title, p.Status, p.Detail = problemSlackFailed, "Slack did not accept the message", http.StatusBadGateway, slackFailureDetail(sendErr)
 	case errors.Is(err, scheduler.ErrNoLocation):
 		// Operational, not the caller's fault: the location that runs new monitors is missing or
 		// disabled (ADR-0018).
@@ -142,4 +155,16 @@ func requestFieldErrors(e *openapi3filter.RequestError) []httpx.FieldError {
 		return nil
 	}
 	return []httpx.FieldError{{Field: strings.Join(ptr, "."), Message: se.Reason}}
+}
+
+func slackFailureDetail(e *notify.SendError) string {
+	switch e.Kind {
+	case notify.KindNotFound:
+		return "Slack does not know this webhook any more (it was removed or revoked); store a new webhook URL."
+	case notify.KindHTTPStatus:
+		return fmt.Sprintf("Slack answered HTTP %d.", e.Status)
+	case notify.KindTimeout:
+		return "Slack did not answer in time."
+	}
+	return "Slack could not be reached (" + e.Kind + ")."
 }

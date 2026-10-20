@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/mail"
 	"net/netip"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -93,6 +94,9 @@ type API struct {
 	SessionTTL        time.Duration
 	CookieSecure      bool
 	TrustedProxyHops  int
+	// PublicURL is where users open Maiak (MAIAK_PUBLIC_URL, https, no trailing slash); used in
+	// Slack messages.
+	PublicURL string
 }
 
 // Worker is the configuration of cmd/worker. It has no encryption keys (L-042).
@@ -115,6 +119,8 @@ type Jobs struct {
 	Server
 	Encryption
 	Guard
+	// PublicURL is MAIAK_PUBLIC_URL, linked from Slack messages.
+	PublicURL string
 }
 
 // Migrate is the configuration of cmd/migrate.
@@ -154,6 +160,7 @@ func LoadAPI(lookup LookupFunc) (API, error) {
 		SessionTTL:        l.duration("MAIAK_SESSION_TTL", 12*time.Hour, 5*time.Minute, 30*24*time.Hour),
 		CookieSecure:      l.boolean("MAIAK_COOKIE_SECURE", true),
 		TrustedProxyHops:  l.integer("MAIAK_TRUSTED_PROXY_HOPS", 1, 0, 10),
+		PublicURL:         l.publicURL("MAIAK_PUBLIC_URL"),
 	}
 	if cfg.HTTPAddr != "" && cfg.HTTPAddr == cfg.AdminAddr {
 		l.fail("MAIAK_HTTP_ADDR", "must differ from MAIAK_ADMIN_ADDR")
@@ -178,7 +185,7 @@ func LoadWorker(lookup LookupFunc) (Worker, error) {
 // LoadJobs loads the jobs configuration.
 func LoadJobs(lookup LookupFunc) (Jobs, error) {
 	l := &loader{lookup: lookup}
-	cfg := Jobs{Server: l.server(5), Encryption: l.encryption(), Guard: l.guard()}
+	cfg := Jobs{Server: l.server(5), Encryption: l.encryption(), Guard: l.guard(), PublicURL: l.publicURL("MAIAK_PUBLIC_URL")}
 	return cfg, l.err()
 }
 
@@ -298,6 +305,21 @@ func (l *loader) databaseURL(name string) Secret {
 		l.fail(name, "is not a valid PostgreSQL connection string")
 	}
 	return Secret(v)
+}
+
+// publicURL accepts an absolute https URL without user info, query, fragment or trailing slash,
+// made only of characters that need no escaping in a Slack link (<url|text>).
+func (l *loader) publicURL(name string) string {
+	v := l.required(name)
+	if v == "" {
+		return ""
+	}
+	u, err := url.Parse(v)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery ||
+		u.Fragment != "" || strings.HasSuffix(v, "/") || strings.ContainsAny(v, "|<>& \t\n\"'") || u.String() != v {
+		l.fail(name, "must be an https URL without a trailing slash, such as https://maiak.example.com")
+	}
+	return v
 }
 
 func (l *loader) email(name string) string {

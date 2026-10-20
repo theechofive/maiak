@@ -21,6 +21,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/api/gen"
 	"github.com/theechofive/maiak/backend/internal/auth"
 	"github.com/theechofive/maiak/backend/internal/monitors"
+	"github.com/theechofive/maiak/backend/internal/notify"
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
 	"github.com/theechofive/maiak/backend/internal/platform/metrics"
 )
@@ -47,6 +48,7 @@ type Config struct {
 type Deps struct {
 	Auth     *auth.Service
 	Monitors *monitors.Service
+	Slack    *notify.Service
 	Logger   *slog.Logger
 	Metrics  *metrics.HTTP
 }
@@ -59,6 +61,7 @@ type server struct {
 	cfg      Config
 	auth     *auth.Service
 	monitors *monitors.Service
+	slack    *notify.Service
 	log      *slog.Logger
 	// lastXFFWarn is the UnixNano time of the last missing X-Forwarded-For warning.
 	lastXFFWarn atomic.Int64
@@ -72,7 +75,7 @@ func NewHandler(cfg Config, deps Deps) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("api: load embedded spec: %w", err)
 	}
-	s := &server{cfg: cfg, auth: deps.Auth, monitors: deps.Monitors, log: deps.Logger}
+	s := &server{cfg: cfg, auth: deps.Auth, monitors: deps.Monitors, slack: deps.Slack, log: deps.Logger}
 
 	r := chi.NewRouter()
 	r.Use(httpx.RequestID, httpx.AccessLog(deps.Logger), httpx.Recover(deps.Logger))

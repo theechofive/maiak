@@ -32,6 +32,7 @@ func apiEnv(t *testing.T) map[string]string {
 		"MAIAK_ADMIN_PASSWORD_HASH":      validHash(t),
 		"MAIAK_ENCRYPTION_KEYS":          fmt.Sprintf(`{"k1":%q}`, key),
 		"MAIAK_ENCRYPTION_ACTIVE_KEY_ID": "k1",
+		"MAIAK_PUBLIC_URL":               "https://maiak.example.com",
 	}
 }
 
@@ -241,5 +242,37 @@ func TestLoadBootstrap(t *testing.T) {
 		if !strings.Contains(err.Error(), "MAIAK_BOOTSTRAP_"+name) {
 			t.Errorf("error does not mention MAIAK_BOOTSTRAP_%s", name)
 		}
+	}
+}
+
+// MAIAK_PUBLIC_URL is linked from Slack messages as <url/monitors/id|text>, so it must be a plain
+// https URL without a trailing slash or characters that break the link.
+func TestPublicURL(t *testing.T) {
+	loaders := map[string]func(LookupFunc) (string, error){
+		"api":  func(l LookupFunc) (string, error) { c, err := LoadAPI(l); return c.PublicURL, err },
+		"jobs": func(l LookupFunc) (string, error) { c, err := LoadJobs(l); return c.PublicURL, err },
+	}
+	for name, load := range loaders {
+		t.Run(name, func(t *testing.T) {
+			e := apiEnv(t)
+			for _, ok := range []string{"https://maiak.example.com", "https://maiak.klr-ops.net/app", "https://host:8443"} {
+				e["MAIAK_PUBLIC_URL"] = ok
+				if got, err := load(env(e)); err != nil || got != ok {
+					t.Errorf("%q: got %q, %v", ok, got, err)
+				}
+			}
+			for _, bad := range []string{"", "http://maiak.example.com", "https://maiak.example.com/", "maiak.example.com",
+				"https://user:pw@maiak.example.com", "https://maiak.example.com?x=1", "https://maiak.example.com#a",
+				"https://maiak.example.com/a|b", "https://maiak.example.com/<x>", "https://"} {
+				e["MAIAK_PUBLIC_URL"] = bad
+				if _, err := load(env(e)); err == nil || !strings.Contains(err.Error(), "MAIAK_PUBLIC_URL") {
+					t.Errorf("%q accepted: %v", bad, err)
+				}
+			}
+			delete(e, "MAIAK_PUBLIC_URL")
+			if _, err := load(env(e)); err == nil || !strings.Contains(err.Error(), "MAIAK_PUBLIC_URL") {
+				t.Errorf("missing MAIAK_PUBLIC_URL accepted: %v", err)
+			}
+		})
 	}
 }

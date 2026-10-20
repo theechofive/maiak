@@ -331,9 +331,9 @@ func TestIntegrationUnimplementedOperationIs501(t *testing.T) {
 	env := pgtest.New(t, pgtest.DBName("api501"))
 	c := newServer(t, env, auth.Options{})
 	cookie, _ := c.login()
-	r := c.do(http.MethodGet, "/api/v1/settings/slack", "", cookie)
+	r := c.do(http.MethodGet, "/api/v1/monitors/0192b9c4-7c5e-7000-8000-000000000001/incidents", "", cookie)
 	if r.code != http.StatusNotImplemented || r.body["type"] != "urn:maiak:problem:not-implemented" ||
 		!strings.HasPrefix(r.header.Get("Content-Type"), "application/problem+json") {
-		t.Fatalf("slack settings: %d %v %s", r.code, r.header, r.raw)
+		t.Fatalf("monitor incidents: %d %v %s", r.code, r.header, r.raw)
 	}
 }
