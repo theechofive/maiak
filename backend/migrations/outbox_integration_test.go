@@ -161,6 +161,64 @@ func TestIntegrationOutbox(t *testing.T) {
 		}
 	})
 
+	// Settle everything so far: the subtests below claim only their own rows.
+	settle := func() {
+		pgtest.MustExec(t, admin, `UPDATE notification_deliveries SET status = 'sent', sent_at = now(), lease_until = NULL, claim_token = NULL
+			WHERE status IN ('pending', 'in_progress')`)
+	}
+	row := func(id string) (status string, attempts int, lastErr *string) {
+		t.Helper()
+		if err := admin.QueryRow(ctx, `SELECT status, attempts, last_error FROM notification_deliveries WHERE id = $1`, id).Scan(&status, &attempts, &lastErr); err != nil {
+			t.Fatal(err)
+		}
+		return status, attempts, lastErr
+	}
+	expire := func(id string) {
+		pgtest.MustExec(t, admin, `UPDATE notification_deliveries SET lease_until = now() - interval '1 second' WHERE id = '`+id+`'`)
+	}
+
+	t.Run("finish with the token of an expired claim is rejected", func(t *testing.T) {
+		settle()
+		id := deliver(tenantA, seedMonitor(t, admin, tenantA, "now()", false, false), channelA, "tls_expiring", nil)
+		if got := ids(claimOn(worker, 10)); !slices.Equal(got, []string{id}) {
+			t.Fatalf("claimed %v", got)
+		}
+		first := tokens[id]
+		expire(id)
+		if got := ids(claimOn(worker, 10)); !slices.Equal(got, []string{id}) || tokens[id] == first {
+			t.Fatalf("reclaim %v with token %s (first %s)", got, tokens[id], first)
+		}
+		var ok bool
+		if err := worker.QueryRow(ctx, `SELECT finish_delivery($1, $2, 'sent', NULL, NULL)`, id, first).Scan(&ok); err != nil || ok {
+			t.Fatalf("finish with the stale token = %t (err %v), want false", ok, err)
+		}
+		if status, attempts, lastErr := row(id); status != "in_progress" || attempts != 1 || lastErr == nil || *lastErr != "lease_expired" {
+			t.Fatalf("after the stale finish: %s attempts=%d last_error=%v; want in_progress, the requeue counted", status, attempts, lastErr)
+		}
+		if !finish(id, "sent", "", "NULL") {
+			t.Fatal("finish with the current token returned false")
+		}
+	})
+
+	t.Run("a poison delivery ends failed after the maximum attempts", func(t *testing.T) {
+		settle()
+		id := deliver(tenantA, seedMonitor(t, admin, tenantA, "now()", false, false), channelA, "tls_expiring", nil)
+		const maxAttempts = 5 // jobs.MaxAttempts; the jobs integration test checks the pair
+		for i := range maxAttempts {
+			got := ids(claimOn(worker, 10))
+			if !slices.Equal(got, []string{id}) {
+				t.Fatalf("claim %d: %v", i+1, got)
+			}
+			expire(id) // the jobs process dies with the row in flight
+		}
+		if got := claimOn(worker, 10); len(got) != 0 {
+			t.Fatalf("poison row claimed again: %v", got)
+		}
+		if status, attempts, lastErr := row(id); status != "failed" || attempts != maxAttempts || lastErr == nil || *lastErr != "lease_expired" {
+			t.Fatalf("poison row: %s attempts=%d last_error=%v", status, attempts, lastErr)
+		}
+	})
+
 	t.Run("grants and arguments", func(t *testing.T) {
 		for _, stmt := range []string{`SELECT * FROM claim_deliveries(1)`, `SELECT finish_delivery(gen_random_uuid(), gen_random_uuid(), 'sent', '', NULL)`} {
 			if _, err := api.Exec(ctx, stmt); err == nil || !strings.Contains(err.Error(), "permission denied") {

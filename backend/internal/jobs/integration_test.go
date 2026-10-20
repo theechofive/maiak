@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/theechofive/maiak/backend/internal/jobs"
 	"github.com/theechofive/maiak/backend/internal/notify"
+	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
 	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
 )
@@ -184,6 +186,10 @@ func (e *env) makeDue() {
 
 // deliverer runs as maiak_worker. Its rate-limit waits are recorded in sleeps instead of slept.
 func (e *env) deliverer(reg prometheus.Registerer, sleeps *[]time.Duration) *jobs.Deliverer {
+	return e.delivererWithClock(reg, sleeps, nil)
+}
+
+func (e *env) delivererWithClock(reg prometheus.Registerer, sleeps *[]time.Duration, clk clock.Clock) *jobs.Deliverer {
 	var mu sync.Mutex
 	return jobs.NewDeliverer(jobs.DeliveryConfig{PublicURL: "https://maiak.example.com", Concurrency: 10}, jobs.DeliveryDeps{
 		Pool:     e.Pool(e.t, e.WorkerURL, 4),
@@ -191,6 +197,7 @@ func (e *env) deliverer(reg prometheus.Registerer, sleeps *[]time.Duration) *job
 		Notifier: notify.NewSlackNotifier(e.slack),
 		Metrics:  jobs.NewMetrics(reg),
 		Log:      slog.New(slog.NewJSONHandler(e, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Clock:    clk,
 		Sleep: func(_ context.Context, d time.Duration) error {
 			if sleeps != nil {
 				mu.Lock()
@@ -259,13 +266,27 @@ func TestIntegrationDelivery(t *testing.T) {
 	})
 
 	t.Run("retry then success", func(t *testing.T) {
+		// The deliverer's clock is an hour ahead of the database: the retry time is exactly
+		// clock + backoff and far from the database's now, so neither check depends on how fast
+		// the test runs (the earlier window of 0-3 s from the database clock was timing-sensitive,
+		// L-093).
+		var dbNow time.Time
+		if err := e.admin.QueryRow(e.ctx, `SELECT now()`).Scan(&dbNow); err != nil {
+			t.Fatal(err)
+		}
+		clk := clock.NewFake(dbNow.Add(time.Hour))
+		d := e.delivererWithClock(prometheus.NewRegistry(), nil, clk)
 		m := e.monitor(tenantA, "Api")
 		id := e.deliver(tenantA, m, notify.DeliveryResolved, map[string]any{"monitorName": "Api", "durationSeconds": 120})
 		e.slack.queue(500)
 		d.RunOnce(e.ctx)
 		r := e.row(id)
-		if r.status != "pending" || r.attempts != 1 || r.lastError == nil || *r.lastError != "http_status 500" || r.retryIn < 0 || r.retryIn > 3*time.Second {
-			t.Fatalf("after 500: %+v", r)
+		var retryAt time.Time
+		if err := e.admin.QueryRow(e.ctx, `SELECT next_attempt_at FROM notification_deliveries WHERE id = $1`, id).Scan(&retryAt); err != nil {
+			t.Fatal(err)
+		}
+		if r.status != "pending" || r.attempts != 1 || r.lastError == nil || *r.lastError != "http_status 500" || !retryAt.Equal(clk.Now().Add(jobs.Backoff(1))) {
+			t.Fatalf("after 500: %+v, retry at %s, want %s", r, retryAt, clk.Now().Add(jobs.Backoff(1)))
 		}
 		if n := d.RunOnce(e.ctx); n != 0 {
 			t.Fatalf("claimed %d before the retry time", n)
@@ -387,6 +408,45 @@ func TestIntegrationDelivery(t *testing.T) {
 	})
 }
 
+// A delivery whose jobs process dies (lease expiry) every time ends as failed after
+// jobs.MaxAttempts claims: claim_deliveries counts the requeue as an attempt, with the same
+// maximum as the Go side. A finish with the claim token of an expired claim is rejected.
+func TestIntegrationPoisonDeliveryFailsAfterMaxAttempts(t *testing.T) {
+	e := newEnv(t, "jobspoison")
+	id := e.deliver(tenantA, e.monitor(tenantA, "Poison"), notify.DeliveryResolved, map[string]any{"monitorName": "Poison", "durationSeconds": 1})
+	worker := e.Conn(t, e.WorkerURL)
+	claim := func() (string, bool) {
+		var token string
+		err := worker.QueryRow(e.ctx, `SELECT claim_token::text FROM claim_deliveries(10) WHERE id = $1`, id).Scan(&token)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", false
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token, true
+	}
+	var tokens []string
+	for i := range jobs.MaxAttempts {
+		token, ok := claim()
+		if !ok {
+			t.Fatalf("claim %d: row not claimed", i+1)
+		}
+		tokens = append(tokens, token)
+		pgtest.MustExec(t, e.admin, `UPDATE notification_deliveries SET lease_until = now() - interval '1 second' WHERE id = '`+id.String()+`'`)
+	}
+	if _, ok := claim(); ok {
+		t.Fatal("poison row claimed after MaxAttempts expired leases")
+	}
+	if r := e.row(id); r.status != "failed" || r.attempts != jobs.MaxAttempts || r.lastError == nil || *r.lastError != "lease_expired" {
+		t.Fatalf("poison row = %+v", r)
+	}
+	var recorded bool
+	if err := worker.QueryRow(e.ctx, `SELECT finish_delivery($1, $2, 'sent', NULL, NULL)`, id, tokens[len(tokens)-1]).Scan(&recorded); err != nil || recorded {
+		t.Fatalf("finish after requeue = %t (err %v), want false", recorded, err)
+	}
+}
+
 // Two jobs processes claiming concurrently never deliver one row twice.
 func TestIntegrationConcurrentDeliverersClaimOnce(t *testing.T) {
 	e := newEnv(t, "jobsconcurrent")
@@ -494,10 +554,10 @@ func TestIntegrationHousekeeping(t *testing.T) {
 		pgtest.MustExec(t, e.admin,
 			`INSERT INTO monitor_locations (tenant_id, monitor_id, location_id) VALUES ('`+tenantA+`', '`+mon.String()+`', '`+homeLocation+`')`,
 			`INSERT INTO check_results (tenant_id, monitor_id, location_id, checked_at, ok, latency_ms, error_kind) VALUES
-				('`+tenantA+`', '`+mon.String()+`', '`+homeLocation+`', date_trunc('hour', now()) - interval '90 minutes', true, 40, NULL),
-				('`+tenantA+`', '`+mon.String()+`', '`+homeLocation+`', date_trunc('hour', now()) - interval '80 minutes', false, NULL, 'timeout'),
-				('`+tenantA+`', '`+mon.String()+`', '`+homeLocation+`', date_trunc('hour', now()) - interval '5 hours', true, 40, NULL),
-				('`+tenantA+`', '`+mon.String()+`', '`+homeLocation+`', date_trunc('hour', now()) + interval '1 second', true, 40, NULL)`)
+				('`+tenantA+`', '`+mon.String()+`', '`+homeLocation+`', date_trunc('hour', now(), 'UTC') - interval '90 minutes', true, 40, NULL),
+				('`+tenantA+`', '`+mon.String()+`', '`+homeLocation+`', date_trunc('hour', now(), 'UTC') - interval '80 minutes', false, NULL, 'timeout'),
+				('`+tenantA+`', '`+mon.String()+`', '`+homeLocation+`', date_trunc('hour', now(), 'UTC') - interval '5 hours', true, 40, NULL),
+				('`+tenantA+`', '`+mon.String()+`', '`+homeLocation+`', date_trunc('hour', now(), 'UTC') + interval '1 second', true, 40, NULL)`)
 		for range 2 { // idempotent
 			if got := h.RunTask(e.ctx, task("compute_rollups")); got != "ok" {
 				t.Fatal(got)

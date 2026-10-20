@@ -1,10 +1,10 @@
 package worker_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -35,6 +35,25 @@ type env struct {
 	t     *testing.T
 	ctx   context.Context
 	admin *pgx.Conn
+	logs  syncBuffer
+}
+
+// syncBuffer collects the workers' logs so tests can check what they leave out.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func newEnv(t *testing.T, name string) *env {
@@ -76,7 +95,7 @@ func (e *env) worker(p checks.Prober, cfg worker.Config) (*worker.Worker, *prome
 	}
 	return worker.New(cfg, worker.Deps{
 		Pool: e.Pool(e.t, e.WorkerURL, 4), Scheduler: sched, Incidents: incidents.NewService(sched),
-		Prober: p, Metrics: worker.NewMetrics(reg), Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Prober: p, Metrics: worker.NewMetrics(reg), Log: slog.New(slog.NewTextHandler(&e.logs, nil)),
 		Jitter: func() time.Duration { return 0 },
 	}), reg
 }
@@ -238,6 +257,16 @@ func TestIntegrationTenantLimitDefersWithoutBlocking(t *testing.T) {
 	p := &fakeProber{hook: func() { <-release }}
 	w, reg := e.worker(p, worker.Config{ClaimBatch: 100, Concurrency: 10, TenantConcurrency: 2, HostConcurrency: 2,
 		FlushInterval: 20 * time.Millisecond, PollInterval: time.Hour})
+	// Database clock readings around the claim bound the deferred next_run_at exactly, however
+	// slow the test machine is (the earlier fixed 1-3 s window was timing-sensitive, L-093).
+	dbNow := func() time.Time {
+		var ts time.Time
+		if err := e.admin.QueryRow(e.ctx, `SELECT clock_timestamp()`).Scan(&ts); err != nil {
+			t.Fatal(err)
+		}
+		return ts
+	}
+	before := dbNow()
 	done := make(chan struct{})
 	go func() { w.RunOnce(e.ctx); close(done) }()
 	// Tenant A gets 2 checks, tenant B is not held up, 2 jobs of A go back at once.
@@ -260,8 +289,10 @@ func TestIntegrationTenantLimitDefersWithoutBlocking(t *testing.T) {
 	if got := metric(t, reg, "maiak_worker_deferred_jobs_total"); got != 2 {
 		t.Fatalf("deferred = %v, want 2", got)
 	}
+	after := dbNow()
 	if n := e.count(`SELECT count(*) FROM monitor_location_state WHERE lease_token IS NULL
-		AND next_run_at BETWEEN now() + interval '1 second' AND now() + interval '3 seconds'`); n != 2 {
+		AND next_run_at BETWEEN $1::timestamptz + make_interval(secs => $3) AND $2::timestamptz + make_interval(secs => $3)`,
+		before, after, worker.DeferDelay.Seconds()); n != 2 {
 		t.Fatalf("deferred jobs not released with the defer delay: %d", n)
 	}
 	close(release)

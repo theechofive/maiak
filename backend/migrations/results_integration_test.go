@@ -200,7 +200,7 @@ func TestIntegrationResults(t *testing.T) {
 			('%[1]s', '%[2]s', '%[3]s', '%[4]s'::timestamptz + interval '3 s', true, NULL, 7)`, tenantA, m2, homeLocation, hour.Format(time.RFC3339)))
 		// A result in the open hour is never rolled up.
 		pgtest.MustExec(t, admin, fmt.Sprintf(`INSERT INTO check_results (tenant_id, monitor_id, location_id, checked_at, ok, latency_ms)
-			VALUES ('%s', '%s', '%s', date_trunc('hour', now()) + interval '1 microsecond', true, 5)`, tenantA, m1, homeLocation))
+			VALUES ('%s', '%s', '%s', date_trunc('hour', now(), 'UTC') + interval '1 microsecond', true, 5)`, tenantA, m1, homeLocation))
 
 		type rollup struct {
 			monitor          string
@@ -267,7 +267,7 @@ func TestIntegrationResults(t *testing.T) {
 		}
 		// A range that ends before it starts, or in the open hour only, writes nothing.
 		var n int
-		if err := worker.QueryRow(ctx, `SELECT compute_rollups(date_trunc('hour', now()), now() + interval '2 hours')`).Scan(&n); err != nil || n != 0 {
+		if err := worker.QueryRow(ctx, `SELECT compute_rollups(date_trunc('hour', now(), 'UTC'), now() + interval '2 hours')`).Scan(&n); err != nil || n != 0 {
 			t.Fatalf("open-hour rollup wrote %d (err %v)", n, err)
 		}
 		if _, err := api.Exec(ctx, `SELECT compute_rollups(now() - interval '1 day', now())`); err == nil || !strings.Contains(err.Error(), "permission denied") {
@@ -493,6 +493,63 @@ func TestIntegrationClaimDueMonitors(t *testing.T) {
 			if slices.Contains(skipped, c.monitor) {
 				t.Fatalf("claimed skipped monitor %s", c.monitor)
 			}
+		}
+	})
+
+	t.Run("suspended and deleted tenants are not claimed", func(t *testing.T) {
+		free()
+		suspended, deleted := uuid.New().String(), uuid.New().String()
+		pgtest.MustExec(t, admin, `INSERT INTO tenants (id, slug, name, status) VALUES ('`+suspended+`', 'sus', 'S', 'suspended')`,
+			`INSERT INTO tenants (id, slug, name, deleted_at) VALUES ('`+deleted+`', 'del', 'D', now())`)
+		sm := seedMonitor(t, admin, suspended, "now() - interval '1 minute'", false, false)
+		dm := seedMonitor(t, admin, deleted, "now() - interval '1 minute'", false, false)
+		got := claimOn(w1, 1000)
+		if len(got) != len(due) {
+			t.Fatalf("claimed %d, want %d", len(got), len(due))
+		}
+		for _, c := range got {
+			if c.monitor == sm || c.monitor == dm {
+				t.Fatalf("claimed monitor %s of a suspended or deleted tenant", c.monitor)
+			}
+		}
+		// Reactivated, the tenant's monitor is due again at once.
+		pgtest.MustExec(t, admin, `UPDATE tenants SET status = 'active' WHERE id = '`+suspended+`'`)
+		if got := claimOn(w1, 1000); len(got) != 1 || got[0].monitor != sm {
+			t.Fatalf("after reactivation claimed %+v, want only %s", got, sm)
+		}
+	})
+
+	t.Run("only due rows of the requested active location are claimed", func(t *testing.T) {
+		free()
+		other := uuid.New().String()
+		pgtest.MustExec(t, admin, `INSERT INTO probe_locations (id, code, name, provider, region, kind)
+			VALUES ('`+other+`', 'agent-lab', 'Lab agent', 'self', 'lab', 'agent')`)
+		om := uuid.New().String()
+		pgtest.MustExec(t, admin,
+			`INSERT INTO monitors (id, tenant_id, name, config) VALUES ('`+om+`', '`+tenantA+`', 'o', '{"url":"https://example.com/o"}')`,
+			`INSERT INTO monitor_locations (tenant_id, monitor_id, location_id) VALUES ('`+tenantA+`', '`+om+`', '`+other+`')`,
+			`INSERT INTO monitor_location_state (tenant_id, monitor_id, location_id, next_run_at) VALUES ('`+tenantA+`', '`+om+`', '`+other+`', now() - interval '1 minute')`)
+		claimAt := func(location string) []string {
+			rows, _ := w1.Query(ctx, `SELECT monitor_id::text FROM claim_due_monitors(1000, $1)`, location)
+			ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
+				t.Fatal(err)
+			}
+			return ids
+		}
+		if got := claimAt("nowhere"); len(got) != 0 {
+			t.Fatalf("unknown location claimed %v", got)
+		}
+		if got := claimAt("agent-lab"); !slices.Equal(got, []string{om}) {
+			t.Fatalf("agent-lab claimed %v, want only %s", got, om)
+		}
+		pgtest.MustExec(t, admin, `UPDATE probe_locations SET status = 'disabled' WHERE code = 'home-eu-central-1'`)
+		if got := claimAt("home-eu-central-1"); len(got) != 0 {
+			t.Fatalf("disabled location claimed %d rows", len(got))
+		}
+		pgtest.MustExec(t, admin, `UPDATE probe_locations SET status = 'active' WHERE code = 'home-eu-central-1'`)
+		if got := claimAt("home-eu-central-1"); slices.Contains(got, om) || len(got) == 0 {
+			t.Fatalf("home claimed %d rows including the other location's: %t", len(got), slices.Contains(got, om))
 		}
 	})
 
