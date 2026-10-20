@@ -63,14 +63,17 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      backend: ${{ steps.filter.outputs.backend }}
-      api: ${{ steps.filter.outputs.api }}
-      helm: ${{ steps.filter.outputs.helm }}
+      backend: ${{ github.event_name != 'pull_request' || steps.filter.outputs.backend == 'true' }}
+      api: ${{ github.event_name != 'pull_request' || steps.filter.outputs.api == 'true' }}
+      helm: ${{ github.event_name != 'pull_request' || steps.filter.outputs.helm == 'true' }}
     steps:
       - uses: actions/checkout@v4 # TODO(L-019) pin to SHA
         with:
           persist-credentials: false
+      # On push to main everything runs: the "before" commit can be unreachable after a force push,
+      # which makes paths-filter fail with git exit 128.
       - uses: dorny/paths-filter@v3 # TODO(L-019) pin to SHA
+        if: github.event_name == 'pull_request'
         id: filter
         with:
           filters: |
