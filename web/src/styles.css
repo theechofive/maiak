@@ -49,3 +49,32 @@ header.container nav {
   margin: 0;
   padding: 0 0.5rem;
 }
+
+.page-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.page-heading [role="button"],
+.page-heading button {
+  margin-bottom: var(--pico-typography-spacing-vertical);
+}
+
+tr.clickable {
+  cursor: pointer;
+}
+
+td.url {
+  word-break: break-all;
+}
+
+.status-down {
+  color: var(--pico-del-color);
+  font-weight: bold;
+}
+
+.status-up {
+  color: var(--pico-ins-color);
+}

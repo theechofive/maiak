@@ -13,6 +13,9 @@ export type Check = Schemas["Check"];
 export type Incident = Schemas["Incident"];
 export type SlackSettings = Schemas["SlackSettings"];
 
+/** Dashboard refresh interval (ADR-0015). TanStack Query pauses it while the tab is hidden. */
+export const POLL_MS = 15_000;
+
 export const queryKeys = {
   me: ["me"] as const,
   monitors: ["monitors"] as const,
