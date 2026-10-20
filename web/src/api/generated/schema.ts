@@ -103,7 +103,8 @@ export interface paths {
     /**
      * Create a monitor
      * @description Creates an HTTPS monitor. It starts with status `unknown` and is first checked within
-     *     about 30 seconds. Fails with 409 when the tenant's monitor limit (50 by default) is reached.
+     *     about 30 seconds. Fails with 409 when the tenant's monitor limit (50 by default) is reached
+     *     and with 503 when the probe location that runs new monitors is unavailable.
      */
     post: operations["createMonitor"];
     delete?: never;
@@ -117,7 +118,7 @@ export interface paths {
       query?: never;
       header?: never;
       path: {
-        /** @description Monitor id */
+        /** @description Monitor id; a value that is not a UUID is answered with 400 */
         monitorId: components["parameters"]["MonitorId"];
       };
       cookie?: never;
@@ -151,7 +152,7 @@ export interface paths {
       query?: never;
       header?: never;
       path: {
-        /** @description Monitor id */
+        /** @description Monitor id; a value that is not a UUID is answered with 400 */
         monitorId: components["parameters"]["MonitorId"];
       };
       cookie?: never;
@@ -174,7 +175,7 @@ export interface paths {
       query?: never;
       header?: never;
       path: {
-        /** @description Monitor id */
+        /** @description Monitor id; a value that is not a UUID is answered with 400 */
         monitorId: components["parameters"]["MonitorId"];
       };
       cookie?: never;
@@ -197,14 +198,19 @@ export interface paths {
       query?: never;
       header?: never;
       path: {
-        /** @description Monitor id */
+        /** @description Monitor id; a value that is not a UUID is answered with 400 */
         monitorId: components["parameters"]["MonitorId"];
       };
       cookie?: never;
     };
     /**
      * Response time statistics
-     * @description Average and p95 response time and the latency series for the range (raw results up to 24 h, hourly rollups beyond).
+     * @description Average and p95 response time and the latency series for the range. Latency statistics
+     *     cover checks that got a response. `24h` is computed from raw results (exact p95) in
+     *     15-minute buckets; `7d` (hourly buckets) and `30d` (6-hour buckets) from hourly rollups,
+     *     where p95 is the upper edge of the histogram bucket that contains the 95th percentile
+     *     (edges 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000 ms). Every bucket of the range is
+     *     listed; buckets without checks have null values.
      */
     get: operations["getMonitorStats"];
     put?: never;
@@ -220,7 +226,7 @@ export interface paths {
       query?: never;
       header?: never;
       path: {
-        /** @description Monitor id */
+        /** @description Monitor id; a value that is not a UUID is answered with 400 */
         monitorId: components["parameters"]["MonitorId"];
       };
       cookie?: never;
@@ -243,14 +249,14 @@ export interface paths {
       query?: never;
       header?: never;
       path: {
-        /** @description Monitor id */
+        /** @description Monitor id; a value that is not a UUID is answered with 400 */
         monitorId: components["parameters"]["MonitorId"];
       };
       cookie?: never;
     };
     /**
      * Incidents of a monitor
-     * @description Incidents of the monitor, newest first.
+     * @description Incidents of the monitor, newest first, at most 100.
      */
     get: operations["listMonitorIncidents"];
     put?: never;
@@ -296,7 +302,7 @@ export interface paths {
     put?: never;
     /**
      * Send a Slack test message
-     * @description Sends a test message to the configured webhook. Fails with 409 when no webhook is configured.
+     * @description Sends a test message to the configured webhook. Fails with 409 when no webhook is configured, 429 when Slack rate-limits the webhook and 502 when Slack does not accept the message (Slack's answer is never returned).
      */
     post: operations["testSlack"];
     delete?: never;
@@ -347,12 +353,14 @@ export interface components {
     /** @enum {string} */
     MembershipRole: "owner" | "admin" | "member" | "viewer";
     /**
-     * @description Aggregated status. `unknown` until the first check after creation or resume.
+     * @description Aggregated status. `unknown` until the first check after creation, resume or a URL change, and while the monitor is paused (`paused` is then true).
      * @enum {string}
      */
     MonitorStatus: "unknown" | "up" | "down";
     /**
-     * @description `2xx` (any 200-299) or one exact HTTP status code from 100 to 599, as a string
+     * @description `2xx` (any 200-299), or one exact HTTP status code from 200 to 299 or from 400 to 599, as a
+     *     string. 1xx and 3xx cannot be observed (the client consumes 1xx and follows redirects) and
+     *     are rejected.
      * @example 2xx
      */
     ExpectedStatus: string;
@@ -544,6 +552,11 @@ export interface components {
     SlackSettings: {
       /** @description Whether a webhook is stored (the URL itself is never returned) */
       configured: boolean;
+      /**
+       * @description Present when configured. `failed` means Slack answered 404 or 410 (the webhook was revoked); alerts are not sent until a new URL is stored.
+       * @enum {string}
+       */
+      status?: "active" | "failed";
     };
     SlackSettingsUpdate: {
       /**
@@ -643,6 +656,15 @@ export interface components {
         "application/problem+json": components["schemas"]["Problem"];
       };
     };
+    /** @description A dependency of the operation is temporarily unavailable; retry later */
+    ServiceUnavailable: {
+      headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        "application/problem+json": components["schemas"]["Problem"];
+      };
+    };
     /** @description Unexpected error (also 501 for operations that are not implemented yet) */
     Error: {
       headers: {
@@ -654,7 +676,7 @@ export interface components {
     };
   };
   parameters: {
-    /** @description Monitor id */
+    /** @description Monitor id; a value that is not a UUID is answered with 400 */
     MonitorId: string;
     /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
     CsrfToken: string;
@@ -816,6 +838,7 @@ export interface operations {
       403: components["responses"]["Forbidden"];
       409: components["responses"]["Conflict"];
       422: components["responses"]["UnprocessableEntity"];
+      503: components["responses"]["ServiceUnavailable"];
       default: components["responses"]["Error"];
     };
   };
@@ -824,7 +847,7 @@ export interface operations {
       query?: never;
       header?: never;
       path: {
-        /** @description Monitor id */
+        /** @description Monitor id; a value that is not a UUID is answered with 400 */
         monitorId: components["parameters"]["MonitorId"];
       };
       cookie?: never;
@@ -840,6 +863,7 @@ export interface operations {
           "application/json": components["schemas"]["MonitorDetail"];
         };
       };
+      400: components["responses"]["BadRequest"];
       401: components["responses"]["Unauthorized"];
       404: components["responses"]["NotFound"];
       default: components["responses"]["Error"];
@@ -853,7 +877,7 @@ export interface operations {
         "X-CSRF-Token": components["parameters"]["CsrfToken"];
       };
       path: {
-        /** @description Monitor id */
+        /** @description Monitor id; a value that is not a UUID is answered with 400 */
         monitorId: components["parameters"]["MonitorId"];
       };
       cookie?: never;
@@ -867,6 +891,7 @@ export interface operations {
         };
         content?: never;
       };
+      400: components["responses"]["BadRequest"];
       401: components["responses"]["Unauthorized"];
       403: components["responses"]["Forbidden"];
       404: components["responses"]["NotFound"];
@@ -881,7 +906,7 @@ export interface operations {
         "X-CSRF-Token": components["parameters"]["CsrfToken"];
       };
       path: {
-        /** @description Monitor id */
+        /** @description Monitor id; a value that is not a UUID is answered with 400 */
         monitorId: components["parameters"]["MonitorId"];
       };
       cookie?: never;
@@ -917,7 +942,7 @@ export interface operations {
         "X-CSRF-Token": components["parameters"]["CsrfToken"];
       };
       path: {
-        /** @description Monitor id */
+        /** @description Monitor id; a value that is not a UUID is answered with 400 */
         monitorId: components["parameters"]["MonitorId"];
       };
       cookie?: never;
@@ -933,6 +958,7 @@ export interface operations {
           "application/json": components["schemas"]["MonitorDetail"];
         };
       };
+      400: components["responses"]["BadRequest"];
       401: components["responses"]["Unauthorized"];
       403: components["responses"]["Forbidden"];
       404: components["responses"]["NotFound"];
@@ -947,7 +973,7 @@ export interface operations {
         "X-CSRF-Token": components["parameters"]["CsrfToken"];
       };
       path: {
-        /** @description Monitor id */
+        /** @description Monitor id; a value that is not a UUID is answered with 400 */
         monitorId: components["parameters"]["MonitorId"];
       };
       cookie?: never;
@@ -963,6 +989,7 @@ export interface operations {
           "application/json": components["schemas"]["MonitorDetail"];
         };
       };
+      400: components["responses"]["BadRequest"];
       401: components["responses"]["Unauthorized"];
       403: components["responses"]["Forbidden"];
       404: components["responses"]["NotFound"];
@@ -977,7 +1004,7 @@ export interface operations {
       };
       header?: never;
       path: {
-        /** @description Monitor id */
+        /** @description Monitor id; a value that is not a UUID is answered with 400 */
         monitorId: components["parameters"]["MonitorId"];
       };
       cookie?: never;
@@ -1007,7 +1034,7 @@ export interface operations {
       };
       header?: never;
       path: {
-        /** @description Monitor id */
+        /** @description Monitor id; a value that is not a UUID is answered with 400 */
         monitorId: components["parameters"]["MonitorId"];
       };
       cookie?: never;
@@ -1034,7 +1061,7 @@ export interface operations {
       query?: never;
       header?: never;
       path: {
-        /** @description Monitor id */
+        /** @description Monitor id; a value that is not a UUID is answered with 400 */
         monitorId: components["parameters"]["MonitorId"];
       };
       cookie?: never;
@@ -1050,6 +1077,7 @@ export interface operations {
           "application/json": components["schemas"]["IncidentList"];
         };
       };
+      400: components["responses"]["BadRequest"];
       401: components["responses"]["Unauthorized"];
       404: components["responses"]["NotFound"];
       default: components["responses"]["Error"];
