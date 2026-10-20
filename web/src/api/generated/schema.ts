@@ -302,7 +302,7 @@ export interface paths {
     put?: never;
     /**
      * Send a Slack test message
-     * @description Sends a test message to the configured webhook. Fails with 409 when no webhook is configured, 429 when Slack rate-limits the webhook and 502 when Slack does not accept the message (Slack's answer is never returned).
+     * @description Sends a test message to the configured webhook. Fails with 409 when no webhook is configured, 429 when called again within 5 seconds for the same tenant or when Slack rate-limits the webhook (both with Retry-After), and 502 when Slack does not accept the message (Slack's answer is never returned).
      */
     post: operations["testSlack"];
     delete?: never;
@@ -513,7 +513,7 @@ export interface components {
       t: string;
       /**
        * Format: double
-       * @description Average response time of the bucket; null when no check succeeded in it
+       * @description Average response time of the checks in the bucket that received a response (failed checks with an HTTP status included); null when none did
        */
       avgMs: number | null;
       /**
@@ -524,7 +524,10 @@ export interface components {
     };
     MonitorStats: {
       range: components["schemas"]["StatsRange"];
-      /** Format: double */
+      /**
+       * Format: double
+       * @description Average response time of the checks in the range that received a response (failed checks with an HTTP status included); null when none did
+       */
       avgMs: number | null;
       /** Format: double */
       p95Ms: number | null;
