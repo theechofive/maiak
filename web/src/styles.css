@@ -78,3 +78,14 @@ td.url {
 .status-up {
   color: var(--pico-ins-color);
 }
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.actions > button,
+.actions > [role="button"] {
+  width: auto;
+}
