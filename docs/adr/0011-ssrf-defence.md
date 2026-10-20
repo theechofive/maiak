@@ -1,6 +1,6 @@
 # ADR-0011: SSRF defence implemented in the worker code
 
-- Status: Accepted (details open: L-001)
+- Status: Accepted (amended by ADR-0016: port 443 only in the MVP, Slack delivery uses the same guard; remaining details open: L-001)
 - Date: 2026-10-20
 
 ## Context

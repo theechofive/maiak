@@ -35,7 +35,7 @@ Monitor the availability of websites (and later internal services in client Kube
 | Migrations | goose, embedded, forward-only, expand/contract, RLS schema-lint | [ADR-0013](adr/0013-migrations.md) |
 | DB bootstrap | Automatic hook Job, enabled for the first deploy | [ADR-0014](adr/0014-db-bootstrap-automation.md) |
 
-Stack: Go (`chi`, `pgx`, `sqlc`, `goose`, `oapi-codegen`, `slog`), PostgreSQL 15 (RDS, database `maiak` on the shared instance `grafana` for now), React + TypeScript for the web app (framework to be chosen, L-015), Helm, ArgoCD, GitHub Actions, `ghcr.io/theechofive/maiak-*`.
+Stack: Go (`chi`, `pgx`, `sqlc`, `goose`, `oapi-codegen`, `slog`), PostgreSQL 15 (RDS, database `maiak` on the shared instance `grafana` for now), React + TypeScript with Vite for the web app ([ADR-0015](adr/0015-frontend-stack.md)), Helm, ArgoCD, GitHub Actions, `ghcr.io/theechofive/maiak-*`.
 
 Environment: a single environment on `klr-platform` (EKS, arm64), internal host `maiak.klr-ops.net`.
 
@@ -52,7 +52,7 @@ Unit tests for pure logic (incident state machine first, written test-first); in
 | 2 | Monitors CRUD, locations model | planned |
 | 3 | Worker: scheduler, HTTPS prober with SSRF guard, results, rollups, partitions | planned |
 | 4 | Incidents, outbox, Slack delivery in `jobs` | planned |
-| 5 | Dashboard (web) | planned, needs L-015 |
+| 5 | Dashboard (web) | planned |
 | 6 | Hardening and the load test before any open registration (L-010, L-011, L-012) | planned |
 
 Each slice ends with: lint and tests green, generated code up to date, `helm lint` green, deployed to `klr-platform`, docs and ledger updated, an ADR for any architectural decision.
@@ -60,7 +60,7 @@ Each slice ends with: lint and tests green, generated code up to date, `helm lin
 ## Who does what
 | Owner | Responsibilities |
 |---|---|
-| Product owner (repo owner) | The repository and GitHub settings, DNS record `maiak.klr-ops.net` in Cloudflare, the PR registering the ArgoCD Application in `devops-charts-infra`, secrets `platform/maiak/admin` (email and password hash) and `platform/maiak/crypto`, the ghcr pull-secret decision (L-002), the frontend stack (L-015) |
+| Product owner (repo owner) | The repository and GitHub settings, DNS record `maiak.klr-ops.net` in Cloudflare, the PR registering the ArgoCD Application in `devops-charts-infra`, secrets `platform/maiak/admin` (email and password hash) and `platform/maiak/crypto`, the ghcr pull-secret decision (L-002) |
 | Engineering (AI agents and the owner) | Code, chart, CI, documentation, ledger. Agents work from `CLAUDE.md`; independent review is a separate pass from authoring |
 
 ## Before the first deploy (blocking)

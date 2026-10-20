@@ -12,7 +12,7 @@
 - Images: multi-arch (`amd64` + `arm64`) at `ghcr.io/theechofive/maiak-backend` and later `maiak-web`. CI tags with the short SHA, pushes, and commits the tag into `values-platform.yaml`; ArgoCD syncs. No image-updater dependency.
 - Database: new database `maiak` with roles `maiak_owner`, `maiak_api`, `maiak_worker` inside the existing RDS instance `grafana` (accepted risk R-001, to be moved: L-009). Bootstrap is automatic (hook Job, ADR-0014); see `docs/runbooks/database-bootstrap.md`.
 - Secrets via ExternalSecret from AWS Secrets Manager `platform/maiak/{db,admin,crypto}`.
-- Migrations run as an ArgoCD PreSync Job with the owner role.
+- Migrations run as an ArgoCD Sync-hook Job (wave -1) with the owner role.
 - Small resource requests; no hostNetwork on the worker; container hardening (non-root, read-only root filesystem, drop ALL, seccomp RuntimeDefault).
 
 ## Consequences

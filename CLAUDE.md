@@ -5,7 +5,7 @@ Maiak is a multi-tenant uptime-monitoring SaaS starter: external HTTPS checks, i
 ## Repository layout
 - `backend/` Go modular monolith. One module, several processes: `cmd/api`, `cmd/worker`, `cmd/jobs`, `cmd/migrate`, `cmd/maiakctl` (later `cmd/probe`, `cmd/agent`).
 - `api/openapi.yaml` the API contract and source of truth (spec-first). Server code and the TypeScript client are generated from it.
-- `web/` React SPA (stack not chosen yet, see ledger L-015).
+- `web/` React SPA (minimal React + Vite, ADR-0015).
 - `deploy/helm/maiak/` our own Helm chart (not the company `helm-app`).
 - `docs/` architecture, ADRs, ledger, runbooks.
 
@@ -22,7 +22,7 @@ Maiak is a multi-tenant uptime-monitoring SaaS starter: external HTTPS checks, i
 ## Conventions
 - Config from environment variables (`MAIAK_*`), validated at startup, fail fast. Never log secret values.
 - Logs: `slog` JSON with `request_id` and `tenant_id`. Metrics: Prometheus on the admin port (`:9090`), not routed externally.
-- Tests: unit tests for pure logic (TDD for the incident state machine), integration tests against real Postgres in CI (`TEST_DATABASE_URL`, skipped when unset), handler tests against the generated server, contract lint + `oasdiff`.
+- Tests: unit tests for pure logic (TDD for the incident state machine), integration tests against real Postgres in CI (`TEST_DATABASE_ADMIN_URL`, skipped when unset), handler tests against the generated server, contract lint + `oasdiff`.
 - Work in small vertical slices, each one deployable to the cluster. No local dev environment is assumed: CI is the safety net.
 - Code comments: only the non-obvious why. Documentation and code are written in English.
 

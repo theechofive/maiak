@@ -16,15 +16,15 @@
 |---|---|
 | `GET /health` | public liveness with version |
 | `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` | session auth; login and `me` return the CSRF token |
-| `GET /monitors` | list with current status, uptime 24h, last response time, last check; plus summary counts (up, down, paused) |
+| `GET /monitors` | list with current status, `statusSince`, `lastErrorKind`, `lastCheckedAt`, uptime 24h, last response time; plus summary counts (up, down, paused, unknown) |
 | `POST /monitors` | create |
-| `GET /monitors/{id}` | one monitor with current status, TLS expiry, ongoing incident |
+| `GET /monitors/{id}` | one monitor with status, `statusSince`, `lastErrorKind`, `lastCheckedAt`, TLS expiry, ongoing incident and `uptime` for 24h, 7d and 30d |
 | `PATCH /monitors/{id}` | edit |
 | `DELETE /monitors/{id}` | soft delete |
 | `POST /monitors/{id}/pause`, `POST /monitors/{id}/resume` | pause and resume |
-| `GET /monitors/{id}/stats?range=24h\|7d\|30d` | uptime %, average and p95 response time, latency series (buckets) |
+| `GET /monitors/{id}/stats?range=24h\|7d\|30d` | average and p95 response time and the latency series (buckets) for the range |
 | `GET /monitors/{id}/checks?limit=` | recent checks |
 | `GET /monitors/{id}/incidents` | incidents of the monitor |
 | `GET /settings/slack`, `PUT /settings/slack`, `POST /settings/slack/test` | Slack webhook configuration (write-only secret) and test message |
 
-Monitor fields: `name`, `url` (https), `intervalSeconds` (60 only in the MVP), `timeoutSeconds` (10 only), `expectedStatus` (`2xx` or an exact code), `failureThreshold` (1-3, default 2), `notifySlack` (bool), `paused`.
+Monitor fields: `name`, `url` (https), `intervalSeconds` (60 only in the MVP), `timeoutSeconds` (10 only), the URL must use `https` and port 443, `expectedStatus` (`2xx` or an exact code), `status` is read-only (`unknown`, `up`, `down`) and `paused` is a boolean, `failureThreshold` (1-3, default 2), `notifySlack` (bool), `paused`.
