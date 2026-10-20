@@ -32,6 +32,12 @@ Maiak is a multi-tenant uptime-monitoring SaaS starter: external HTTPS checks, i
 - Secrets come from AWS Secrets Manager through ExternalSecret (`platform/maiak/...`). Never put secrets in Git, values files, logs or docs.
 - Internal hostname: `maiak.klr-ops.net` on the internal Envoy Gateway. `/api` goes to the api, `/` to the web.
 
+## Migrations (see ADR-0013, ADR-0014, `docs/runbooks/migrations.md`)
+- goose, SQL in `backend/migrations`, embedded in `/app/migrate`, run by an ArgoCD hook Job as `maiak_owner`. Forward-only (no `Down`), UTC timestamp file names `YYYYMMDDHHMMSS_name.sql`.
+- Expand/contract: a migration must work with the previous app version. Start every migration with `SET LOCAL lock_timeout = '5s';`. Big indexes: `CREATE INDEX CONCURRENTLY` in a `NO TRANSACTION` migration.
+- New tenant tables: `tenant_id`, `ENABLE` + `FORCE ROW LEVEL SECURITY`, policy on `app.tenant_id`, composite keys. CI has a schema-lint test that fails on a missing policy.
+- The database and roles are created by `maiakctl db bootstrap` (hook Job, flag `dbBootstrap.enabled`), never by migrations.
+
 ## Ledger protocol (mandatory)
 `docs/LEDGER.md` is the single register of deferred work, problems and risks.
 - Found a problem, took a shortcut, deferred something, or hit a limitation? Add an entry in the same PR with a stable ID (`L-nnn` for deferred/problem, `R-nnn` for risks), context and a revisit trigger.

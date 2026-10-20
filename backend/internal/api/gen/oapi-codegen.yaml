@@ -1,0 +1,6 @@
+# oapi-codegen config. Run from the repository root via `make generate`.
+package: gen
+generate:
+  chi-server: true
+  models: true
+  embedded-spec: true

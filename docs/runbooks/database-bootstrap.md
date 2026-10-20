@@ -1,28 +1,19 @@
-# Runbook: bootstrap the Maiak database in RDS
+# Runbook: database bootstrap
 
-Creates database `maiak` and roles `maiak_owner`, `maiak_api`, `maiak_worker` inside the existing RDS instance `grafana` (account of `klr-platform`, region `eu-central-1`; ADR-0010, risk R-001). Run once, by a human or an agent acting with the human's approval.
+Decision and rationale: [ADR-0014](../adr/0014-db-bootstrap-automation.md). The database `maiak` and the roles `maiak_owner`, `maiak_api`, `maiak_worker` are created automatically by the hook Job `maiak-db-bootstrap` before the migration Job. This page covers enabling it, verifying it and the manual fallback.
 
-Safety rules: explicit `--context` for kubectl and `--profile klr-platform` for AWS CLI, never the default context. Passwords never appear in command arguments, pod specs, files in Git, logs or chat. They are streamed over stdin.
+## First deployment on klr-platform
+1. In `deploy/helm/maiak/values-platform.yaml` the flag `dbBootstrap.enabled` is `true` (host: the RDS endpoint of `grafana`). Prerequisite secrets in AWS Secrets Manager (account of `klr-platform`): `platform/maiak/crypto` (`keys`, `active_key_id`) and `platform/maiak/admin` (`email`, `password_hash` from `maiakctl hashpw`). `platform/grafana/db` already exists.
+2. Sync the ArgoCD Application. Order: admin ExternalSecret and RBAC (wave -4), bootstrap Job (-3), other ExternalSecrets (-2), migrate Job (-1), workloads (0).
+3. Verify: `kubectl --context <klr-platform context> -n maiak logs job/maiak-db-bootstrap` shows the role attributes summary (no secrets): three `maiak_*` roles with `rolsuper=f`, `rolbypassrls=f`, database `maiak` owned by `maiak_owner`. Confirm the Secret `maiak-db` exists (keys only, never print values) and that the temporary Secret `maiak-db-admin` was removed after the Job.
+4. Set `dbBootstrap.enabled: false` in `values-platform.yaml` and commit. The admin login then no longer appears in the namespace (risk R-009).
 
-## 1. Find the master credentials (read-only)
-`aws rds describe-db-instances --profile klr-platform --region eu-central-1 --db-instance-identifier grafana` shows endpoint, master username and whether the master secret is RDS-managed (`MasterUserSecret`). Fetch the password from Secrets Manager into a shell variable only; never echo it.
+## When to enable it again
+A new database or environment, a dedicated RDS (L-009), or regenerating role passwords (delete the Secret `maiak-db`, enable the flag, sync; the Job regenerates and runs `ALTER ROLE`; restart the workloads to pick up the new Secret).
 
-## 2. Generate three random passwords (32+ chars, URL-safe) locally
-Keep them in shell variables for this session only.
-
-## 3. Start a throw-away psql pod
-Namespace `maiak-bootstrap`, image `postgres:15-alpine` (multi-arch, arm64 works), no ServiceAccount token, resource limits small, `sleep` as the command. The pod must be in a namespace/VPC path that can reach the RDS endpoint (the cluster nodes are in the same VPC). Delete the pod and the namespace at the end (step 6).
-
-## 4. Run the script
-Stream, via `kubectl exec -i`, a stdin made of: `\set owner_pw '...'`, `\set api_pw '...'`, `\set worker_pw '...'`, then the contents of `deploy/db/bootstrap.sql`. The master password is provided to `psql` through a `PGPASSFILE` streamed to the pod the same way. Connect to database `postgres` with `sslmode=require`.
-
-## 5. Verify
-The script prints the role attributes and the database owner. Expect: three `maiak_*` roles, `rolsuper=f`, `rolbypassrls=f`, database `maiak` owned by `maiak_owner`. Then log in once as each role (`SELECT current_user`) and confirm that `maiak_api` cannot create tables.
-
-## 6. Store credentials, clean up
-Create the secret `platform/maiak/db` in AWS Secrets Manager (profile `klr-platform`) as JSON with `api_url`, `worker_url`, `owner_url` (`postgres://<role>:<password>@<endpoint>:5432/maiak?sslmode=require`). Create `platform/maiak/crypto` (`keys` = JSON `{"k1":"<base64 32 random bytes>"}`, `active_key_id` = `k1`). The admin secret `platform/maiak/admin` (`email`, `password_hash`) is created by the owner: generate the hash with `maiakctl hashpw`. Delete the pod and namespace `maiak-bootstrap`. Unset the shell variables.
+## Manual fallback
+Run the same command by hand against an instance you can reach, with the same environment variables the Job uses (`MAIAK_BOOTSTRAP_HOST`, `MAIAK_BOOTSTRAP_PORT`, `MAIAK_BOOTSTRAP_ADMIN_USER`, `MAIAK_BOOTSTRAP_ADMIN_PASSWORD`, `MAIAK_BOOTSTRAP_DB_NAME`, `MAIAK_BOOTSTRAP_SSLMODE`, `MAIAK_BOOTSTRAP_SECRET_NAME`, `MAIAK_BOOTSTRAP_NAMESPACE`) from a pod or machine with access to the Kubernetes API for the Secret. Passwords must never be passed as command arguments or committed.
 
 ## Notes
-- `sslmode=require` does not verify the server certificate. Switching to `verify-full` with the RDS CA bundle is tracked in L-018.
-- The Maiak roles can technically connect to other databases on the instance because `PUBLIC` has `CONNECT` by default, but they own and are granted nothing there. Do not change other tools' databases from this runbook.
-- Rotation: change a role password with `ALTER ROLE ... PASSWORD`, update the secret; ExternalSecret has `refreshInterval: 0`, so recreate the Secret and restart the workloads.
+- `sslmode=require` does not verify the server certificate; switching to `verify-full` with the RDS CA bundle is tracked in L-018.
+- Maiak roles can connect to other databases of the instance (default `PUBLIC` connect) but own and are granted nothing there.

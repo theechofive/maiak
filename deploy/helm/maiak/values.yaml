@@ -23,7 +23,7 @@ config:
   cookieSecure: true       # MAIAK_COOKIE_SECURE (api only)
   trustedProxyHops: 1      # MAIAK_TRUSTED_PROXY_HOPS (api only); 1 = Envoy Gateway
 
-# Secrets are materialised by External Secrets Operator from AWS Secrets Manager.
+# Secrets are materialised by External Secrets Operator from AWS Secrets Manager (wave -2).
 externalSecrets:
   enabled: true
   apiVersion: external-secrets.io/v1
@@ -32,9 +32,9 @@ externalSecrets:
     name: aws-secrets
   refreshInterval: "0"
   creationPolicy: Owner
-  db:
-    # JSON secret with properties: api_url, worker_url, owner_url
-    remoteKey: platform/maiak/db
+  # No `db` entry: the Secret `maiak-db` (api_url, worker_url, owner_url, owner_password,
+  # api_password, worker_password) is created at runtime by the dbBootstrap Job and is not
+  # managed by ArgoCD/Helm (ADR-0014). With dbBootstrap.enabled=false it must already exist.
   admin:
     # JSON secret with properties: email, password_hash
     remoteKey: platform/maiak/admin
@@ -130,14 +130,42 @@ web:
     limits: {cpu: 200m, memory: 128Mi}
   env: []
 
+# Automatic database bootstrap (ADR-0014): ArgoCD Sync hook Job running `/app/maiakctl db bootstrap`
+# BEFORE the migration Job. Creates database + roles (idempotent) and the Secret `secretName`
+# (api_url, worker_url, owner_url, owner_password, api_password, worker_password).
+# SECURITY TRADE-OFF (risk R-009): while enabled, the Job holds the RDS master login, which is
+# Grafana's own login on the shared instance (R-001). Set `enabled: false` after the first
+# successful deploy (the Secret persists), or move to a dedicated RDS (L-009).
+dbBootstrap:
+  enabled: false
+  host: ""                 # RDS endpoint, required when enabled (no default)
+  port: 5432
+  dbName: maiak
+  sslmode: require
+  # Created by the Job, NOT managed by Helm/ArgoCD. Workloads and the migrate Job read it.
+  secretName: maiak-db
+  # Master login read via ExternalSecret `<secretName>-admin` (hook, deleted after success).
+  adminSecret:
+    remoteKey: platform/grafana/db
+    properties:
+      username: username
+      password: password
+  command: ["/app/maiakctl", "db", "bootstrap"]
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 600
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 200m, memory: 128Mi}
+
 # Database migration (ArgoCD hook running /app/migrate).
 migration:
-  # PreSync | Sync.
-  # NOTE: with PreSync, the migrate ServiceAccount is also a PreSync hook, but the ExternalSecret
-  # (Secret maiak-db) is a regular resource and does NOT exist yet on the very first sync.
-  # For the first deploy either sync the ExternalSecrets first (selective sync) or set `Sync`
-  # (runs in wave 1, after the ExternalSecrets in wave -1).
-  hookPhase: PreSync
+  # Sync (default) | PreSync.
+  # Sync: ordering by waves: -4 admin ExternalSecret + bootstrap RBAC, -3 bootstrap Job,
+  # -2 other ExternalSecrets + migrate ServiceAccount, -1 migrate Job, 0 workloads; so the very
+  # first sync works. PreSync would run the Job before the ExternalSecrets exist on a first sync
+  # and before the bootstrap Job (rejected at render time when dbBootstrap.enabled=true).
+  hookPhase: Sync
   command: ["/app/migrate"]
   # Key in Secret <fullname>-db used for MAIAK_MIGRATE_DATABASE_URL.
   databaseUrlKey: owner_url

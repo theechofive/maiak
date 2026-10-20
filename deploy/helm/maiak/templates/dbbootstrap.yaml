@@ -1,0 +1,167 @@
+{{- if .Values.dbBootstrap.enabled }}
+{{- /* Automatic DB bootstrap (ADR-0014). Waves: -4 admin ExternalSecret + RBAC, -3 Job. */}}
+{{- $b := .Values.dbBootstrap }}
+{{- $es := .Values.externalSecrets }}
+{{- $name := include "maiak.componentName" (dict "ctx" . "component" "db-bootstrap") }}
+{{- $sel := dict "ctx" . "component" "db-bootstrap" }}
+{{- $adminSecret := include "maiak.secret.dbAdmin" . }}
+{{- $dbSecret := include "maiak.secret.db" . }}
+---
+# RDS master login (Grafana's own login on the shared instance, risk R-009). Deleted with the
+# ExternalSecret (creationPolicy Owner) as soon as the hook phase succeeded.
+apiVersion: {{ $es.apiVersion }}
+kind: ExternalSecret
+metadata:
+  name: {{ $adminSecret }}
+  labels:
+    {{- include "maiak.labels" $sel | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded
+    argocd.argoproj.io/sync-wave: "-4"
+spec:
+  refreshInterval: {{ $es.refreshInterval | quote }}
+  secretStoreRef:
+    kind: {{ $es.secretStoreRef.kind }}
+    name: {{ $es.secretStoreRef.name }}
+  target:
+    name: {{ $adminSecret }}
+    creationPolicy: Owner
+  data:
+    {{- range $p := list "username" "password" }}
+    - secretKey: {{ $p }}
+      remoteRef:
+        key: {{ $b.adminSecret.remoteKey }}
+        property: {{ index $b.adminSecret.properties $p }}
+    {{- end }}
+---
+# The only ServiceAccount in the chart that mounts an API token: the Job must create the
+# `{{ $dbSecret }}` Secret through the Kubernetes API.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "maiak.labels" $sel | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-4"
+    {{- with .Values.serviceAccount.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "maiak.labels" $sel | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-4"
+rules:
+  # `create` cannot be restricted by resourceNames (the name is unknown to the authorizer on create).
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ $dbSecret | quote }}]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "maiak.labels" $sel | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-4"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "maiak.labels" $sel | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  backoffLimit: {{ $b.backoffLimit }}
+  activeDeadlineSeconds: {{ $b.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ $b.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "maiak.labels" $sel | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: true
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: db-bootstrap
+          image: {{ include "maiak.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            {{- toYaml $b.command | nindent 12 }}
+          env:
+            - name: MAIAK_ENV
+              value: {{ .Values.config.env | quote }}
+            - name: MAIAK_LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: MAIAK_BOOTSTRAP_HOST
+              value: {{ required "dbBootstrap.host is required when dbBootstrap.enabled=true" $b.host | quote }}
+            - name: MAIAK_BOOTSTRAP_PORT
+              value: {{ $b.port | quote }}
+            - name: MAIAK_BOOTSTRAP_DB_NAME
+              value: {{ $b.dbName | quote }}
+            - name: MAIAK_BOOTSTRAP_SSLMODE
+              value: {{ $b.sslmode | quote }}
+            - name: MAIAK_BOOTSTRAP_SECRET_NAME
+              value: {{ $dbSecret | quote }}
+            - name: MAIAK_BOOTSTRAP_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $adminSecret }}
+                  key: username
+            - name: MAIAK_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $adminSecret }}
+                  key: password
+          resources:
+            {{- toYaml $b.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+      {{- include "maiak.scheduling" $sel | nindent 6 }}
+{{- end }}

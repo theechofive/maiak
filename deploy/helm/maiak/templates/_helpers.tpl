@@ -52,7 +52,9 @@ app.kubernetes.io/managed-by: {{ .ctx.Release.Service }}
 {{- end }}
 
 {{/* Secret names. Arg: root context */}}
-{{- define "maiak.secret.db" -}}{{ include "maiak.fullname" . }}-db{{- end }}
+{{/* Not managed by Helm/ArgoCD: created at runtime by the bootstrap Job (dbBootstrap.secretName). */}}
+{{- define "maiak.secret.db" -}}{{ default (printf "%s-db" (include "maiak.fullname" .)) .Values.dbBootstrap.secretName }}{{- end }}
+{{- define "maiak.secret.dbAdmin" -}}{{ include "maiak.secret.db" . }}-admin{{- end }}
 {{- define "maiak.secret.admin" -}}{{ include "maiak.fullname" . }}-admin{{- end }}
 {{- define "maiak.secret.crypto" -}}{{ include "maiak.fullname" . }}-crypto{{- end }}
 

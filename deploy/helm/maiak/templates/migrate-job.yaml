@@ -1,3 +1,6 @@
+{{- if and .Values.dbBootstrap.enabled (eq .Values.migration.hookPhase "PreSync") }}
+{{- fail "migration.hookPhase=PreSync would run the migrate Job before the dbBootstrap Job (Sync hook); use Sync or disable dbBootstrap" }}
+{{- end }}
 {{- $name := include "maiak.componentName" (dict "ctx" . "component" "migrate") }}
 {{- $sel := dict "ctx" . "component" "migrate" }}
 apiVersion: batch/v1
@@ -10,7 +13,7 @@ metadata:
     argocd.argoproj.io/hook: {{ .Values.migration.hookPhase }}
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
     {{- if ne .Values.migration.hookPhase "PreSync" }}
-    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-wave: "-1"
     {{- end }}
 spec:
   backoffLimit: {{ .Values.migration.backoffLimit }}

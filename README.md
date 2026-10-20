@@ -14,7 +14,8 @@ Status: early development (walking skeleton). See `docs/LEDGER.md` for what is d
 | `docs/` | Architecture, ADRs, ledger |
 
 ## Read first
-1. `docs/architecture/overview.md`
-2. `docs/adr/`
-3. `docs/LEDGER.md`
-4. `CLAUDE.md` (conventions, also for AI agents)
+1. `docs/PROJECT.md` (goal, MVP scope, decisions, plan, ownership)
+2. `docs/architecture/overview.md`
+3. `docs/adr/`
+4. `docs/LEDGER.md`
+5. `CLAUDE.md` (conventions, also for AI agents)

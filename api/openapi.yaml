@@ -1,0 +1,258 @@
+openapi: 3.0.3
+info:
+  title: Maiak API
+  version: 0.1.0
+  description: |
+    REST API of Maiak, the multi-tenant uptime-monitoring service. This file is the source of
+    truth: the Go server and the TypeScript client are generated from it (ADR-0008).
+
+    Authentication is a server-side session in the HttpOnly cookie `maiak_session`. Unsafe
+    methods (POST, PUT, PATCH, DELETE) on authenticated endpoints also need the header
+    `X-CSRF-Token` with the `csrf_token` returned by login and `GET /api/v1/auth/me`.
+    Errors are `application/problem+json` (RFC 9457).
+  contact:
+    name: Maiak maintainers
+    url: https://github.com/theechofive/maiak
+servers:
+  - url: https://maiak.klr-ops.net
+    description: Internal deployment on klr-platform (same origin as the web app)
+tags:
+  - name: system
+    description: Service metadata
+  - name: auth
+    description: Login, logout and the current session
+security:
+  - cookieAuth: []
+paths:
+  /api/v1/health:
+    get:
+      operationId: getHealth
+      summary: Service health and build info
+      description: Public liveness information for humans and simple checks. Does not touch the database.
+      tags: [system]
+      security: []
+      responses:
+        "200":
+          description: The api process is running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/login:
+    post:
+      operationId: login
+      summary: Log in with email and password
+      description: |
+        Creates a session and sets the `maiak_session` cookie. Failures always return the same
+        generic error. Attempts are rate limited per client IP and per email.
+      tags: [auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Logged in
+          headers:
+            Set-Cookie:
+              description: The session cookie (`maiak_session`, HttpOnly, SameSite=Lax)
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionInfo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/logout:
+    post:
+      operationId: logout
+      summary: Log out
+      description: Deletes the current session and clears the cookie.
+      tags: [auth]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      responses:
+        "204":
+          description: Logged out
+          headers:
+            Set-Cookie:
+              description: Expires the session cookie
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/me:
+    get:
+      operationId: getMe
+      summary: Current user and session
+      description: Returns the logged-in user, the tenant of the session and the CSRF token.
+      tags: [auth]
+      responses:
+        "200":
+          description: The current session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionInfo"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: maiak_session
+    csrfToken:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+  responses:
+    BadRequest:
+      description: The request does not match the contract
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Unauthorized:
+      description: Not logged in, or the credentials are invalid
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Forbidden:
+      description: Missing or invalid CSRF token, or not allowed
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    TooManyRequests:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          description: Seconds until a new attempt may succeed
+          schema:
+            type: integer
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Error:
+      description: Unexpected error
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status, version, commit]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        version:
+          type: string
+          example: 1a2b3c4
+        commit:
+          type: string
+          example: 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          minLength: 3
+          maxLength: 320
+          example: admin@example.com
+        password:
+          type: string
+          format: password
+          minLength: 1
+          maxLength: 1024
+    SessionInfo:
+      type: object
+      additionalProperties: false
+      required: [user, tenant, role, csrf_token, expires_at]
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        tenant:
+          $ref: "#/components/schemas/Tenant"
+        role:
+          $ref: "#/components/schemas/MembershipRole"
+        csrf_token:
+          type: string
+          description: Send as `X-CSRF-Token` on unsafe requests
+        expires_at:
+          type: string
+          format: date-time
+    User:
+      type: object
+      additionalProperties: false
+      required: [id, email, display_name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        display_name:
+          type: string
+    Tenant:
+      type: object
+      additionalProperties: false
+      required: [id, slug, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+        name:
+          type: string
+    MembershipRole:
+      type: string
+      enum: [owner, admin, member, viewer]
+    Problem:
+      type: object
+      description: RFC 9457 problem details
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          description: URI reference identifying the problem type
+          example: urn:maiak:problem:unauthenticated
+        title:
+          type: string
+        status:
+          type: integer
+          minimum: 100
+          maximum: 599
+        detail:
+          type: string
+        instance:
+          type: string
+        request_id:
+          type: string

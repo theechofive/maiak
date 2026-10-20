@@ -31,6 +31,8 @@ Created 2026-10-20 from the design session.
 | L-016 | deferred | open | Metadata and docs language | Docs and code are written in English by assumption (not discussed). Reverse the decision if the team wants Ukrainian | Before the first external contributor |
 | L-017 | deferred | open | Network egress cost control | Default is to not read response bodies (cap 64 KB only with keyword checks). NAT cost at scale needs a re-estimate | During the load test (L-010) |
 | L-018 | deferred | open | RDS TLS verification | DB URLs use `sslmode=require` (encrypted, server not verified). Move to `verify-full` with the RDS CA bundle in the image | Before production clients |
+| L-019 | deferred | open | Pin CI actions and tools | GitHub Actions use major tags with `# TODO pin to SHA`; `oasdiff`, `golangci-lint` and spectral versions are unpinned. Dependabot is configured | Before the first CI run on `main` or before the repo becomes public |
+| L-020 | deferred | open | Database role of `jobs` and partition DDL | Chart gives `jobs` the `worker_url` (least privilege). Creating partitions needs owner privileges, so use a `SECURITY DEFINER` function `ensure_partitions()` owned by `maiak_owner` (search_path pinned) rather than giving `jobs` the owner role | Slice 3 (results and partitions) |
 | R-001 | risk | open | Shared RDS `grafana` | One `db.t4g.small`, one AZ, shared with Grafana. A failure or maintenance window hits both, and Maiak is supposed to alert about outages | Same as L-009 |
 | R-002 | risk | open | NetworkPolicy is not enforced | VPC CNI network-policy agent is disabled in `klr-dev` and `klr-platform`. SSRF defence rests only on application code. Chart ships policies disabled | Permanent; revisit if the cluster enables enforcement |
 | R-003 | risk | open | `klr-platform` memory is tight | Memory requests are at 71-81% of allocatable. Chart requests are intentionally small | Whenever replicas or limits grow |
@@ -38,9 +40,12 @@ Created 2026-10-20 from the design session.
 | R-005 | risk | open | No public ingress in `klr-platform` | Only the internal Envoy Gateway exists. Remote probes and client agents will need a public entry for one path prefix | Before L-005 / L-006 |
 | R-006 | risk | open | Default kubectl context is a production cluster | The developer's current context is `klr-prod`. Always pass an explicit `--context` | Permanent |
 | R-007 | risk | open | Worker with `hostNetwork` would reach IMDS | Node IMDS is v2 with hop limit 1, which protects only non-hostNetwork pods. The chart must never set `hostNetwork` on the worker | Permanent |
+| L-022 | deferred | open | Verify bootstrap hook behaviour at the first real sync | Unverified assumptions: ArgoCD deletes the `maiak-db-admin` ExternalSecret and its Secret after the Job succeeds (`HookSucceeded`); the bootstrap RBAC is sufficient; External Secrets resolves `platform/grafana/db`. Consider a PostSync check that `maiak-db` exists with all keys | At the first deploy (slice 1) |
+| R-009 | risk | open | RDS admin login is reachable by the bootstrap Job | While `dbBootstrap.enabled` is true, the Job holds the `grafana` RDS master login (Grafana's own). Anyone able to change this chart or its image (built from a personal GitHub repository) can use it; on PostgreSQL 15 there is no least-privilege alternative. Disable after the first success; use a dedicated RDS (L-009) | At the first successful deploy (switch the flag off), and whenever the flag is enabled again |
+| R-008 | risk | open | Release workflow pushes the image-tag bump straight to `main` | `release.yml` commits `values-platform.yaml` as github-actions[bot]. Branch protection on `main` would block it; it needs a bypass for the bot or a PR-based flow | When enabling branch protection |
 
 ## Done
 
 | ID | Title | Closed by |
 |---|---|---|
-| | | |
+| L-021 | First ArgoCD sync: PreSync migration hook ran before the ExternalSecret existed, and in Sync mode the Job (wave 1) would start after workloads (wave 0) | Chart: ExternalSecret and migrate ServiceAccount wave -2, migrate Job `Sync` hook wave -1, workloads wave 0; `migration.hookPhase` defaults to `Sync` (2026-10-20) |

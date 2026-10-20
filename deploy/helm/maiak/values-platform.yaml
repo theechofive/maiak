@@ -15,3 +15,10 @@ httpRoute:
 
 web:
   enabled: false
+
+# First deploy: creates database/roles and the `maiak-db` Secret (ADR-0014).
+# OWNER: set `enabled: false` after the first successful sync (the Secret persists), because while
+# enabled the Job holds the RDS master login, which is Grafana's own login (risk R-009, L-009).
+dbBootstrap:
+  enabled: true
+  host: grafana.czqsaiesae4n.eu-central-1.rds.amazonaws.com

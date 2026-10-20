@@ -9,8 +9,8 @@ Maiak is a **modular monolith deployed as several processes** from one Go module
 | `api` | REST for the web app (auth, monitors, channels, history, incidents, dashboard queries). Later also the probe endpoints (`claim`, `results`) | stateless, replicas by load |
 | `worker` | Claims due checks, runs HTTPS probes, hands results to the results/incidents modules. Home location, talks to the DB directly | replicas |
 | `jobs` | Housekeeping: partition creation, hourly rollups, retention, **notification delivery from the outbox** | 1+ replicas; singleton tasks under a Postgres advisory lock |
-| `migrate` | Applies migrations as the owner role (ArgoCD PreSync hook) | one-shot Job |
-| `maiakctl` | Admin CLI (for example `hashpw`) | local |
+| `migrate` | Applies migrations as the owner role (ArgoCD Sync hook, wave -1, ADR-0013) | one-shot Job |
+| `maiakctl` | Admin CLI: `hashpw`, `db bootstrap` (also runs as the hook Job `maiak-db-bootstrap`, wave -3, ADR-0014) | local / one-shot Job |
 | `web` | Static React SPA served by nginx | 1-2 replicas |
 | Postgres | Only datastore (database `maiak` in RDS) | external |
 
