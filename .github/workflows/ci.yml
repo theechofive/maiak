@@ -158,7 +158,7 @@ jobs:
           cache-dependency-path: backend/go.sum
       # Deviation from `make lint`: the action installs golangci-lint (with its cache) and runs it
       # in backend/. Keep flags in sync with the Makefile `lint` target.
-      - uses: golangci/golangci-lint-action@v8 # TODO(L-019) pin to SHA
+      - uses: golangci/golangci-lint-action@v9 # TODO(L-019) pin to SHA
         with:
           version: v2.15.0
           working-directory: backend
