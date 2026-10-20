@@ -26,3 +26,6 @@ web/.vite/
 !.env.example
 *.pem
 *.key
+
+# Test reports
+web/.vitest/
