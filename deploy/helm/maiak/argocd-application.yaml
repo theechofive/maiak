@@ -1,0 +1,44 @@
+# ArgoCD Application for Maiak on klr-platform. Paste it into the platform infra repository
+# (devops-charts-infra, next to the other Applications) or apply it to the cluster by your usual process.
+# It is NOT part of the Helm chart (see .helmignore).
+#
+# Before the first sync, see docs/runbooks/first-deploy.md:
+#   - ArgoCD needs a READ-ONLY credential for this private repository (deploy key registered as a repository Secret
+#     in the argo-cd namespace); without it the Application shows "authentication required".
+#   - Secrets platform/maiak/admin and platform/maiak/crypto must exist in AWS Secrets Manager.
+#   - The ghcr pull-secret decision (ledger L-002) must be made, or the images must be public.
+#   - The Cloudflare CNAME for maiak.klr-ops.net must point to the internal NLB.
+# After the first successful sync set dbBootstrap.enabled: false in values-platform.yaml (risk R-009).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: maiak
+  namespace: argo-cd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:theechofive/maiak.git
+    targetRevision: main
+    path: deploy/helm/maiak
+    helm:
+      releaseName: maiak
+      valueFiles:
+        - values-platform.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: maiak
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 10m

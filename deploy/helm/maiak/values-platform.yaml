@@ -1,4 +1,5 @@
 # Overrides for the klr-platform cluster (EKS arm64, ArgoCD, Envoy Gateway internal).
+# The ArgoCD Application that uses this file is argocd-application.yaml next to it.
 
 image:
   # CI-MANAGED: rewritten by .github/workflows/release.yml on every backend image build.

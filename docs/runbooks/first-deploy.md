@@ -94,35 +94,7 @@ In Cloudflare add `CNAME maiak.klr-ops.net -> <that hostname>`, **DNS only** (gr
 
 Add this manifest to the infra repository in the folder ArgoCD watches for Applications. Adjust `project` to the project your other Applications use and `destination.server` if ArgoCD manages `klr-platform` from another cluster. The Application name must stay `maiak`: the chart derives all resource names (`maiak-api`, `maiak-db-bootstrap`, ...) from the release name, which `releaseName` pins.
 
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: maiak
-  namespace: argocd
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
-spec:
-  project: default                       # use the project of the other platform Applications
-  source:
-    repoURL: git@github.com:theechofive/maiak.git
-    targetRevision: main
-    path: deploy/helm/maiak
-    helm:
-      releaseName: maiak
-      valueFiles:
-        - values-platform.yaml
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: maiak
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
-      - ServerSideApply=true
-```
+The ready-to-paste manifest is [`deploy/helm/maiak/argocd-application.yaml`](../../deploy/helm/maiak/argocd-application.yaml) (namespace `argo-cd`, project `default` like the other platform Applications, automated sync with `CreateNamespace` and `ServerSideApply`, limited retry). Copy it as is into `devops-charts-infra`.
 
 Notes:
 - **Repository credential.** The repository is private, so ArgoCD needs a read-only credential for `git@github.com:theechofive/maiak.git`: a GitHub deploy key (read-only) registered as an ArgoCD repository Secret (label `argocd.argoproj.io/secret-type: repository`, fields `type: git`, `url`, `sshPrivateKey`) in the `argocd` namespace, managed the way the infra repository manages its other credentials (ExternalSecret preferred). Without it the Application shows `ComparisonError: authentication required` and nothing is created. The key never goes into this repository.
