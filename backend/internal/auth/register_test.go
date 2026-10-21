@@ -82,28 +82,18 @@ func TestValidateRegistration(t *testing.T) {
 }
 
 func TestTenantSlugAndName(t *testing.T) {
-	slugRE := regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
-	for email, prefix := range map[string]string{
-		"john.smith+tag@example.com":         "john-smith-tag-",
-		"___@example.com":                    "workspace-",
-		"a@example.com":                      "a-",
-		strings.Repeat("x", 80) + "@ex.com":  strings.Repeat("x", 40) + "-",
-		"-.-lead-.-trail-.-@example.com":     "lead-trail-",
-		"default@example.com":                "default-",
-		strings.Repeat("ab.", 30) + "@x.com": "ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-a-",
-	} {
-		slug, err := tenantSlug(email)
+	// Random only: "t-" and 10 base32 characters, never "default", never a part of the email.
+	slugRE := regexp.MustCompile(`^t-[a-z2-7]{10}$`)
+	seen := map[string]bool{}
+	for range 1000 {
+		slug, err := tenantSlug()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.HasPrefix(slug, prefix) || len(slug) != len(prefix)+slugSuffixLen || !slugRE.MatchString(slug) {
-			t.Errorf("%q: slug %q, want %q + %d random characters", email, slug, prefix, slugSuffixLen)
+		if !slugRE.MatchString(slug) || slug == "default" || seen[slug] {
+			t.Fatalf("slug %q: want a fresh match of %s", slug, slugRE)
 		}
-	}
-	a, _ := tenantSlug("same@example.com")
-	b, _ := tenantSlug("same@example.com")
-	if a == b {
-		t.Fatalf("two slugs for one email are equal: %q", a)
+		seen[slug] = true
 	}
 	if got := tenantName("owner@example.com"); got != "example.com" {
 		t.Fatalf("name = %q", got)

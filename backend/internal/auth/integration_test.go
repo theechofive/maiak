@@ -351,3 +351,108 @@ func TestIntegrationRegisteredLoginBindsToOwnTenant(t *testing.T) {
 		t.Fatal("admin login")
 	}
 }
+
+// A stranger who registered the email that the operator later configures as MAIAK_ADMIN_LOGIN is
+// not adopted: BootstrapAdmin fails and writes nothing (P-07, ADR-0095).
+func TestIntegrationBootstrapRefusesRegisteredStranger(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("auth_adopt_refused"))
+	ctx := context.Background()
+	admin := env.AdminConn(t)
+	hash, _ := crypto.HashPassword("pw", cheap)
+	svc := newBootstrapped(t, env, "admin", hash)
+	adminToken := mustLogin(t, svc, "admin", "pw")
+	const strangerPassword = "stranger's own password"
+	reg, err := svc.Register(ctx, auth.RegisterInput{Email: "ops@company.com", Password: strangerPassword, IP: testIP})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := func() string {
+		t.Helper()
+		var s string
+		if err := admin.QueryRow(ctx, `SELECT concat_ws('|',
+			(SELECT string_agg(email || ':' || status || ':' || coalesce(password_hash, ''), ',' ORDER BY email) FROM users),
+			(SELECT string_agg(tenant_id || ':' || user_id || ':' || role, ',' ORDER BY tenant_id, user_id) FROM memberships),
+			(SELECT string_agg(id::text, ',' ORDER BY id) FROM sessions),
+			(SELECT count(*) FROM audit_log))`).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	before := snapshot()
+	other, err := auth.NewService(env.Pool(t, env.APIURL, 2), auth.Options{SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, configured := range []string{"ops@company.com", " OPS@Company.com "} {
+		if err := other.BootstrapAdmin(ctx, configured, hash); !errors.Is(err, auth.ErrAdminLoginInUse) {
+			t.Fatalf("bootstrap with %q: err = %v, want ErrAdminLoginInUse", configured, err)
+		}
+	}
+	if after := snapshot(); after != before {
+		t.Fatalf("refused bootstrap changed data:\nbefore %s\nafter  %s", before, after)
+	}
+	// Both sides keep working as before: the admin in default, the stranger in its own tenant.
+	if p, err := svc.Authenticate(ctx, adminToken); err != nil || p.TenantID == reg.Tenant.ID {
+		t.Fatalf("admin session: %+v %v", p, err)
+	}
+	res, err := login(t, svc, "ops@company.com", strangerPassword)
+	if err != nil || res.Tenant.ID != reg.Tenant.ID {
+		t.Fatalf("stranger login: tenant %v err %v", res.Tenant.ID, err)
+	}
+}
+
+// A user who is only a member of the default tenant may be adopted as the admin: it becomes the
+// owner, every one of its sessions is deleted, the previous admin is retired, and its login lands
+// in the default tenant even with an older membership elsewhere (which, once it exists, makes
+// the next bootstrap refuse to start).
+func TestIntegrationBootstrapAdoptsDefaultOnlyUser(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("auth_adopt_allowed"))
+	ctx := context.Background()
+	admin := env.AdminConn(t)
+	oldHash, _ := crypto.HashPassword("old", cheap)
+	opsHash, _ := crypto.HashPassword("ops first", cheap)
+	newHash, _ := crypto.HashPassword("ops second", cheap)
+	svc := newBootstrapped(t, env, "admin", oldHash)
+	oldAdminToken := mustLogin(t, svc, "admin", "old")
+	pgtest.MustExec(t, admin,
+		`INSERT INTO users (id, email, password_hash) VALUES ('01920000-0000-7000-8000-0000000000e1', 'ops@company.com', '`+opsHash+`')`,
+		`INSERT INTO memberships (tenant_id, user_id, role) SELECT id, '01920000-0000-7000-8000-0000000000e1', 'viewer' FROM tenants WHERE slug = 'default'`)
+	opsToken := mustLogin(t, svc, "ops@company.com", "ops first")
+
+	// Same hash as stored: the adoption alone must revoke the session.
+	svc = newBootstrapped(t, env, "ops@company.com", opsHash)
+	for name, token := range map[string]string{"adopted user": opsToken, "previous admin": oldAdminToken} {
+		if _, err := svc.Authenticate(ctx, token); !errors.Is(err, auth.ErrUnauthenticated) {
+			t.Fatalf("%s session: err = %v, want ErrUnauthenticated", name, err)
+		}
+	}
+	var role, oldStatus string
+	if err := admin.QueryRow(ctx, `SELECT (SELECT m.role FROM memberships m JOIN users u ON u.id = m.user_id WHERE u.email = 'ops@company.com'),
+		(SELECT status FROM users WHERE email = 'admin')`).Scan(&role, &oldStatus); err != nil {
+		t.Fatal(err)
+	}
+	if role != auth.RoleOwner || oldStatus != "disabled" {
+		t.Fatalf("role=%s previous admin=%s, want owner/disabled", role, oldStatus)
+	}
+	res, err := login(t, svc, "ops@company.com", "ops first")
+	if err != nil || res.Tenant.Slug != "default" {
+		t.Fatalf("adopted admin login: %+v %v", res.Tenant, err)
+	}
+
+	// An older membership elsewhere does not steer the admin's login away from default.
+	pgtest.MustExec(t, admin,
+		`INSERT INTO tenants (id, slug, name) VALUES ('01920000-0000-7000-8000-0000000000ef', 'elsewhere', 'Elsewhere')`,
+		`INSERT INTO memberships (tenant_id, user_id, role, created_at)
+		 VALUES ('01920000-0000-7000-8000-0000000000ef', '01920000-0000-7000-8000-0000000000e1', 'owner', now() - interval '1 year')`)
+	if res, err := login(t, svc, "ops@company.com", "ops first"); err != nil || res.Tenant.Slug != "default" {
+		t.Fatalf("login with an older membership: %+v %v", res.Tenant, err)
+	}
+	other, err := auth.NewService(env.Pool(t, env.APIURL, 2), auth.Options{SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := other.BootstrapAdmin(ctx, "ops@company.com", newHash); !errors.Is(err, auth.ErrAdminLoginInUse) {
+		t.Fatalf("bootstrap with a membership elsewhere: err = %v, want ErrAdminLoginInUse", err)
+	}
+}

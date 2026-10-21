@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/theechofive/maiak/backend/internal/platform/db"
 	"github.com/theechofive/maiak/backend/internal/platform/uuidv7"
 	"github.com/theechofive/maiak/backend/internal/tenants/tenantsdb"
 )
@@ -32,33 +31,46 @@ const StatusActive = "active"
 // ErrNotFound means no live tenant matches.
 var ErrNotFound = errors.New("tenants: not found")
 
-// Ensure returns the tenant with slug, creating it with name on planKey if it does not exist.
-// An existing tenant keeps its plan. Safe to run concurrently from several replicas.
-func Ensure(ctx context.Context, tx pgx.Tx, slug, name, planKey string) (Tenant, error) {
-	q := tenantsdb.New(tx)
-	if err := q.InsertTenantIfMissing(ctx, tenantsdb.InsertTenantIfMissingParams{ID: uuidv7.New(), Slug: slug, Name: name, PlanKey: planKey}); err != nil {
-		return Tenant{}, fmt.Errorf("tenants: insert %q: %w", slug, err)
+// Ensure returns the tenant with slug, creating it with name if it does not exist. The plan of a
+// new tenant is decided by the database (auth_create_tenant: internal for the default tenant,
+// free otherwise); an existing tenant keeps its plan. Safe to run concurrently from several
+// replicas.
+func Ensure(ctx context.Context, tx pgx.Tx, slug, name string) (Tenant, error) {
+	if _, err := insert(ctx, tx, uuidv7.New(), slug, name); err != nil {
+		return Tenant{}, err
 	}
-	row, err := q.GetTenantBySlug(ctx, slug)
+	row, err := tenantsdb.New(tx).GetTenantBySlug(ctx, slug)
 	if err != nil {
 		return Tenant{}, notFound(err, slug)
 	}
 	return Tenant(row), nil
 }
 
-// ErrSlugTaken means another tenant already has the slug; the transaction is aborted.
+// ErrSlugTaken means another tenant already has the slug; nothing was written.
 var ErrSlugTaken = errors.New("tenants: slug taken")
 
-// Create inserts a new tenant with id on planKey (registration, P-02).
-func Create(ctx context.Context, tx pgx.Tx, id uuid.UUID, slug, name, planKey string) (Tenant, error) {
-	row, err := tenantsdb.New(tx).InsertTenant(ctx, tenantsdb.InsertTenantParams{ID: id, Slug: slug, Name: name, PlanKey: planKey})
+// Create inserts a new tenant with id (registration, P-02). It is on the free plan unless the
+// slug is the default one (ADR-0095).
+func Create(ctx context.Context, tx pgx.Tx, id uuid.UUID, slug, name string) (Tenant, error) {
+	created, err := insert(ctx, tx, id, slug, name)
 	if err != nil {
-		if db.IsUniqueViolation(err, "tenants_slug_key") {
-			return Tenant{}, ErrSlugTaken
-		}
-		return Tenant{}, fmt.Errorf("tenants: create %q: %w", slug, err)
+		return Tenant{}, err
 	}
-	return Tenant(row), nil
+	if !created {
+		return Tenant{}, ErrSlugTaken
+	}
+	return Tenant{ID: id, Slug: slug, Name: name, Status: StatusActive}, nil
+}
+
+// insert creates a tenant through auth_create_tenant and reports whether it did (false when the
+// slug is taken). Hand-written like the other SECURITY DEFINER calls: the api role has no direct
+// way to choose a tenant's plan.
+func insert(ctx context.Context, tx pgx.Tx, id uuid.UUID, slug, name string) (bool, error) {
+	var got *uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT auth_create_tenant($1, $2, $3)`, id, slug, name).Scan(&got); err != nil {
+		return false, fmt.Errorf("tenants: create %q: %w", slug, err)
+	}
+	return got != nil, nil
 }
 
 // Get returns a live tenant by id.

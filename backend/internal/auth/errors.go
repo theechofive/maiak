@@ -16,6 +16,10 @@ var (
 	ErrCSRF = errors.New("auth: invalid csrf token")
 	// ErrRateLimited means too many failed attempts; see RateLimitedError for the delay.
 	ErrRateLimited = errors.New("auth: too many attempts")
+	// ErrAdminLoginInUse stops BootstrapAdmin when the configured login belongs to a user with a
+	// membership outside the default tenant, for example someone who registered that email.
+	ErrAdminLoginInUse = errors.New("auth: MAIAK_ADMIN_LOGIN belongs to a user of another tenant; " +
+		"refusing to make it the admin (choose another login or remove that user's other memberships)")
 )
 
 // RateLimitedError carries the time until the next attempt may be accepted.

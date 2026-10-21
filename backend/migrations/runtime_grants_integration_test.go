@@ -12,7 +12,7 @@ import (
 )
 
 // TestIntegrationAPIRuntimeGrants checks ADR-0018: maiak_api has no UPDATE on the schedule and
-// only column grants on monitor_state; it resets a schedule through reset_monitor_runtime,
+// only column grants on monitor_state and tenants (ADR-0095); it resets a schedule through reset_monitor_runtime,
 // which stays inside the caller's tenant.
 func TestIntegrationAPIRuntimeGrants(t *testing.T) {
 	env := pgtest.New(t, pgtest.DBName("runtimegrants"))
@@ -73,6 +73,28 @@ func TestIntegrationAPIRuntimeGrants(t *testing.T) {
 	}
 	if err := inTenant(api, tenantA, exec(`SELECT 1 FROM monitor_state FOR UPDATE`)); err != nil {
 		t.Fatalf("api locks monitor_state: %v", err)
+	}
+
+	// tenants (P-07, ADR-0095): the api may lock a tenant row (quota checks) and touch updated_at,
+	// but not change its plan, limits, status, deletion, slug or name. INSERT stays until L-210.
+	for _, stmt := range []string{
+		`UPDATE tenants SET plan_key = 'internal'`,
+		`UPDATE tenants SET limits = '{"max_monitors": 100000}'`,
+		`UPDATE tenants SET status = 'active'`,
+		`UPDATE tenants SET deleted_at = now()`,
+		`UPDATE tenants SET slug = 'x', name = 'x'`,
+		`DELETE FROM tenants`,
+	} {
+		mustFail(inTenant(api, tenantA, exec(stmt)), "permission denied")
+	}
+	for _, stmt := range []string{
+		`SELECT 1 FROM tenants WHERE id = '` + tenantA + `' FOR UPDATE`,
+		`UPDATE tenants SET updated_at = now() WHERE id = '` + tenantA + `'`,
+		`INSERT INTO tenants (id, slug, name) VALUES (gen_random_uuid(), 'expand-insert', 'X')`,
+	} {
+		if err := inTenant(api, tenantA, exec(stmt)); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
 	}
 
 	reset := func(conn *pgx.Conn, tenant, monitor string) (int, error) {

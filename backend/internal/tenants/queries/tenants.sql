@@ -1,9 +1,3 @@
--- name: InsertTenantIfMissing :exec
--- An existing tenant keeps its plan: a restart never changes it.
-INSERT INTO tenants (id, slug, name, plan_key)
-VALUES (@id, @slug, @name, @plan_key)
-ON CONFLICT (slug) DO NOTHING;
-
 -- name: GetTenantBySlug :one
 SELECT id, slug, name, status
 FROM tenants
@@ -24,9 +18,3 @@ FOR UPDATE;
 SELECT plan_key, limits
 FROM tenants
 WHERE id = @id AND deleted_at IS NULL;
-
--- name: InsertTenant :one
--- Registration: a duplicate slug fails on tenants_slug_key, which the caller retries.
-INSERT INTO tenants (id, slug, name, plan_key)
-VALUES (@id, @slug, @name, @plan_key)
-RETURNING id, slug, name, status;

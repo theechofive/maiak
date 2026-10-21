@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -34,6 +35,13 @@ const ownerPassword = "registered owner passphrase"
 // registration kill switch.
 func newRegistrationServer(t *testing.T, env *pgtest.Env, opts auth.Options, registration bool, logs *lockedBuffer) *client {
 	t.Helper()
+	return newRegistrationServerWithSlack(t, env, opts, registration, logs, &fakeSlack{})
+}
+
+// newRegistrationServerWithSlack is newRegistrationServer with the Slack sender given, so a test
+// can see which webhooks were called.
+func newRegistrationServerWithSlack(t *testing.T, env *pgtest.Env, opts auth.Options, registration bool, logs *lockedBuffer, sender *fakeSlack) *client {
+	t.Helper()
 	ctx := context.Background()
 	pool := env.Pool(t, env.APIURL, 8)
 	log := logging.New(logs, slog.LevelDebug)
@@ -54,10 +62,10 @@ func newRegistrationServer(t *testing.T, env *pgtest.Env, opts auth.Options, reg
 		t.Fatal(err)
 	}
 	sched := scheduler.New()
-	h, err := api.NewHandler(api.Config{Version: "test", Commit: "test", CookieSecure: true, TrustedProxyHops: 1, RegistrationEnabled: registration},
+	h, err := api.NewHandler(api.Config{Version: "test", Commit: "test", CookieSecure: true, TrustedProxyHops: 1, RegistrationEnabled: registration, PublicURL: heartbeatPublicURL},
 		api.Deps{
 			Auth: svc, Monitors: monitors.NewService(pool, sched, incidents.NewService(sched)), Queries: queries.New(pool, nil),
-			Slack: notify.NewService(pool, keys, &fakeSlack{}, "https://maiak.example.com"), Plans: plans.NewService(pool), Logger: log,
+			Slack: notify.NewService(pool, keys, sender, "https://maiak.example.com"), Plans: plans.NewService(pool), Logger: log,
 		})
 	if err != nil {
 		t.Fatal(err)
@@ -121,8 +129,9 @@ func TestIntegrationRegister(t *testing.T) {
 	user, _ := r.body["user"].(map[string]any)
 	tenant, _ := r.body["tenant"].(map[string]any)
 	slug, _ := tenant["slug"].(string)
+	// The slug is random and carries nothing of the email (P-07).
 	if user["login"] != "owner+ops@example.com" || r.body["role"] != "owner" || tenant["name"] != "example.com" ||
-		!strings.HasPrefix(slug, "owner-ops-") || len(slug) != len("owner-ops-")+6 {
+		!regexp.MustCompile(`^t-[a-z2-7]{10}$`).MatchString(slug) {
 		t.Fatalf("register body: %s", r.raw)
 	}
 	tenantID, _ := tenant["id"].(string)
@@ -202,6 +211,14 @@ func TestIntegrationRegister(t *testing.T) {
 	for _, e := range []string{"admin", "ab"} {
 		if r := c.do(http.MethodPost, "/api/v1/auth/register", registerBody(e, "another long password"), nil); r.code != http.StatusUnprocessableEntity {
 			t.Fatalf("register %q: %d %s", e, r.code, r.raw)
+		}
+	}
+	// A cross-site form cannot register (and log the victim's browser into) a tenant: only a JSON
+	// body is accepted, exactly like the login (P-07).
+	for _, ct := range []string{"text/plain", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x"} {
+		if r := c.do(http.MethodPost, "/api/v1/auth/register", registerBody("csrf@example.com", ownerPassword),
+			map[string]string{"Content-Type": ct}); r.code != http.StatusBadRequest || r.header.Get("Set-Cookie") != "" {
+			t.Fatalf("register as %s: %d %s", ct, r.code, r.raw)
 		}
 	}
 	if n := countRows(t, env, `SELECT count(*) FROM tenants`); n != tenantsBefore {
@@ -357,10 +374,13 @@ func TestIntegrationRegisterRateLimit(t *testing.T) {
 	}
 }
 
-// Two registered tenants see nothing of each other: monitors, Slack settings and usage.
+// Two registered tenants see nothing of each other: tenant B can neither read nor change tenant
+// A's monitors (incidents, stats, checks, pause, resume, patch, delete, heartbeat token), Slack
+// settings or usage, and A's monitors are unchanged afterwards (P-07).
 func TestIntegrationRegisteredTenantsAreIsolated(t *testing.T) {
 	env := pgtest.New(t, pgtest.DBName("apiregiso"))
-	c := newRegistrationServer(t, env, auth.Options{}, true, &lockedBuffer{})
+	sender := &fakeSlack{}
+	c := newRegistrationServerWithSlack(t, env, auth.Options{}, true, &lockedBuffer{}, sender)
 	aCookie, aCSRF, _ := c.register("alice@a.example.com")
 	bCookie, bCSRF, _ := c.register("bob@b.example.com")
 
@@ -369,9 +389,33 @@ func TestIntegrationRegisteredTenantsAreIsolated(t *testing.T) {
 		t.Fatalf("alice create: %d %s", m.code, m.raw)
 	}
 	id := m.body["id"].(string)
+	hb := c.do(http.MethodPost, "/api/v1/monitors", `{"type":"heartbeat","name":"Alice watchdog"}`, withCSRF(aCookie, aCSRF))
+	if hb.code != http.StatusCreated {
+		t.Fatalf("alice heartbeat: %d %s", hb.code, hb.raw)
+	}
+	hbID := hb.body["id"].(string)
+	if p := c.do(http.MethodPost, "/api/v1/monitors/"+hbID+"/pause", "", withCSRF(aCookie, aCSRF)); p.code != http.StatusOK {
+		t.Fatalf("alice pause: %d %s", p.code, p.raw)
+	}
 	if s := c.do(http.MethodPut, "/api/v1/settings/slack", `{"webhookUrl":"`+slackURL+`"}`, withCSRF(aCookie, aCSRF)); s.code != http.StatusOK {
 		t.Fatalf("alice slack: %d %s", s.code, s.raw)
 	}
+	tokenHash := func() string {
+		var h string
+		if err := env.AdminConn(t).QueryRow(context.Background(), `SELECT encode(token_hash, 'hex') FROM heartbeat_tokens WHERE monitor_id = $1`, hbID).Scan(&h); err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	hashBefore := tokenHash()
+	get := func(cookie map[string]string, monitor string) string {
+		g := c.do(http.MethodGet, "/api/v1/monitors/"+monitor, "", cookie)
+		if g.code != http.StatusOK {
+			t.Fatalf("get %s: %d %s", monitor, g.code, g.raw)
+		}
+		return g.raw
+	}
+	before := map[string]string{id: get(aCookie, id), hbID: get(aCookie, hbID)}
 
 	if l := c.do(http.MethodGet, "/api/v1/monitors", "", bCookie); l.code != http.StatusOK || !strings.Contains(l.raw, `"items":[]`) {
 		t.Fatalf("bob list: %d %s", l.code, l.raw)
@@ -379,9 +423,16 @@ func TestIntegrationRegisteredTenantsAreIsolated(t *testing.T) {
 	for _, rq := range []struct{ method, path, body string }{
 		{http.MethodGet, "/api/v1/monitors/" + id, ""},
 		{http.MethodGet, "/api/v1/monitors/" + id + "/checks", ""},
+		{http.MethodGet, "/api/v1/monitors/" + id + "/stats", ""},
+		{http.MethodGet, "/api/v1/monitors/" + id + "/incidents", ""},
+		{http.MethodGet, "/api/v1/monitors/" + hbID + "/incidents", ""},
 		{http.MethodPatch, "/api/v1/monitors/" + id, `{"name":"Hijacked"}`},
+		{http.MethodPatch, "/api/v1/monitors/" + hbID, `{"name":"Hijacked","graceSeconds":3600}`},
 		{http.MethodPost, "/api/v1/monitors/" + id + "/pause", ""},
+		{http.MethodPost, "/api/v1/monitors/" + hbID + "/resume", ""},
+		{http.MethodPost, "/api/v1/monitors/" + hbID + "/heartbeat-token", ""},
 		{http.MethodDelete, "/api/v1/monitors/" + id, ""},
+		{http.MethodDelete, "/api/v1/monitors/" + hbID, ""},
 	} {
 		if r := c.do(rq.method, rq.path, rq.body, withCSRF(bCookie, bCSRF)); r.code != http.StatusNotFound {
 			t.Errorf("bob %s %s: %d %s", rq.method, rq.path, r.code, r.raw)
@@ -390,6 +441,31 @@ func TestIntegrationRegisteredTenantsAreIsolated(t *testing.T) {
 	if s := c.do(http.MethodGet, "/api/v1/settings/slack", "", bCookie); s.code != http.StatusOK || s.body["configured"] != false {
 		t.Fatalf("bob slack: %d %s", s.code, s.raw)
 	}
+	// Bob's Slack test has no channel of its own and must not reach Alice's webhook.
+	if s := c.do(http.MethodPost, "/api/v1/settings/slack/test", "", withCSRF(bCookie, bCSRF)); s.code < 400 {
+		t.Fatalf("bob slack test: %d %s", s.code, s.raw)
+	}
+	sender.mu.Lock()
+	sent := len(sender.urls)
+	sender.mu.Unlock()
+	if sent != 0 {
+		t.Fatalf("bob's Slack test sent %d messages", sent)
+	}
+	// Bob's own Slack channel does not replace Alice's.
+	const bobSlack = "https://hooks.slack.com/services/TBOB/BBOB/bobsecret"
+	if s := c.do(http.MethodPut, "/api/v1/settings/slack", `{"webhookUrl":"`+bobSlack+`"}`, withCSRF(bCookie, bCSRF)); s.code != http.StatusOK {
+		t.Fatalf("bob slack put: %d %s", s.code, s.raw)
+	}
+	if s := c.do(http.MethodPost, "/api/v1/settings/slack/test", "", withCSRF(aCookie, aCSRF)); s.code >= 300 {
+		t.Fatalf("alice slack test: %d %s", s.code, s.raw)
+	}
+	sender.mu.Lock()
+	urls := append([]string(nil), sender.urls...)
+	sender.mu.Unlock()
+	if len(urls) != 1 || urls[0] != slackURL {
+		t.Fatalf("alice's Slack test went to %v, want only her webhook", urls)
+	}
+
 	usage := func(cookie map[string]string) string {
 		u := c.do(http.MethodGet, "/api/v1/usage", "", cookie)
 		if u.code != http.StatusOK {
@@ -398,13 +474,22 @@ func TestIntegrationRegisteredTenantsAreIsolated(t *testing.T) {
 		b, _ := json.Marshal(u.body["usage"])
 		return string(b)
 	}
-	if got := usage(bCookie); got != `{"channels":0,"heartbeats":0,"monitors":0}` {
+	if got := usage(bCookie); got != `{"channels":1,"heartbeats":0,"monitors":0}` {
 		t.Fatalf("bob usage = %s", got)
 	}
-	if got := usage(aCookie); got != `{"channels":1,"heartbeats":0,"monitors":1}` {
+	if got := usage(aCookie); got != `{"channels":1,"heartbeats":1,"monitors":1}` {
 		t.Fatalf("alice usage = %s", got)
 	}
-	if g := c.do(http.MethodGet, "/api/v1/monitors/"+id, "", aCookie); g.code != http.StatusOK || g.body["name"] != "Alice site" {
-		t.Fatalf("alice's monitor changed: %d %s", g.code, g.raw)
+	// Alice's monitors are byte-for-byte what they were: name, paused state and every other field.
+	for monitor, want := range before {
+		if got := get(aCookie, monitor); got != want {
+			t.Fatalf("alice's monitor %s changed:\nbefore %s\nafter  %s", monitor, want, got)
+		}
+	}
+	if !strings.Contains(before[id], `"paused":false`) || !strings.Contains(before[hbID], `"paused":true`) {
+		t.Fatalf("paused states: %s / %s", before[id], before[hbID])
+	}
+	if got := tokenHash(); got != hashBefore {
+		t.Fatal("alice's heartbeat token was regenerated by bob")
 	}
 }

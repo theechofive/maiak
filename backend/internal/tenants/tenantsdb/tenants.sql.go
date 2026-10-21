@@ -79,68 +79,6 @@ func (q *Queries) GetTenantQuota(ctx context.Context, id uuid.UUID) (GetTenantQu
 	return i, err
 }
 
-const insertTenant = `-- name: InsertTenant :one
-INSERT INTO tenants (id, slug, name, plan_key)
-VALUES ($1, $2, $3, $4)
-RETURNING id, slug, name, status
-`
-
-type InsertTenantParams struct {
-	ID      uuid.UUID
-	Slug    string
-	Name    string
-	PlanKey string
-}
-
-type InsertTenantRow struct {
-	ID     uuid.UUID
-	Slug   string
-	Name   string
-	Status string
-}
-
-// Registration: a duplicate slug fails on tenants_slug_key, which the caller retries.
-func (q *Queries) InsertTenant(ctx context.Context, arg InsertTenantParams) (InsertTenantRow, error) {
-	row := q.db.QueryRow(ctx, insertTenant,
-		arg.ID,
-		arg.Slug,
-		arg.Name,
-		arg.PlanKey,
-	)
-	var i InsertTenantRow
-	err := row.Scan(
-		&i.ID,
-		&i.Slug,
-		&i.Name,
-		&i.Status,
-	)
-	return i, err
-}
-
-const insertTenantIfMissing = `-- name: InsertTenantIfMissing :exec
-INSERT INTO tenants (id, slug, name, plan_key)
-VALUES ($1, $2, $3, $4)
-ON CONFLICT (slug) DO NOTHING
-`
-
-type InsertTenantIfMissingParams struct {
-	ID      uuid.UUID
-	Slug    string
-	Name    string
-	PlanKey string
-}
-
-// An existing tenant keeps its plan: a restart never changes it.
-func (q *Queries) InsertTenantIfMissing(ctx context.Context, arg InsertTenantIfMissingParams) error {
-	_, err := q.db.Exec(ctx, insertTenantIfMissing,
-		arg.ID,
-		arg.Slug,
-		arg.Name,
-		arg.PlanKey,
-	)
-	return err
-}
-
 const lockTenantQuota = `-- name: LockTenantQuota :one
 SELECT plan_key, limits
 FROM tenants

@@ -10,8 +10,8 @@ import (
 )
 
 // TestIntegrationAuthLoginTenant checks the registration migration (P-02): auth_login_tenant
-// returns the user's oldest membership in a live tenant (suspended included, deleted skipped)
-// or NULL, and the api still cannot read memberships without the tenant set.
+// returns the user's default-tenant membership if any, otherwise the oldest membership in a live
+// tenant (suspended included, deleted skipped) or NULL, and the api still cannot read memberships without the tenant set.
 func TestIntegrationAuthLoginTenant(t *testing.T) {
 	env := pgtest.New(t, pgtest.DBName("logintenant"))
 	ctx := context.Background()
@@ -48,6 +48,19 @@ func TestIntegrationAuthLoginTenant(t *testing.T) {
 	pgtest.MustExec(t, admin, `UPDATE tenants SET deleted_at = now() WHERE id = '`+tenantB+`'`)
 	if got := loginTenant(userOne); got == nil || got.String() != tenantA {
 		t.Fatalf("deleted tenant skipped: %v, want %s", got, tenantA)
+	}
+	// A member of the default tenant logs in there even with older memberships (P-07, ADR-0095),
+	// unless it is deleted.
+	const tenantDefault = "01920000-0000-7000-8000-0000000000de"
+	pgtest.MustExec(t, admin,
+		`INSERT INTO tenants (id, slug, name) VALUES ('`+tenantDefault+`', 'default', 'Default')`,
+		`INSERT INTO memberships (tenant_id, user_id, role, created_at) VALUES ('`+tenantDefault+`', '`+userOne+`', 'viewer', now() + interval '1 day')`)
+	if got := loginTenant(userOne); got == nil || got.String() != tenantDefault {
+		t.Fatalf("default membership: %v, want %s", got, tenantDefault)
+	}
+	pgtest.MustExec(t, admin, `UPDATE tenants SET deleted_at = now() WHERE id = '`+tenantDefault+`'`)
+	if got := loginTenant(userOne); got == nil || got.String() != tenantA {
+		t.Fatalf("deleted default skipped: %v, want %s", got, tenantA)
 	}
 	if got := loginTenant(userNone); got != nil {
 		t.Fatalf("user without membership: %v, want NULL", got)

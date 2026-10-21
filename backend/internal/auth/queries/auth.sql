@@ -60,10 +60,6 @@ JOIN users AS u ON u.id = m.user_id
 WHERE m.tenant_id = @tenant_id AND m.role = 'owner' AND m.user_id <> @user_id AND u.status = 'active'
 ORDER BY m.user_id;
 
--- name: DeleteUserSessions :execrows
-DELETE FROM sessions
-WHERE tenant_id = @tenant_id AND user_id = @user_id;
-
 -- name: InsertUser :exec
 -- Registration: a duplicate email fails on users_email_key, which the caller maps to email-taken.
 INSERT INTO users (id, email, password_hash, display_name)

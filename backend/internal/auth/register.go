@@ -14,7 +14,6 @@ import (
 
 	"github.com/theechofive/maiak/backend/internal/audit"
 	"github.com/theechofive/maiak/backend/internal/auth/authdb"
-	"github.com/theechofive/maiak/backend/internal/plans"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
 	"github.com/theechofive/maiak/backend/internal/platform/db"
 	"github.com/theechofive/maiak/backend/internal/platform/uuidv7"
@@ -28,10 +27,10 @@ const (
 	maxEmailLen      = 254
 	minPasswordRunes = 12
 	maxPasswordRunes = 128
-	// maxSlugBase keeps "<base>-<suffix>" well inside the tenants.slug limit of 63 characters.
-	maxSlugBase   = 40
-	slugSuffixLen = 6
-	// slugAttempts bounds retries after a slug collision (30 random bits per suffix).
+	// Registered tenants get "t-" plus slugRandomLen random base32 characters as their slug.
+	slugPrefix    = "t-"
+	slugRandomLen = 10
+	// slugAttempts bounds retries after a slug collision (50 random bits per slug).
 	slugAttempts = 3
 	// maxTenantName is the tenants.name limit; a longer domain falls back to defaultTenantName.
 	maxTenantName     = 200
@@ -102,7 +101,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (LoginResult, 
 }
 
 func (s *Service) createAccount(ctx context.Context, email, passwordHash string, in RegisterInput) (LoginResult, error) {
-	slug, err := tenantSlug(email)
+	slug, err := tenantSlug()
 	if err != nil {
 		return LoginResult{}, err
 	}
@@ -111,7 +110,7 @@ func (s *Service) createAccount(ctx context.Context, email, passwordHash string,
 	// WithTx plus SetTenant (not WithTenantTx): the tenant only exists once this transaction
 	// commits, and a rolled-back attempt must not tag the request logs with its id.
 	err = db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
-		t, err := tenants.Create(ctx, tx, tenantID, slug, tenantName(email), plans.KeyFree)
+		t, err := tenants.Create(ctx, tx, tenantID, slug, tenantName(email))
 		if err != nil {
 			return err
 		}
@@ -204,31 +203,15 @@ func normalizeEmail(raw string) (string, string) {
 	return s, ""
 }
 
-// tenantSlug derives a unique-enough slug from the local part of a normalised email: runs of
-// characters outside [a-z0-9] become one dash, plus a random suffix ("john-smith-k3x9qa").
-func tenantSlug(email string) (string, error) {
-	local, _, _ := strings.Cut(email, "@")
-	var b strings.Builder
-	for _, c := range local {
-		if b.Len() >= maxSlugBase {
-			break
-		}
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
-			b.WriteRune(c)
-		} else if b.Len() > 0 && !strings.HasSuffix(b.String(), "-") {
-			b.WriteByte('-')
-		}
-	}
-	base := strings.Trim(b.String(), "-")
-	if base == "" {
-		base = "workspace"
-	}
-	raw := make([]byte, 5)
+// tenantSlug returns a random slug ("t-" and 10 base32 characters, 50 random bits). It never
+// carries any part of the email: the slug shows up in URLs and logs (ADR-0095), and it can never
+// be the default tenant's slug.
+func tenantSlug() (string, error) {
+	raw := make([]byte, 7)
 	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("random slug suffix: %w", err)
+		return "", fmt.Errorf("random slug: %w", err)
 	}
-	suffix := strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw))[:slugSuffixLen]
-	return base + "-" + suffix, nil
+	return slugPrefix + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw))[:slugRandomLen], nil
 }
 
 // tenantName is the email's domain, or a generic name when the domain is too long.

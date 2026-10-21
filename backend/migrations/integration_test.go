@@ -41,10 +41,15 @@ func TestIntegrationMigrateFromScratchAndRerun(t *testing.T) {
 var definerAllowList = map[string][]string{
 	"auth_lookup_session": {"maiak_api"},
 	// The login finds the user's tenant before the tenant is known (P-02, ADR-0009 amendment).
-	"auth_login_tenant":  {"maiak_api"},
-	"ensure_partitions":  {"maiak_worker"},
-	"claim_due_monitors": {"maiak_worker"},
-	"compute_rollups":    {"maiak_worker"},
+	"auth_login_tenant": {"maiak_api"},
+	// Tenant creation with a plan chosen by the database, the admin adoption check and the
+	// cross-tenant session revocation of BootstrapAdmin (P-07, ADR-0095).
+	"auth_create_tenant":           {"maiak_api"},
+	"auth_count_other_memberships": {"maiak_api"},
+	"auth_revoke_user_sessions":    {"maiak_api"},
+	"ensure_partitions":            {"maiak_worker"},
+	"claim_due_monitors":           {"maiak_worker"},
+	"compute_rollups":              {"maiak_worker"},
 	// Rollups from the watermark in rollup_state (ADR-0090).
 	"compute_rollups_catch_up": {"maiak_worker"},
 	// Retention in three steps driven by jobs (ADR-0060).

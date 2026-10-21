@@ -18,7 +18,6 @@ import (
 
 	"github.com/theechofive/maiak/backend/internal/audit"
 	"github.com/theechofive/maiak/backend/internal/auth/authdb"
-	"github.com/theechofive/maiak/backend/internal/plans"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
 	"github.com/theechofive/maiak/backend/internal/platform/db"
@@ -147,6 +146,11 @@ func NewService(pool *db.Pool, opts Options) (*Service, error) {
 // the admin's sessions are deleted. When the login changes, the previous owners of the default
 // tenant are disabled and their sessions deleted. The login is stored lowercased in users.email
 // (the column holds the login identifier, ADR-0009).
+//
+// An existing user with that login is adopted only when all its memberships are in the default
+// tenant; otherwise BootstrapAdmin writes nothing and returns ErrAdminLoginInUse (a stranger may
+// have registered the email before the operator configured it, ADR-0095). An adopted user loses
+// every session it had, in every tenant.
 func (s *Service) BootstrapAdmin(ctx context.Context, login, passwordHash string) error {
 	login = normalizeLogin(login)
 	parsed, err := crypto.ParseArgon2idHash(passwordHash)
@@ -166,7 +170,7 @@ func (s *Service) BootstrapAdmin(ctx context.Context, login, passwordHash string
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", bootstrapLockKey); err != nil {
 			return fmt.Errorf("bootstrap lock: %w", err)
 		}
-		t, err := tenants.Ensure(ctx, tx, tenants.DefaultSlug, "Default", plans.KeyInternal)
+		t, err := tenants.Ensure(ctx, tx, tenants.DefaultSlug, "Default")
 		if err != nil {
 			return err
 		}
@@ -175,6 +179,10 @@ func (s *Service) BootstrapAdmin(ctx context.Context, login, passwordHash string
 			return err
 		}
 		q := authdb.New(tx)
+		adopted, err := s.checkAdoption(ctx, tx, q, t.ID, login)
+		if err != nil {
+			return err
+		}
 		if err := q.InsertUserIfMissing(ctx, authdb.InsertUserIfMissingParams{
 			ID: uuidv7.New(), Email: login, PasswordHash: &passwordHash, DisplayName: "Admin",
 		}); err != nil {
@@ -188,12 +196,13 @@ func (s *Service) BootstrapAdmin(ctx context.Context, login, passwordHash string
 		if err != nil {
 			return fmt.Errorf("update admin password hash: %w", err)
 		}
-		if changed > 0 {
-			n, err := q.DeleteUserSessions(ctx, authdb.DeleteUserSessionsParams{TenantID: t.ID, UserID: u.ID})
+		if changed > 0 || adopted {
+			n, err := revokeUserSessions(ctx, tx, u.ID)
 			if err != nil {
 				return fmt.Errorf("revoke admin sessions: %w", err)
 			}
-			s.log.InfoContext(ctx, "admin password hash updated from configuration; sessions revoked", "user_id", u.ID, "sessions", n)
+			s.log.InfoContext(ctx, "admin password hash or user changed from configuration; sessions revoked",
+				"user_id", u.ID, "adopted", adopted, "sessions", n)
 		}
 		// A configured admin is always active (rotating back to an earlier login re-enables it).
 		if _, err := q.ActivateUser(ctx, u.ID); err != nil {
@@ -212,8 +221,47 @@ func (s *Service) BootstrapAdmin(ctx context.Context, login, passwordHash string
 	return nil
 }
 
+// checkAdoption looks up an existing user with the configured login. It fails with
+// ErrAdminLoginInUse when that user belongs to any tenant other than the default one, and
+// reports whether the user is being adopted (it exists but is not yet the active owner of the
+// default tenant). The membership count goes through auth_count_other_memberships, because the
+// memberships policy only shows the default tenant here.
+func (s *Service) checkAdoption(ctx context.Context, tx pgx.Tx, q *authdb.Queries, tenantID uuid.UUID, login string) (bool, error) {
+	u, err := q.GetUserByEmail(ctx, login)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("get admin user: %w", err)
+	}
+	var others int
+	if err := tx.QueryRow(ctx, `SELECT auth_count_other_memberships($1, $2)`, u.ID, tenantID).Scan(&others); err != nil {
+		return false, fmt.Errorf("count admin memberships: %w", err)
+	}
+	if others > 0 {
+		s.log.ErrorContext(ctx, "MAIAK_ADMIN_LOGIN names a user with memberships outside the default tenant; not adopting it",
+			"user_id", u.ID, "other_memberships", others)
+		return false, fmt.Errorf("%w (user %s)", ErrAdminLoginInUse, u.ID)
+	}
+	role, err := q.GetMembershipRole(ctx, authdb.GetMembershipRoleParams{TenantID: tenantID, UserID: u.ID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("get admin membership: %w", err)
+	}
+	return role != RoleOwner || u.Status != userStatusActive, nil
+}
+
+// revokeUserSessions deletes every session of the user in every tenant (auth_revoke_user_sessions).
+func revokeUserSessions(ctx context.Context, tx pgx.Tx, userID uuid.UUID) (int, error) {
+	var n int
+	err := tx.QueryRow(ctx, `SELECT auth_revoke_user_sessions($1)`, userID).Scan(&n)
+	return n, err
+}
+
 // retirePreviousOwners disables every other active owner of the tenant (the admin from an
-// earlier MAIAK_ADMIN_LOGIN), deletes their sessions and audits it.
+// earlier MAIAK_ADMIN_LOGIN), deletes their sessions in every tenant and audits it.
 func (s *Service) retirePreviousOwners(ctx context.Context, tx pgx.Tx, q *authdb.Queries, tenantID, adminID uuid.UUID) error {
 	others, err := q.ListOtherActiveOwners(ctx, authdb.ListOtherActiveOwnersParams{TenantID: tenantID, UserID: adminID})
 	if err != nil {
@@ -223,7 +271,7 @@ func (s *Service) retirePreviousOwners(ctx context.Context, tx pgx.Tx, q *authdb
 		if err := q.DisableUser(ctx, old); err != nil {
 			return fmt.Errorf("disable previous owner: %w", err)
 		}
-		n, err := q.DeleteUserSessions(ctx, authdb.DeleteUserSessionsParams{TenantID: tenantID, UserID: old})
+		n, err := revokeUserSessions(ctx, tx, old)
 		if err != nil {
 			return fmt.Errorf("revoke previous owner sessions: %w", err)
 		}

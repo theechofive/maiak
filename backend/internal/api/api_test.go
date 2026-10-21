@@ -288,3 +288,28 @@ func TestRegisterKillSwitchAndContract(t *testing.T) {
 		}
 	}
 }
+
+// A cross-site HTML form can send text/plain, application/x-www-form-urlencoded or
+// multipart/form-data without a preflight. Registration accepts only a JSON body, exactly like
+// the login, so such a form cannot create a tenant and log the victim's browser into it (P-07).
+// Registration is enabled and the handler has no auth service: anything that got past the
+// validator would fail with a 500, not a 400.
+func TestRegisterRejectsCrossSiteContentTypes(t *testing.T) {
+	h, err := NewHandler(Config{RegistrationEnabled: true}, Deps{Logger: discard()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"email":"victim@example.com","password":"a long enough password"}`
+	for _, ct := range []string{"text/plain", "text/plain; charset=utf-8", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x"} {
+		for _, path := range []string{"/api/v1/auth/register", "/api/v1/auth/login"} {
+			b := body
+			if path == "/api/v1/auth/login" {
+				b = `{"login":"victim@example.com","password":"a long enough password"}`
+			}
+			rec, p := do(t, h, http.MethodPost, path, b, map[string]string{"Content-Type": ct})
+			if rec.Code != http.StatusBadRequest || p.Type != problemBadRequest || rec.Header().Get("Set-Cookie") != "" {
+				t.Errorf("%s as %s: code=%d problem=%+v", path, ct, rec.Code, p)
+			}
+		}
+	}
+}
