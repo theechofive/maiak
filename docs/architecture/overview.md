@@ -6,7 +6,7 @@ Maiak is a **modular monolith deployed as several processes** from one Go module
 
 | Process | Responsibility | DB role | Scaling |
 |---|---|---|---|
-| `api` (`cmd/api`) | REST for the web app: auth, monitors, Slack settings and test message, dashboard read models, and the public heartbeat ping (`/api/v1/heartbeat/{token}`, no session, ADR-0094). Upserts the admin from `MAIAK_ADMIN_*` at start | `maiak_api` | stateless, replicas by load (the ping rate limits are per replica, L-200) |
+| `api` (`cmd/api`) | REST for the web app: auth, monitors, Slack settings and test message, dashboard read models, the platform admin panel (`/api/v1/admin/*`, platform admin only, ADR-0097) and the public heartbeat ping (`/api/v1/heartbeat/{token}`, no session, ADR-0094). Upserts the admin from `MAIAK_ADMIN_*` at start and gives it the platform-admin flag | `maiak_api` | stateless, replicas by load (the ping rate limits are per replica, L-200) |
 | `worker` (`cmd/worker`) | Claims due (monitor, location) jobs every second, runs HTTPS checks through the SSRF guard, writes result, schedule, incident state and outbox in one transaction per tenant batch. Calls `ensure_partitions()` at start and hourly | `maiak_worker` | replicas (limits are per process, R-030) |
 | `jobs` (`cmd/jobs`) | Outbox delivery to Slack (retries, per-channel rate limit) and singleton housekeeping under advisory locks: heartbeat evaluation (30 s), partitions (daily), rollups (5 min), retention (daily), expired-session purge (hourly) | `maiak_worker` | 1+ replicas (R-060, L-082) |
 | `migrate` (`cmd/migrate`) | Applies migrations (ArgoCD Sync hook Job, wave -1, ADR-0013) | `maiak_owner` | one-shot Job |
@@ -49,6 +49,7 @@ flowchart LR
 | `jobs` | outbox delivery loop (`Notifier` seam) and housekeeping | none |
 | `audit` | audit log rows | `audit_log` |
 | `queries` | read models for the dashboard (cross-table SELECT only) | none |
+| `admin` | platform admin panel: tenants across the platform (list, plan, suspension, soft delete), their users, password resets; everything through the `admin_*` definer functions, which check the acting user's flag, enforce the guard rails and write the audit rows (ADR-0097) | none |
 | `api` | HTTP layer generated from `api/openapi.yaml`, error mapping | none |
 | `dbbootstrap` | database and role bootstrap used by `maiakctl` and tests | none |
 | `platform` | config, `WithTenantTx`/`WithTx`, logging, metrics, crypto, clock, httpx, uuidv7 | none |
@@ -67,10 +68,19 @@ worker  -> claim_due_monitors(n, location)   lease on (monitor, location), skips
              scheduler.Complete              lease check (stale -> discard), next_run_at
              incidents.ApplyResult           location and monitor state; open/resolve incident;
                                              notification_deliveries row when Slack is active (SAME transaction)
-jobs    -> claim_deliveries(n)               oldest first per monitor, claim token, lease 2 min
+jobs    -> claim_deliveries(n)               oldest first per monitor, claim token, lease 2 min; skips inactive tenants
         -> notify.Format + SlackNotifier     guarded client, no redirects
         -> finish_delivery(id, token, ...)   sent / retry with backoff / failed after 5 attempts
 web     -> GET /api/v1/...                   api reads through internal/queries (monitor_state, results, rollups, incidents)
+```
+
+### Platform admin action (ADR-0097)
+```
+web     -> PATCH /api/v1/admin/tenants/{id}     session + CSRF token (request validator)
+api     -> requirePlatformAdmin                 every /api/v1/admin/ path: users.is_platform_admin of the session's user, else 403
+        -> admin.Service                        one transaction without tenant context
+        -> admin_set_tenant_plan(actor, ...)    definer: checks the actor's flag again, guard rails, row lock,
+                                                update, audit row in the target tenant (SAME transaction)
 ```
 
 ### Life of a heartbeat (ADR-0094)

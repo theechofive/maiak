@@ -10,6 +10,9 @@ var (
 	// ErrInvalidCredentials is returned for every login failure, whatever the cause, so the
 	// response does not reveal whether the login exists.
 	ErrInvalidCredentials = errors.New("auth: invalid credentials")
+	// ErrAccountSuspended means the login and password are right but the user's tenant is
+	// suspended or deleted by the platform admin. It is only returned after a correct password.
+	ErrAccountSuspended = errors.New("auth: account suspended")
 	// ErrUnauthenticated means no valid session.
 	ErrUnauthenticated = errors.New("auth: not authenticated")
 	// ErrCSRF means the CSRF token is missing or wrong.

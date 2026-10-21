@@ -55,7 +55,69 @@ func specOperations(t *testing.T) (*openapi3.T, []specOperation) {
 func concretePath(p string) string {
 	// A well-formed heartbeat token: a malformed one is answered 404 before any other work.
 	p = strings.ReplaceAll(p, "{token}", strings.Repeat("A", 43))
-	return strings.ReplaceAll(p, "{monitorId}", "0192b9c4-7c5e-7000-8000-000000000001")
+	return strings.NewReplacer(
+		"{monitorId}", "0192b9c4-7c5e-7000-8000-000000000001",
+		"{tenantId}", "0192b9c4-7c5e-7000-8000-000000000002",
+		"{userId}", "0192b9c4-7c5e-7000-8000-000000000003",
+	).Replace(p)
+}
+
+// adminOperations are the platform admin operations (P-04, ADR-0097). Every path under
+// /api/v1/admin/ must be one of them, tagged admin and need a session; the integration test
+// TestIntegrationAdminOperationsRefuseNonAdmins checks each answers 403 to a normal user.
+var adminOperations = []string{"adminGetStats", "adminListTenants", "adminGetTenant", "adminUpdateTenant",
+	"adminDeleteTenant", "adminListTenantUsers", "adminResetUserPassword"}
+
+func TestSpecAdminOperations(t *testing.T) {
+	spec, ops := specOperations(t)
+	seen := 0
+	for _, o := range ops {
+		isAdminPath := strings.HasPrefix(o.path, adminPathPrefix)
+		isAdminOp := slices.ContainsFunc(adminOperations, func(id string) bool { return strings.EqualFold(id, o.id) })
+		if isAdminPath != isAdminOp {
+			t.Errorf("%s %s (%s): admin path %v but listed as admin operation %v", o.method, o.path, o.id, isAdminPath, isAdminOp)
+		}
+		if !isAdminPath {
+			continue
+		}
+		seen++
+		if !slices.Equal(o.op.Tags, []string{"admin"}) {
+			t.Errorf("%s %s: tags %v, want [admin]", o.method, o.path, o.op.Tags)
+		}
+		security := spec.Security
+		if o.op.Security != nil {
+			security = *o.op.Security
+		}
+		if len(security) == 0 {
+			t.Errorf("%s %s: no security requirement", o.method, o.path)
+		}
+		if _, ok := o.op.Responses.Map()["403"]; !ok {
+			t.Errorf("%s %s: 403 not documented", o.method, o.path)
+		}
+	}
+	if seen != len(adminOperations) {
+		t.Fatalf("%d admin operations in the spec, want %d", seen, len(adminOperations))
+	}
+}
+
+// Without a session every admin operation is 401, before the platform-admin check.
+func TestAdminOperationsNeedSession(t *testing.T) {
+	h := newTestHandler(t)
+	_, ops := specOperations(t)
+	for _, o := range ops {
+		if !strings.HasPrefix(o.path, adminPathPrefix) {
+			continue
+		}
+		hdr := map[string]string{"X-CSRF-Token": "x", "Content-Type": "application/json"}
+		body := ""
+		if o.method == http.MethodPatch {
+			body = `{"status":"suspended"}`
+		}
+		rec, p := do(t, h, o.method, concretePath(o.path), body, hdr)
+		if rec.Code != http.StatusUnauthorized || p.Type != problemUnauthenticated {
+			t.Errorf("%s %s: code=%d problem=%+v, want 401", o.method, o.path, rec.Code, p)
+		}
+	}
 }
 
 func TestSpecValidates(t *testing.T) {

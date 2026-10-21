@@ -122,7 +122,7 @@ func NewService(pool *db.Pool, opts Options) (*Service, error) {
 		hashWait:   opts.HashQueueWait,
 		logins: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "maiak_auth_logins_total",
-			Help: "Login attempts by result (succeeded, failed, rate_limited).",
+			Help: "Login attempts by result (succeeded, failed, suspended, rate_limited).",
 		}, []string{"result"}),
 		registrations: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "maiak_auth_registrations_total",
@@ -211,7 +211,10 @@ func (s *Service) BootstrapAdmin(ctx context.Context, login, passwordHash string
 		if err := q.UpsertMembership(ctx, authdb.UpsertMembershipParams{TenantID: t.ID, UserID: u.ID, Role: RoleOwner}); err != nil {
 			return fmt.Errorf("upsert admin membership: %w", err)
 		}
-		return s.retirePreviousOwners(ctx, tx, q, t.ID, u.ID)
+		if err := s.retirePreviousOwners(ctx, tx, q, t.ID, u.ID); err != nil {
+			return err
+		}
+		return s.syncPlatformAdmin(ctx, tx, u.ID)
 	})
 	if err != nil {
 		return fmt.Errorf("auth: bootstrap admin: %w", err)
@@ -260,6 +263,20 @@ func revokeUserSessions(ctx context.Context, tx pgx.Tx, userID uuid.UUID) (int, 
 	return n, err
 }
 
+// syncPlatformAdmin makes the configured admin the only platform admin (auth_sync_platform_admin,
+// ADR-0097): its flag is set at every start and cleared for everyone else, a retired previous
+// admin included. No API changes the flag.
+func (s *Service) syncPlatformAdmin(ctx context.Context, tx pgx.Tx, adminID uuid.UUID) error {
+	var n int
+	if err := tx.QueryRow(ctx, `SELECT auth_sync_platform_admin($1)`, adminID).Scan(&n); err != nil {
+		return fmt.Errorf("sync platform admin flag: %w", err)
+	}
+	if n > 0 {
+		s.log.InfoContext(ctx, "platform admin flag synchronised with MAIAK_ADMIN_LOGIN", "user_id", adminID, "users_changed", n)
+	}
+	return nil
+}
+
 // retirePreviousOwners disables every other active owner of the tenant (the admin from an
 // earlier MAIAK_ADMIN_LOGIN), deletes their sessions in every tenant and audits it.
 func (s *Service) retirePreviousOwners(ctx context.Context, tx pgx.Tx, q *authdb.Queries, tenantID, adminID uuid.UUID) error {
@@ -299,6 +316,8 @@ type User struct {
 	ID          uuid.UUID
 	Login       string
 	DisplayName string
+	// IsPlatformAdmin is set only for the configured system admin (ADR-0097).
+	IsPlatformAdmin bool
 }
 
 // SessionInfo describes the current session.
@@ -385,11 +404,15 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 				return fmt.Errorf("get membership: %w", err)
 			}
 			t, err := tenants.Get(ctx, tx, tenantID)
+			if errors.Is(err, tenants.ErrNotFound) {
+				// auth_login_tenant returns a deleted tenant only when the user has no live one.
+				return errSuspended
+			}
 			if err != nil {
 				return err
 			}
 			if t.Status != tenants.StatusActive {
-				return errNoMembership
+				return errSuspended
 			}
 			sess, err := s.insertSession(ctx, q, tenantID, user.ID, in.IP, in.UserAgent)
 			if err != nil {
@@ -414,6 +437,15 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 		}
 		return LoginResult{}, ErrInvalidCredentials
 	}
+	if errors.Is(err, errSuspended) {
+		// Only reached with the right password, so the state of the tenant is never revealed to
+		// a guess. The attempt stays counted by the limiters like a failure.
+		s.logins.WithLabelValues("suspended").Inc()
+		if aerr := s.auditFailure(ctx, auditTenant, &user.ID, in.IP, "tenant_suspended"); aerr != nil {
+			return LoginResult{}, aerr
+		}
+		return LoginResult{}, ErrAccountSuspended
+	}
 	if err != nil {
 		refund()
 		return LoginResult{}, fmt.Errorf("auth: login: %w", err)
@@ -424,9 +456,13 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 	return res, nil
 }
 
-// errNoMembership means the credentials are right but the user has no usable tenant (no
-// membership, or the tenant is suspended). The caller answers ErrInvalidCredentials.
+// errNoMembership means the credentials are right but the user has no membership. The caller
+// answers ErrInvalidCredentials.
 var errNoMembership = errors.New("auth: no active membership")
+
+// errSuspended means the credentials are right but the user's tenant is suspended or deleted.
+// The caller answers ErrAccountSuspended.
+var errSuspended = errors.New("auth: tenant suspended")
 
 // checkPassword looks the user and the tenant the login binds to up and verifies the password.
 // It always runs one argon2 verification (against a dummy hash for unknown or password-less
@@ -469,7 +505,7 @@ func (s *Service) checkPassword(ctx context.Context, login, password string) (*U
 	if row == nil {
 		return nil, uuid.Nil, false, nil
 	}
-	u := &User{ID: row.ID, Login: row.Email, DisplayName: row.DisplayName}
+	u := &User{ID: row.ID, Login: row.Email, DisplayName: row.DisplayName, IsPlatformAdmin: row.IsPlatformAdmin}
 	ok := match && hash != s.dummy && row.Status == userStatusActive
 	if tenantID == nil {
 		return u, uuid.Nil, ok, nil
@@ -624,7 +660,7 @@ func (s *Service) Me(ctx context.Context, p Principal) (SessionInfo, error) {
 			return err
 		}
 		info = SessionInfo{
-			User:   User{ID: u.ID, Login: u.Email, DisplayName: u.DisplayName},
+			User:   User{ID: u.ID, Login: u.Email, DisplayName: u.DisplayName, IsPlatformAdmin: u.IsPlatformAdmin},
 			Tenant: t, Role: role, CSRFToken: p.CSRFToken, ExpiresAt: p.ExpiresAt,
 		}
 		return nil
@@ -633,6 +669,45 @@ func (s *Service) Me(ctx context.Context, p Principal) (SessionInfo, error) {
 		return SessionInfo{}, fmt.Errorf("auth: me: %w", err)
 	}
 	return info, err
+}
+
+// IsPlatformAdmin reports whether the user is an active platform admin (users.is_platform_admin).
+// The api checks it before every /admin operation; the admin definer functions check it again.
+func (s *Service) IsPlatformAdmin(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var admin bool
+	err := db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		u, err := authdb.New(tx).GetUserByID(ctx, userID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		admin = u.IsPlatformAdmin && u.Status == userStatusActive
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("auth: platform admin flag: %w", err)
+	}
+	return admin, nil
+}
+
+// HashPassword hashes a new password with the admin hash's argon2id parameters through the
+// bounded queue shared with login and registration (a full queue is a *RateLimitedError). The
+// platform admin's password reset uses it (ADR-0097).
+func (s *Service) HashPassword(ctx context.Context, password string) (string, error) {
+	if s.dummy == nil {
+		return "", errors.New("auth: BootstrapAdmin has not run")
+	}
+	if err := s.acquireHash(ctx); err != nil {
+		return "", err
+	}
+	phc, err := crypto.HashPassword(password, s.dummy.Params)
+	<-s.hashSem
+	if err != nil {
+		return "", fmt.Errorf("auth: hash password: %w", err)
+	}
+	return phc, nil
 }
 
 // Logout deletes the session and records it.

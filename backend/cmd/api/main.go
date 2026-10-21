@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/theechofive/maiak/backend/internal/admin"
 	"github.com/theechofive/maiak/backend/internal/api"
 	"github.com/theechofive/maiak/backend/internal/auth"
 	"github.com/theechofive/maiak/backend/internal/incidents"
@@ -68,6 +69,11 @@ func run() error {
 	}
 	log.Info("admin bootstrap done")
 
+	adminSvc, err := admin.NewService(pool, authSvc, admin.Options{Logger: log, Registerer: reg})
+	if err != nil {
+		return err
+	}
+
 	keys, err := crypto.NewKeyring(cfg.EncryptionKeys, cfg.EncryptionKeyID)
 	if err != nil {
 		return err
@@ -88,6 +94,7 @@ func run() error {
 		Queries:  queries.New(pool, nil),
 		Slack:    notify.NewService(pool, keys, slack, cfg.PublicURL),
 		Plans:    plans.NewService(pool),
+		Admin:    adminSvc,
 		Logger:   log,
 		Metrics:  metrics.NewHTTP(reg),
 		Pings:    api.NewPingMetrics(reg),

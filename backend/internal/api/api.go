@@ -19,6 +19,7 @@ import (
 	middleware "github.com/oapi-codegen/nethttp-middleware"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/theechofive/maiak/backend/internal/admin"
 	"github.com/theechofive/maiak/backend/internal/api/gen"
 	"github.com/theechofive/maiak/backend/internal/auth"
 	"github.com/theechofive/maiak/backend/internal/monitors"
@@ -63,8 +64,10 @@ type Deps struct {
 	Queries  *queries.Service
 	Slack    *notify.Service
 	Plans    *plans.Service
-	Logger   *slog.Logger
-	Metrics  *metrics.HTTP
+	// Admin serves /api/v1/admin (P-04); nil answers those operations with 500.
+	Admin   *admin.Service
+	Logger  *slog.Logger
+	Metrics *metrics.HTTP
 	// Pings counts heartbeat pings; nil keeps the counts unregistered.
 	Pings *PingMetrics
 	// Clock drives the in-process rate limits; nil means the system clock.
@@ -78,6 +81,7 @@ type server struct {
 	queries  *queries.Service
 	slack    *notify.Service
 	plans    *plans.Service
+	admin    *admin.Service
 	log      *slog.Logger
 	// slackTests limits Slack test messages per tenant (per api replica, like the login limit).
 	slackTests *auth.Limiter
@@ -103,7 +107,7 @@ func NewHandler(cfg Config, deps Deps) (http.Handler, error) {
 	if pings == nil {
 		pings = NewPingMetrics(prometheus.NewRegistry())
 	}
-	s := &server{cfg: cfg, auth: deps.Auth, monitors: deps.Monitors, queries: deps.Queries, slack: deps.Slack, plans: deps.Plans, log: deps.Logger,
+	s := &server{cfg: cfg, auth: deps.Auth, monitors: deps.Monitors, queries: deps.Queries, slack: deps.Slack, plans: deps.Plans, admin: deps.Admin, log: deps.Logger,
 		slackTests: auth.NewLimiter(1, slackTestInterval, 10_000, clk),
 		pingLimits: newPingLimits(clk),
 		pings:      pings}
@@ -124,6 +128,7 @@ func NewHandler(cfg Config, deps Deps) (http.Handler, error) {
 			writeError(w, r, s.log, err)
 		},
 	}))
+	r.Use(s.requirePlatformAdmin)
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) { writeError(w, r, s.log, errNotFound) })
 	r.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) { writeError(w, r, s.log, errMethodNotAllowed) })
 
@@ -359,7 +364,7 @@ func (s *server) sessionCookie(token string, expires time.Time) *http.Cookie {
 
 func toSessionInfo(i auth.SessionInfo) gen.SessionInfo {
 	return gen.SessionInfo{
-		User:      gen.User{Id: i.User.ID, Login: i.User.Login, DisplayName: i.User.DisplayName},
+		User:      gen.User{Id: i.User.ID, Login: i.User.Login, DisplayName: i.User.DisplayName, IsPlatformAdmin: &i.User.IsPlatformAdmin},
 		Tenant:    gen.Tenant{Id: i.Tenant.ID, Slug: i.Tenant.Slug, Name: i.Tenant.Name},
 		Role:      gen.MembershipRole(i.Role),
 		CsrfToken: i.CSRFToken,

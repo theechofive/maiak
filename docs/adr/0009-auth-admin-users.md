@@ -42,3 +42,6 @@ The admin email and an argon2id password hash come from a Kubernetes Secret (fed
 
 ## Amendment: admin adoption and the default tenant (2026-10-21, P-07)
 See ADR-0095. `BootstrapAdmin` refuses to start when `MAIAK_ADMIN_LOGIN` names an existing user with any membership outside `default` (`auth_count_other_memberships`), deletes all sessions of an adopted user, of a user whose hash changed and of retired previous owners in every tenant (`auth_revoke_user_sessions`), and `auth_login_tenant` prefers the `default` tenant over older memberships. Tenants are created through `auth_create_tenant`, which picks the plan (`internal` for `default`, `free` otherwise).
+
+## Amendment: platform admin and suspended tenants (2026-10-21, P-04)
+See ADR-0097. The configured system admin is the only platform admin (`users.is_platform_admin`, set by `BootstrapAdmin` through `auth_sync_platform_admin` at every start and cleared for a retired admin). A login with the right password for a user whose tenant is suspended or deleted answers 403 `urn:maiak:problem:account-suspended` instead of the generic failure (a wrong password still gets the generic 401); `auth_login_tenant` returns a deleted tenant when the user has no live one. The platform admin resets other users' passwords through the panel (temporary password shown once); the system admin's own password stays in its Secret.

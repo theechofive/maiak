@@ -70,17 +70,18 @@ func (q *Queries) GetMembershipRole(ctx context.Context, arg GetMembershipRolePa
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, password_hash, display_name, status
+SELECT id, email, password_hash, display_name, status, is_platform_admin
 FROM users
 WHERE email = $1
 `
 
 type GetUserByEmailRow struct {
-	ID           uuid.UUID
-	Email        string
-	PasswordHash *string
-	DisplayName  string
-	Status       string
+	ID              uuid.UUID
+	Email           string
+	PasswordHash    *string
+	DisplayName     string
+	Status          string
+	IsPlatformAdmin bool
 }
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error) {
@@ -92,21 +93,23 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (GetUserByEm
 		&i.PasswordHash,
 		&i.DisplayName,
 		&i.Status,
+		&i.IsPlatformAdmin,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, email, display_name, status
+SELECT id, email, display_name, status, is_platform_admin
 FROM users
 WHERE id = $1
 `
 
 type GetUserByIDRow struct {
-	ID          uuid.UUID
-	Email       string
-	DisplayName string
-	Status      string
+	ID              uuid.UUID
+	Email           string
+	DisplayName     string
+	Status          string
+	IsPlatformAdmin bool
 }
 
 func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (GetUserByIDRow, error) {
@@ -117,6 +120,7 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (GetUserByIDRow
 		&i.Email,
 		&i.DisplayName,
 		&i.Status,
+		&i.IsPlatformAdmin,
 	)
 	return i, err
 }

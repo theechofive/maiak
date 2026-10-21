@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/theechofive/maiak/backend/internal/auth"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
@@ -328,16 +330,24 @@ func TestIntegrationRegisteredLoginBindsToOwnTenant(t *testing.T) {
 		t.Fatalf("duplicate: err = %v", err)
 	}
 
-	for _, c := range []struct{ disable, enable string }{
-		{`UPDATE tenants SET status = 'suspended' WHERE id = $1`, `UPDATE tenants SET status = 'active' WHERE id = $1`},
-		{`UPDATE tenants SET deleted_at = now() WHERE id = $1`, `UPDATE tenants SET deleted_at = NULL WHERE id = $1`},
-		{`DELETE FROM memberships WHERE tenant_id = $1`, `INSERT INTO memberships (tenant_id, user_id, role) SELECT $1, id, 'owner' FROM users WHERE email = 'user@example.com'`},
+	// A suspended or deleted tenant (P-04) is reported only to the right password; a wrong one,
+	// or a user without membership, gets the generic failure.
+	for _, c := range []struct {
+		disable, enable string
+		want            error
+	}{
+		{`UPDATE tenants SET status = 'suspended' WHERE id = $1`, `UPDATE tenants SET status = 'active' WHERE id = $1`, auth.ErrAccountSuspended},
+		{`UPDATE tenants SET deleted_at = now() WHERE id = $1`, `UPDATE tenants SET deleted_at = NULL WHERE id = $1`, auth.ErrAccountSuspended},
+		{`DELETE FROM memberships WHERE tenant_id = $1`, `INSERT INTO memberships (tenant_id, user_id, role) SELECT $1, id, 'owner' FROM users WHERE email = 'user@example.com'`, auth.ErrInvalidCredentials},
 	} {
 		if _, err := admin.Exec(ctx, c.disable, reg.Tenant.ID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := login(t, svc, "user@example.com", password); !errors.Is(err, auth.ErrInvalidCredentials) {
-			t.Fatalf("after %q: err = %v, want ErrInvalidCredentials", c.disable, err)
+		if _, err := login(t, svc, "user@example.com", password); !errors.Is(err, c.want) {
+			t.Fatalf("after %q: err = %v, want %v", c.disable, err, c.want)
+		}
+		if _, err := login(t, svc, "user@example.com", password+"x"); !errors.Is(err, auth.ErrInvalidCredentials) {
+			t.Fatalf("wrong password after %q: err = %v, want ErrInvalidCredentials", c.disable, err)
 		}
 		if _, err := admin.Exec(ctx, c.enable, reg.Tenant.ID); err != nil {
 			t.Fatal(err)
@@ -454,5 +464,84 @@ func TestIntegrationBootstrapAdoptsDefaultOnlyUser(t *testing.T) {
 	}
 	if err := other.BootstrapAdmin(ctx, "ops@company.com", newHash); !errors.Is(err, auth.ErrAdminLoginInUse) {
 		t.Fatalf("bootstrap with a membership elsewhere: err = %v, want ErrAdminLoginInUse", err)
+	}
+}
+
+// The platform-admin flag (P-04, ADR-0097) follows MAIAK_ADMIN_LOGIN: BootstrapAdmin sets it for
+// the configured admin at every start and clears it for a retired one; a registered user never
+// has it. Login and Me report it.
+func TestIntegrationPlatformAdminFlag(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("auth_platform_admin"))
+	ctx := context.Background()
+	admin := env.AdminConn(t)
+	hash, _ := crypto.HashPassword("pw", cheap)
+	flags := func() string {
+		t.Helper()
+		var s string
+		if err := admin.QueryRow(ctx, `SELECT string_agg(email::text || '=' || is_platform_admin::text, ',' ORDER BY email) FROM users`).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+
+	svc := newBootstrapped(t, env, "admin", hash)
+	res, err := login(t, svc, "admin", "pw")
+	if err != nil || !res.User.IsPlatformAdmin {
+		t.Fatalf("admin login: %+v %v", res.User, err)
+	}
+	p, err := svc.Authenticate(ctx, res.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if me, err := svc.Me(ctx, p); err != nil || !me.User.IsPlatformAdmin {
+		t.Fatalf("me: %+v %v", me.User, err)
+	}
+	if ok, err := svc.IsPlatformAdmin(ctx, p.UserID); err != nil || !ok {
+		t.Fatalf("IsPlatformAdmin(admin) = %v, %v", ok, err)
+	}
+
+	reg, err := svc.Register(ctx, auth.RegisterInput{Email: "user@example.com", Password: "registered user password", IP: testIP})
+	if err != nil || reg.User.IsPlatformAdmin {
+		t.Fatalf("register: %+v %v", reg.User, err)
+	}
+	if ok, err := svc.IsPlatformAdmin(ctx, reg.User.ID); err != nil || ok {
+		t.Fatalf("IsPlatformAdmin(registered) = %v, %v", ok, err)
+	}
+	if got := flags(); got != "admin=true,user@example.com=false" {
+		t.Fatalf("flags = %s", got)
+	}
+
+	// A manual reset of the flag is repaired at the next start (idempotent otherwise).
+	pgtest.MustExec(t, admin, `UPDATE users SET is_platform_admin = false`)
+	_ = newBootstrapped(t, env, "admin", hash)
+	if got := flags(); got != "admin=true,user@example.com=false" {
+		t.Fatalf("flags after restart = %s", got)
+	}
+
+	// Rotating the login moves the flag; the retired admin loses it (and is disabled).
+	_ = newBootstrapped(t, env, "root", hash)
+	if got := flags(); got != "admin=false,root=true,user@example.com=false" {
+		t.Fatalf("flags after rotation = %s", got)
+	}
+	if ok, err := svc.IsPlatformAdmin(ctx, p.UserID); err != nil || ok {
+		t.Fatalf("IsPlatformAdmin(retired admin) = %v, %v", ok, err)
+	}
+	if ok, err := svc.IsPlatformAdmin(ctx, uuid.New()); err != nil || ok {
+		t.Fatalf("IsPlatformAdmin(unknown) = %v, %v", ok, err)
+	}
+}
+
+// HashPassword uses the admin hash's parameters and the bounded argon2 queue.
+func TestIntegrationHashPassword(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("auth_hashpw"))
+	hash, _ := crypto.HashPassword("pw", cheap)
+	svc := newBootstrapped(t, env, "admin", hash)
+	phc, err := svc.HashPassword(context.Background(), "temporary password 123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := crypto.ParseArgon2idHash(phc)
+	if err != nil || parsed.Params != cheap || !parsed.Verify("temporary password 123") {
+		t.Fatalf("hash %q: params %+v err %v", phc, parsed, err)
 	}
 }

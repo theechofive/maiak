@@ -1,6 +1,6 @@
 # Data model
 
-Postgres 15 (RDS), database `maiak`. Migrations are SQL files (goose) in `backend/migrations`, applied by the `migrate` Job as `maiak_owner`; the current list and the lint rules are in the [migrations runbook](../runbooks/migrations.md). This page describes the schema as the migrations up to 2026-10-21 (plans, P-01) leave it (checked against a migrated database).
+Postgres 15 (RDS), database `maiak`. Migrations are SQL files (goose) in `backend/migrations`, applied by the `migrate` Job as `maiak_owner`; the current list and the lint rules are in the [migrations runbook](../runbooks/migrations.md). This page describes the schema as the migrations up to 2026-10-21 (platform admin, P-04) leave it (checked against a migrated database).
 
 ## Decisions that are expensive to change later
 
@@ -14,7 +14,7 @@ Postgres 15 (RDS), database `maiak`. Migrations are SQL files (goose) in `backen
 8. **Transactional outbox:** `notification_deliveries` rows are written in the same transaction as the incident transition (only when the tenant has an active Slack channel, ADR-0019). `jobs` delivers them with retries and a per-channel rate limit (ADR-0051).
 9. **Secrets in the DB are encrypted** (AES-256-GCM with a `key_id` prefix for rotation): the Slack webhook URL in `notification_channels.config_encrypted`.
 10. **Audit log** from day one (`audit_log`, insert-only for runtime roles; metadata never contains URLs or secrets).
-11. **Users exist from the start:** `users`, `memberships`, `auth_identities` (unused until OAuth). The single admin from the Secret is upserted at api start and bound to the tenant `default` as `owner`.
+11. **Users exist from the start:** `users`, `memberships`, `auth_identities` (unused until OAuth). The single admin from the Secret is upserted at api start, bound to the tenant `default` as `owner` and is the only platform admin (`users.is_platform_admin`, ADR-0097); cross-tenant admin work goes through definer functions that check that flag, never through a role that bypasses RLS.
 12. **Plans and quotas (ADR-0093):** every tenant has a plan (`tenants.plan_key` → `plans.key`, default `free`). Effective limits are the plan's `limits` overridden key by key by `tenants.limits`; `internal/plans` resolves them and checks them under the tenant row lock in the transaction that creates the row.
 13. **Time and enums:** `timestamptz` (UTC); enums as `text` + `CHECK`; soft delete for monitors and tenants (`deleted_at`).
 
@@ -24,9 +24,9 @@ Owning module in brackets, as declared in the migrations; only the owner writes 
 
 | Table | Columns and constraints | api | worker/jobs |
 |---|---|---|---|
-| `tenants` [tenants] | `id`, `slug` (unique, `^[a-z0-9][a-z0-9-]{0,62}$`), `name`, `status` (`active`/`suspended`), `plan_key` (FK `plans.key`, default `free`; `default` is on `internal`), `limits jsonb` (per-tenant overrides of `max_monitors`, `max_heartbeats`, `max_channels`; `CHECK` it is an object), timestamps, `deleted_at`. No RLS. The api creates tenants through `auth_create_tenant` (ADR-0095) | S I U(updated_at) | S |
+| `tenants` [tenants] | `id`, `slug` (unique, `^[a-z0-9][a-z0-9-]{0,62}$`), `name`, `status` (`active`/`suspended`; changed by the platform admin through `admin_set_tenant_status`, a soft delete sets `suspended` too), `plan_key` (FK `plans.key`, default `free`; `default` is on `internal`), `limits jsonb` (per-tenant overrides of `max_monitors`, `max_heartbeats`, `max_channels`; `CHECK` it is an object), timestamps, `deleted_at`. No RLS. The api creates tenants through `auth_create_tenant` (ADR-0095) | S I U(updated_at) | S |
 | `plans` [plans] | `key` (PK, slug pattern), `name`, `limits jsonb` (object: `max_monitors`, `max_heartbeats`, `max_channels`, non-negative integers), `created_at`. Seeded `free` (3/1/1) and `internal` (1000/100/10). No RLS; changed only by migrations | S | S |
-| `users` [auth] | `id`, `email citext` unique (the login: `admin` for the system admin, the lowercase email address of a registered user; ADR-0009 amendment 2026-10-21), `password_hash` (nullable), `display_name`, `status` (`active`/`disabled`), timestamps. No RLS | S I U(email, password_hash, display_name, status, updated_at) | none |
+| `users` [auth] | `id`, `email citext` unique (the login: `admin` for the system admin, the lowercase email address of a registered user; ADR-0009 amendment 2026-10-21), `password_hash` (nullable), `display_name`, `status` (`active`/`disabled`), `is_platform_admin` (default false; set only by `auth_sync_platform_admin` for the configured system admin, ADR-0097), timestamps. No RLS | S I(id, email, password_hash, display_name) U(email, password_hash, display_name, status, updated_at) | none |
 | `memberships` [auth] | PK `(tenant_id, user_id)`, `role` in owner/admin/member/viewer | S I U D | none |
 | `auth_identities` [auth] | PK `(provider, subject)`, `user_id`; unused until OAuth. No RLS | S I D | none |
 | `sessions` [auth] | `id`, `user_id`, `tenant_id`, `token_hash bytea` (SHA-256, unique), `csrf_token`, `expires_at`, `last_seen_at`, `ip`, `user_agent` | S I U D | none |
@@ -60,15 +60,24 @@ Partitions are named `check_results_pYYYYMM` (UTC month) and created by `ensure_
 Hourly rollups are designed to be kept 13 months, but nothing deletes them yet (L-110).
 
 ## SECURITY DEFINER functions
-All are owned by `maiak_owner`, pin `search_path = public, pg_temp`, are not executable by PUBLIC and are allow-listed in the schema lint (`definerAllowList` in `backend/migrations/integration_test.go`) with the only role that may execute them. They read and write through `owner_*` policies that apply to `maiak_owner` only.
+All are owned by `maiak_owner`, pin `search_path = public, pg_temp`, are not executable by PUBLIC and are allow-listed in the schema lint (`definerAllowList` in `backend/migrations/integration_test.go`) with the only role that may execute them. They read and write through `owner_*` policies that apply to `maiak_owner` only. The `admin_*` functions take the acting user as their first argument and refuse (SQLSTATE `MKA01`) unless it is an active platform admin; they share two internal invoker helpers that no runtime role may execute, `admin_require_platform_admin(actor)` and `admin_audit(...)` (inserts the audit row under the target tenant's `app.tenant_id` and restores the caller's).
 
 | Function | Grantee | Called by | Purpose |
 |---|---|---|---|
 | `auth_lookup_session(token_hash)` | `maiak_api` | api (`auth.Service.Authenticate`) | Finds a session before the tenant is known |
-| `auth_login_tenant(user_id)` | `maiak_api` | api (`auth.Service.Login`) | The tenant a login binds to: `default` if the user is a member of it, otherwise the user's oldest membership in a tenant that is not deleted, or NULL (P-02, ADR-0095) |
+| `auth_login_tenant(user_id)` | `maiak_api` | api (`auth.Service.Login`) | The tenant a login binds to: `default` if the user is a member of it, otherwise the user's oldest membership in a tenant that is not deleted, otherwise (since P-04) a deleted one so the login can answer "suspended", or NULL (P-02, ADR-0095, ADR-0097) |
 | `auth_create_tenant(id, slug, name)` | `maiak_api` | api (`tenants.Create` on registration, `tenants.Ensure` in `BootstrapAdmin`) | Inserts a tenant on `internal` for the slug `default` and on `free` otherwise; returns the id, or NULL when the slug is taken (ADR-0095) |
 | `auth_count_other_memberships(user_id, tenant_id)` | `maiak_api` | api (`BootstrapAdmin`) | Number of the user's memberships outside the tenant, deleted tenants included; non-zero refuses the admin adoption (ADR-0095) |
 | `auth_revoke_user_sessions(user_id)` | `maiak_api` | api (`BootstrapAdmin`) | Deletes the user's sessions in every tenant under the isolation policy, tenant by tenant, and restores the caller's `app.tenant_id` (ADR-0095) |
+| `auth_sync_platform_admin(user_id)` | `maiak_api` | api (`BootstrapAdmin`) | Sets `is_platform_admin` for the configured admin and clears it for everyone else; refuses a user that is not an active owner of `default` or has another membership (ADR-0097) |
+| `admin_stats(actor)` | `maiak_api` | api (`admin.Service`, `GET /admin/stats`) | Platform-wide counts as JSON (tenants by state, active users, live monitors and heartbeats, tenants per plan) |
+| `admin_list_tenants(actor, query, include_deleted, limit, offset)` | `maiak_api` | api (`GET /admin/tenants`) | One page of tenants with plan and usage counts and the total of matches |
+| `admin_get_tenant(actor, tenant_id)` | `maiak_api` | api (`GET`/`PATCH /admin/tenants/{id}`) | One tenant, deleted ones included |
+| `admin_set_tenant_plan(actor, tenant_id, plan_key, audit_id, ip)` | `maiak_api` | api (`PATCH /admin/tenants/{id}`) | Moves a live tenant to an existing plan under the tenant row lock; audit `admin.tenant.plan_changed` |
+| `admin_set_tenant_status(actor, tenant_id, status, audit_id, ip)` | `maiak_api` | api (`PATCH /admin/tenants/{id}`) | Suspends or unsuspends a live tenant (never `default` or the actor's own); audit `admin.tenant.suspended` / `unsuspended` |
+| `admin_delete_tenant(actor, tenant_id, audit_id, ip)` | `maiak_api` | api (`DELETE /admin/tenants/{id}`) | Soft delete (`deleted_at`, status `suspended`; never `default` or the actor's own); audit `admin.tenant.deleted` |
+| `admin_list_users(actor, tenant_id, query, limit, offset)` | `maiak_api` | api (`GET /admin/tenants/{id}/users`) | One page of a tenant's members with role and flag |
+| `admin_reset_user_password(actor, user_id, password_hash, audit_id, ip)` | `maiak_api` | api (`POST /admin/users/{id}/reset-password`) | Stores the argon2id hash of a temporary password, deletes all the user's sessions (`auth_revoke_user_sessions`); never for a platform admin; audit `admin.user.password_reset` without secrets |
 | `reset_monitor_runtime(monitor_id)` | `maiak_api` | api (`monitors` pause, resume, URL change, through `scheduler`) | Resets the monitor's location rows (status unknown, lease dropped, next run within 30 s; a heartbeat stays at `infinity`); tenant taken from `app.tenant_id` |
 | `claim_due_monitors(n, p_location)` | `maiak_worker` | worker (`scheduler.Claim`), every second | Leases up to `n` due rows of http monitors of one location, skipping heartbeats, paused or deleted monitors and suspended or deleted tenants |
 | `heartbeat_ping(token_hash)` | `maiak_api` | api (public `GET`/`POST /api/v1/heartbeat/{token}`) | Records a ping for a live heartbeat (not paused, not deleted, tenant active): locks the row, then sets `last_ping_at = greatest(last_ping_at, clock_timestamp())`; returns tenant, monitor and whether it recorded, nothing for an unknown hash (ADR-0094, ADR-0096) |
@@ -80,7 +89,7 @@ All are owned by `maiak_owner`, pin `search_path = public, pg_temp`, are not exe
 | `detach_expired_partition(name)` | `maiak_worker` | jobs, daily | Retention step 2 |
 | `drop_detached_partition(name)` | `maiak_worker` | jobs, daily | Retention step 3 |
 | `purge_expired_sessions()` | `maiak_worker` | jobs, hourly | Deletes expired sessions |
-| `claim_deliveries(n)` | `maiak_worker` | jobs, every second | Leases ready outbox rows (oldest first per monitor), sets `claim_token`, requeues expired claims and counts the attempt |
+| `claim_deliveries(n)` | `maiak_worker` | jobs, every second | Leases ready outbox rows (oldest first per monitor) of active tenants that are not deleted (P-04), sets `claim_token`, requeues expired claims and counts the attempt |
 | `finish_delivery(id, token, status, error, retry_at)` | `maiak_worker` | jobs | Records an outcome only for the holder of the claim token |
 | `outbox_pending()` | `maiak_worker` | jobs, every 15 s | Count for `maiak_jobs_outbox_pending` |
 

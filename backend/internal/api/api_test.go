@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/theechofive/maiak/backend/internal/admin"
 	"github.com/theechofive/maiak/backend/internal/auth"
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/plans"
@@ -175,6 +176,14 @@ func TestWriteErrorMapping(t *testing.T) {
 		typ    string
 	}{
 		{auth.ErrInvalidCredentials, 401, problemInvalidCredentials},
+		{fmt.Errorf("auth: login: %w", auth.ErrAccountSuspended), 403, problemAccountSuspended},
+		{errForbidden, 403, problemForbidden},
+		{admin.ErrForbidden, 403, problemForbidden},
+		{admin.ErrNotFound, 404, problemNotFound},
+		{admin.ErrProtectedTenant, 409, problemProtectedTenant},
+		{admin.ErrOwnTenant, 409, problemProtectedTenant},
+		{admin.ErrSystemAdmin, 409, problemSystemAdmin},
+		{admin.ErrTenantDeleted, 409, problemTenantDeleted},
 		{fmt.Errorf("auth: register: %w", auth.ErrEmailTaken), 409, problemEmailTaken},
 		{errRegistrationDisabled, 403, problemRegistrationOff},
 		{fmt.Errorf("wrapped: %w", auth.ErrUnauthenticated), 401, problemUnauthenticated},

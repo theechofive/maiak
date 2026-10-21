@@ -100,14 +100,16 @@ func TestIntegrationHeartbeatHardening(t *testing.T) {
 	// Replays the migration over a database whose check still accepted any grace.
 	replay := func(t *testing.T, grace string) error {
 		t.Helper()
+		// The later platform admin migration is rolled back and re-applied with it.
+		pgtest.MustExec(t, admin, rollbackPlatformAdmin...)
 		pgtest.MustExec(t, admin,
 			`ALTER TABLE monitors DROP CONSTRAINT monitors_heartbeat_check`,
 			`ALTER TABLE monitors ADD CONSTRAINT monitors_heartbeat_check CHECK (true)`,
 			`DELETE FROM goose_db_version WHERE version_id = 20261021180000`,
 			`UPDATE monitors SET config = jsonb_set(config, '{graceSeconds}', '`+grace+`'::jsonb) WHERE id = '`+id+`'`)
 		n, err := env.Migrate(ctx)
-		if err == nil && n != 1 {
-			t.Fatalf("re-applied %d migrations, want 1", n)
+		if err == nil && n != 2 {
+			t.Fatalf("re-applied %d migrations, want 2", n)
 		}
 		return err
 	}

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Maiak API
-  version: 0.3.0
+  version: 0.4.0
   description: |
     REST API of Maiak, the multi-tenant uptime-monitoring service. This file is the source of
     truth: the Go server and the TypeScript client are generated from it (ADR-0008).
@@ -38,6 +38,11 @@ tags:
     description: Tenant settings such as the Slack webhook
   - name: plan
     description: The tenant's plan, its limits and the current usage
+  - name: admin
+    description: |
+      Platform administration across tenants (ADR-0097). Only the platform admin (the system
+      admin configured by `MAIAK_ADMIN_LOGIN`, `isPlatformAdmin` in the user object) may call
+      these operations; any other session gets 403 `urn:maiak:problem:forbidden`.
 security:
   - cookieAuth: []
 paths:
@@ -82,7 +87,9 @@ paths:
         the system login (`admin`), case-insensitive (normalised to lowercase); the session is
         bound to the user's tenant. Failures always return the same generic error. Attempts are
         rate limited per client IP and per normalised login. Like registration, it needs no CSRF
-        token (there is no session yet).
+        token (there is no session yet). When the login and password are right but the tenant was
+        suspended or deleted by the platform admin, the answer is 403
+        `urn:maiak:problem:account-suspended`; a wrong password never reveals that state.
       tags: [auth]
       security: []
       requestBody:
@@ -107,6 +114,12 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The tenant is suspended or deleted (`urn:maiak:problem:account-suspended`)
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         default:
@@ -708,6 +721,235 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/admin/stats:
+    get:
+      operationId: adminGetStats
+      summary: Platform-wide counts
+      description: Tenants by state, active users, live monitors and heartbeats of tenants that are not deleted, and every plan with its number of tenants. Platform admins only.
+      tags: [admin]
+      responses:
+        "200":
+          description: The counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminStats"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/tenants:
+    get:
+      operationId: adminListTenants
+      summary: List tenants
+      description: |
+        Tenants of the platform with plan, status and usage, newest first. `query` matches the
+        slug, the name, the id or the login of a member (substring, case-insensitive). Deleted
+        tenants are listed only with `includeDeleted=true`. Platform admins only.
+      tags: [admin]
+      parameters:
+        - $ref: "#/components/parameters/AdminQuery"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - name: includeDeleted
+          in: query
+          required: false
+          description: Also list soft-deleted tenants
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: One page of tenants
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminTenantList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/tenants/{tenantId}:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+    get:
+      operationId: adminGetTenant
+      summary: One tenant
+      description: One tenant with plan, status and usage; deleted tenants included. Platform admins only.
+      tags: [admin]
+      responses:
+        "200":
+          description: The tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminTenant"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+    patch:
+      operationId: adminUpdateTenant
+      summary: Change a tenant's plan or status
+      description: |
+        Changes the plan (`planKey`, an existing plan, otherwise 422) and/or the status (`active`
+        or `suspended`, otherwise 422) in one transaction; at least one is required (422). Each
+        change writes an audit row in the tenant. A plan change keeps every existing monitor and
+        channel: usage above the new limits only blocks new creations. A suspended tenant's users
+        cannot log in (403 `urn:maiak:problem:account-suspended`), its sessions stop working, its
+        monitors and heartbeats are not checked or evaluated and its Slack deliveries wait. The
+        `default` tenant and a tenant the admin belongs to cannot be suspended (409
+        `urn:maiak:problem:protected-tenant`); a deleted tenant cannot be changed (409
+        `urn:maiak:problem:tenant-deleted`). Platform admins only.
+      tags: [admin]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminTenantUpdate"
+      responses:
+        "200":
+          description: The tenant after the change
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminTenant"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: adminDeleteTenant
+      summary: Soft-delete a tenant
+      description: |
+        Marks the tenant deleted (and suspended). Nothing is erased: its data stays, its users
+        cannot log in, its sessions stop working and nothing of it is checked or delivered any
+        more. Deleting a deleted tenant changes nothing. The `default` tenant and a tenant the
+        admin belongs to cannot be deleted (409 `urn:maiak:problem:protected-tenant`). Platform
+        admins only.
+      tags: [admin]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "204":
+          description: Deleted
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/tenants/{tenantId}/users:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+    get:
+      operationId: adminListTenantUsers
+      summary: Users of a tenant
+      description: The members of the tenant (deleted tenants included), oldest membership first. `query` matches the login. Platform admins only.
+      tags: [admin]
+      parameters:
+        - $ref: "#/components/parameters/AdminQuery"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: One page of users
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminUserList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/users/{userId}/reset-password:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        description: User id; a value that is not a UUID is answered with 400
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: adminResetUserPassword
+      summary: Give a user a temporary password
+      description: |
+        Replaces the user's password with a random temporary password, deletes all of the user's
+        sessions and writes an audit row (never with the password). The password is in this
+        answer only (`Cache-Control: no-store`); hand it to the user over a trusted channel. The
+        password of the system admin is managed by its Secret and cannot be reset here (409
+        `urn:maiak:problem:system-admin`). Platform admins only.
+      tags: [admin]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "200":
+          description: The temporary password, shown once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemporaryPassword"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        default:
+          $ref: "#/components/responses/Error"
 components:
   securitySchemes:
     cookieAuth:
@@ -727,6 +969,42 @@ components:
       schema:
         type: string
         format: uuid
+    TenantId:
+      name: tenantId
+      in: path
+      required: true
+      description: Tenant id; a value that is not a UUID is answered with 400
+      schema:
+        type: string
+        format: uuid
+    AdminQuery:
+      name: query
+      in: query
+      required: false
+      description: Case-insensitive substring to search for; empty lists everything
+      schema:
+        type: string
+        maxLength: 200
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Page size
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 25
+    Offset:
+      name: offset
+      in: query
+      required: false
+      description: Number of items to skip
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 1000000
+        default: 0
     CsrfToken:
       name: X-CSRF-Token
       in: header
@@ -899,6 +1177,12 @@ components:
           example: admin
         display_name:
           type: string
+        isPlatformAdmin:
+          type: boolean
+          description: |
+            Whether the user is the platform admin (only the system admin configured by
+            `MAIAK_ADMIN_LOGIN`; no API grants it). Always present in answers of this version;
+            camelCase like every field added after ADR-0017.
     Tenant:
       type: object
       additionalProperties: false
@@ -1427,6 +1711,174 @@ components:
           type: integer
           minimum: 0
           description: Notification channels (the Slack webhook)
+    TenantStatus:
+      type: string
+      description: "`suspended`: the tenant's users cannot log in and nothing of it is checked. A deleted tenant is also `suspended` and has `deletedAt`."
+      enum: [active, suspended]
+    AdminTenant:
+      type: object
+      additionalProperties: false
+      required: [id, slug, name, planKey, planName, status, createdAt, deletedAt, users, monitors, heartbeats]
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+        name:
+          type: string
+        planKey:
+          type: string
+          example: free
+        planName:
+          type: string
+          example: Free
+        status:
+          $ref: "#/components/schemas/TenantStatus"
+        createdAt:
+          type: string
+          format: date-time
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set when the tenant is soft-deleted
+        users:
+          type: integer
+          minimum: 0
+          description: Members of the tenant
+        monitors:
+          type: integer
+          minimum: 0
+          description: HTTPS monitors that are not deleted (paused ones included)
+        heartbeats:
+          type: integer
+          minimum: 0
+          description: Heartbeat monitors that are not deleted (paused ones included)
+    AdminTenantList:
+      type: object
+      additionalProperties: false
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminTenant"
+        total:
+          type: integer
+          minimum: 0
+          description: Number of all matching tenants
+        limit:
+          type: integer
+        offset:
+          type: integer
+    AdminTenantUpdate:
+      type: object
+      additionalProperties: false
+      description: At least one field; the status is checked by the server (422 for anything but `active` or `suspended`)
+      properties:
+        planKey:
+          type: string
+          minLength: 1
+          maxLength: 64
+          example: internal
+        status:
+          type: string
+          maxLength: 32
+          description: "`active` or `suspended`"
+          example: suspended
+    AdminUser:
+      type: object
+      additionalProperties: false
+      required: [id, login, status, role, createdAt, isPlatformAdmin]
+      properties:
+        id:
+          type: string
+          format: uuid
+        login:
+          type: string
+        status:
+          type: string
+          enum: [active, disabled]
+        role:
+          $ref: "#/components/schemas/MembershipRole"
+        createdAt:
+          type: string
+          format: date-time
+        isPlatformAdmin:
+          type: boolean
+          description: The system admin; its password is managed by its Secret and cannot be reset here
+    AdminUserList:
+      type: object
+      additionalProperties: false
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminUser"
+        total:
+          type: integer
+          minimum: 0
+        limit:
+          type: integer
+        offset:
+          type: integer
+    TemporaryPassword:
+      type: object
+      additionalProperties: false
+      required: [temporaryPassword]
+      properties:
+        temporaryPassword:
+          type: string
+          format: password
+          description: The new password (24 characters); shown once, never stored or logged in plain text
+    AdminPlanCount:
+      type: object
+      additionalProperties: false
+      required: [key, name, tenants]
+      properties:
+        key:
+          type: string
+        name:
+          type: string
+        tenants:
+          type: integer
+          minimum: 0
+          description: Tenants on the plan that are not deleted
+    AdminStats:
+      type: object
+      additionalProperties: false
+      required: [tenants, users, monitors, heartbeats, plans]
+      properties:
+        tenants:
+          type: object
+          additionalProperties: false
+          required: [total, active, suspended, deleted]
+          properties:
+            total:
+              type: integer
+              description: Tenants that are not deleted
+            active:
+              type: integer
+            suspended:
+              type: integer
+            deleted:
+              type: integer
+        users:
+          type: integer
+          description: Active users
+        monitors:
+          type: integer
+          description: HTTPS monitors that are not deleted, in tenants that are not deleted
+        heartbeats:
+          type: integer
+          description: Heartbeat monitors that are not deleted, in tenants that are not deleted
+        plans:
+          type: array
+          description: Every plan, also those without tenants
+          items:
+            $ref: "#/components/schemas/AdminPlanCount"
     FieldError:
       type: object
       additionalProperties: false

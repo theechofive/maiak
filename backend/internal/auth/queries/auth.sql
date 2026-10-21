@@ -1,10 +1,10 @@
 -- name: GetUserByEmail :one
-SELECT id, email, password_hash, display_name, status
+SELECT id, email, password_hash, display_name, status, is_platform_admin
 FROM users
 WHERE email = @email;
 
 -- name: GetUserByID :one
-SELECT id, email, display_name, status
+SELECT id, email, display_name, status, is_platform_admin
 FROM users
 WHERE id = @id;
 

@@ -35,6 +35,16 @@ var definerCalls = map[string]string{
 	"reset_monitor_runtime":        `SELECT reset_monitor_runtime(gen_random_uuid())`,
 	"heartbeat_ping":               `SELECT * FROM heartbeat_ping('\x00')`,
 	"list_due_heartbeats":          `SELECT * FROM list_due_heartbeats(1)`,
+	// Executable by maiak_api, which gets the in-function refusal (MKA01) for an unknown actor.
+	"auth_sync_platform_admin":  `SELECT auth_sync_platform_admin(gen_random_uuid())`,
+	"admin_list_tenants":        `SELECT * FROM admin_list_tenants(gen_random_uuid(), '', false, 1, 0)`,
+	"admin_get_tenant":          `SELECT * FROM admin_get_tenant(gen_random_uuid(), gen_random_uuid())`,
+	"admin_set_tenant_plan":     `SELECT admin_set_tenant_plan(gen_random_uuid(), gen_random_uuid(), 'free', gen_random_uuid(), NULL)`,
+	"admin_set_tenant_status":   `SELECT admin_set_tenant_status(gen_random_uuid(), gen_random_uuid(), 'active', gen_random_uuid(), NULL)`,
+	"admin_delete_tenant":       `SELECT admin_delete_tenant(gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), NULL)`,
+	"admin_list_users":          `SELECT * FROM admin_list_users(gen_random_uuid(), gen_random_uuid(), '', 1, 0)`,
+	"admin_reset_user_password": `SELECT * FROM admin_reset_user_password(gen_random_uuid(), gen_random_uuid(), '$argon2id$x', gen_random_uuid(), NULL)`,
+	"admin_stats":               `SELECT admin_stats(gen_random_uuid())`,
 }
 
 // Every definer function in the allow-list is executable by exactly the roles listed there: a

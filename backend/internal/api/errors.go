@@ -14,6 +14,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/getkin/kin-openapi/routers"
 
+	"github.com/theechofive/maiak/backend/internal/admin"
 	"github.com/theechofive/maiak/backend/internal/auth"
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/notify"
@@ -43,6 +44,11 @@ const (
 	problemSlackNotConfigured = "urn:maiak:problem:slack-not-configured"
 	problemSlackFailed        = "urn:maiak:problem:slack-delivery-failed"
 	problemUnavailable        = "urn:maiak:problem:unavailable"
+	problemForbidden          = "urn:maiak:problem:forbidden"
+	problemAccountSuspended   = "urn:maiak:problem:account-suspended"
+	problemProtectedTenant    = "urn:maiak:problem:protected-tenant"
+	problemSystemAdmin        = "urn:maiak:problem:system-admin"
+	problemTenantDeleted      = "urn:maiak:problem:tenant-deleted"
 	problemInternal           = "urn:maiak:problem:internal"
 )
 
@@ -91,6 +97,25 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 		p.Type, p.Title, p.Status = problemUnauthenticated, "Not authenticated", http.StatusUnauthorized
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		p.Type, p.Title, p.Status = problemInvalidCredentials, "Wrong login or password", http.StatusUnauthorized
+	case errors.Is(err, auth.ErrAccountSuspended):
+		// Only after a correct password (auth.Login), so it reveals nothing to a guess.
+		p.Type, p.Title, p.Status = problemAccountSuspended, "Account suspended", http.StatusForbidden
+		p.Detail = "This workspace was suspended by the platform administrator. Contact them to restore access."
+	case errors.Is(err, errForbidden), errors.Is(err, admin.ErrForbidden):
+		p.Type, p.Title, p.Status = problemForbidden, "Not allowed", http.StatusForbidden
+		p.Detail = "Only the platform administrator may do this."
+	case errors.Is(err, admin.ErrProtectedTenant), errors.Is(err, admin.ErrOwnTenant):
+		p.Type, p.Title, p.Status = problemProtectedTenant, "This tenant cannot be suspended or deleted", http.StatusConflict
+		p.Detail = "The default tenant and the tenant you belong to cannot be suspended or deleted."
+		if errors.Is(err, admin.ErrOwnTenant) {
+			p.Detail = "You belong to this tenant: suspending or deleting it would lock you out."
+		}
+	case errors.Is(err, admin.ErrSystemAdmin):
+		p.Type, p.Title, p.Status = problemSystemAdmin, "The system administrator's password cannot be reset here", http.StatusConflict
+		p.Detail = "Its credentials come from the maiak-admin Secret: change the password hash there (docs/runbooks/admin-panel.md)."
+	case errors.Is(err, admin.ErrTenantDeleted):
+		p.Type, p.Title, p.Status = problemTenantDeleted, "The tenant is deleted", http.StatusConflict
+		p.Detail = "A deleted tenant cannot be changed."
 	case errors.Is(err, auth.ErrEmailTaken):
 		// Neutral wording; registration without verification cannot hide that the account exists.
 		p.Type, p.Title, p.Status = problemEmailTaken, "This email is already registered", http.StatusConflict
@@ -121,7 +146,7 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 		// disabled (ADR-0018).
 		log.ErrorContext(r.Context(), "request failed", "error", err)
 		p.Type, p.Title, p.Status = problemUnavailable, "Monitoring location unavailable, try again later", http.StatusServiceUnavailable
-	case errors.Is(err, errNotFound), errors.Is(err, routers.ErrPathNotFound), errors.Is(err, monitors.ErrNotFound), errors.Is(err, queries.ErrNotFound):
+	case errors.Is(err, errNotFound), errors.Is(err, routers.ErrPathNotFound), errors.Is(err, monitors.ErrNotFound), errors.Is(err, queries.ErrNotFound), errors.Is(err, admin.ErrNotFound):
 		p.Type, p.Title, p.Status = problemNotFound, "Not found", http.StatusNotFound
 	case errors.Is(err, errMethodNotAllowed), errors.Is(err, routers.ErrMethodNotAllowed):
 		p.Type, p.Title, p.Status = problemMethodNotAllowed, "Method not allowed", http.StatusMethodNotAllowed

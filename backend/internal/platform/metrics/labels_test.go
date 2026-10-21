@@ -11,6 +11,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/theechofive/maiak/backend/internal/admin"
 	"github.com/theechofive/maiak/backend/internal/api"
 	"github.com/theechofive/maiak/backend/internal/auth"
 	"github.com/theechofive/maiak/backend/internal/jobs"
@@ -44,6 +45,9 @@ func allMetrics(t *testing.T) map[string][]string {
 	reg := &recorder{Registry: metrics.NewRegistry("test", "v", "c")}
 	metrics.NewHTTP(reg)
 	if _, err := auth.NewService(nil, auth.Options{Registerer: reg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.NewService(nil, nil, admin.Options{Registerer: reg}); err != nil {
 		t.Fatal(err)
 	}
 	worker.NewMetrics(reg)

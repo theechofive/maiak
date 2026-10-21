@@ -308,7 +308,8 @@ func TestIntegrationUnsafeOperationsNeedCSRF(t *testing.T) {
 			if method == http.MethodGet || isCSRFExemptOperation(op.OperationID) {
 				continue
 			}
-			url := strings.ReplaceAll(path, "{monitorId}", "0192b9c4-7c5e-7000-8000-000000000001")
+			url := strings.NewReplacer("{monitorId}", "0192b9c4-7c5e-7000-8000-000000000001",
+				"{tenantId}", "0192b9c4-7c5e-7000-8000-000000000002", "{userId}", "0192b9c4-7c5e-7000-8000-000000000003").Replace(path)
 			for name, token := range map[string]string{"missing": "", "wrong": csrf + "x"} {
 				hdr := map[string]string{"Cookie": cookie["Cookie"]}
 				if token != "" {

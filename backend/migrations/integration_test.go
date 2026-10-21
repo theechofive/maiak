@@ -47,9 +47,20 @@ var definerAllowList = map[string][]string{
 	"auth_create_tenant":           {"maiak_api"},
 	"auth_count_other_memberships": {"maiak_api"},
 	"auth_revoke_user_sessions":    {"maiak_api"},
-	"ensure_partitions":            {"maiak_worker"},
-	"claim_due_monitors":           {"maiak_worker"},
-	"compute_rollups":              {"maiak_worker"},
+	// The platform admin panel (P-04, ADR-0097): the flag of the configured admin, and the
+	// cross-tenant admin operations, each of which checks the acting user's flag inside.
+	"auth_sync_platform_admin":  {"maiak_api"},
+	"admin_list_tenants":        {"maiak_api"},
+	"admin_get_tenant":          {"maiak_api"},
+	"admin_set_tenant_plan":     {"maiak_api"},
+	"admin_set_tenant_status":   {"maiak_api"},
+	"admin_delete_tenant":       {"maiak_api"},
+	"admin_list_users":          {"maiak_api"},
+	"admin_reset_user_password": {"maiak_api"},
+	"admin_stats":               {"maiak_api"},
+	"ensure_partitions":         {"maiak_worker"},
+	"claim_due_monitors":        {"maiak_worker"},
+	"compute_rollups":           {"maiak_worker"},
 	// Rollups from the watermark in rollup_state (ADR-0090).
 	"compute_rollups_catch_up": {"maiak_worker"},
 	// Retention in three steps driven by jobs (ADR-0060).

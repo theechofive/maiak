@@ -18,9 +18,10 @@ No metric is labelled per tenant, monitor, incident, user, channel, URL, host, p
 |---|---|---|---|
 | `maiak_http_requests_total` | counter | `route`, `method`, `code` | Requests by route template and status; `route="unmatched"` for paths no route matched; `method` is one of `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, else `other` |
 | `maiak_http_request_duration_seconds` | histogram | `route`, `method` | Request latency |
-| `maiak_auth_logins_total` | counter | `result` (`succeeded`, `failed`, `rate_limited`) | Login attempts |
+| `maiak_auth_logins_total` | counter | `result` (`succeeded`, `failed`, `suspended`, `rate_limited`) | Login attempts; `suspended` is a correct password for a tenant the platform admin suspended or deleted (P-04) |
 | `maiak_auth_registrations_total` | counter | `result` (`succeeded`, `invalid`, `email_taken`, `rate_limited`) | Self-service registrations (P-02); a burst of `succeeded` while registration is open is the signal for the kill switch (R-130) |
 | `maiak_heartbeat_pings_total` | counter | `result` (`accepted`, `ignored`, `unknown`, `rate_limited`, `error`) | Pings of the public heartbeat endpoint (P-03, ADR-0094); `ignored` is a known token of a paused or deleted heartbeat, `unknown` a token nobody has |
+| `maiak_admin_actions_total` | counter | `action` (`admin.tenant.plan_changed`, `admin.tenant.suspended`, `admin.tenant.unsuspended`, `admin.tenant.deleted`, `admin.user.password_reset`) | Changes made in the platform admin panel (P-04, ADR-0097); each also has an audit row in the target tenant. Any increase outside planned admin work deserves a look at the audit log |
 
 ### worker
 | Metric | Type | Labels | Meaning |
