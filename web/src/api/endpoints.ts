@@ -12,6 +12,7 @@ export type LatencyPoint = Schemas["LatencyPoint"];
 export type Check = Schemas["Check"];
 export type Incident = Schemas["Incident"];
 export type SlackSettings = Schemas["SlackSettings"];
+export type Usage = Schemas["Usage"];
 
 /** Dashboard refresh interval (ADR-0015). TanStack Query pauses it while the tab is hidden. */
 export const POLL_MS = 15_000;
@@ -24,6 +25,7 @@ export const queryKeys = {
   checks: (id: string) => ["monitors", id, "checks"] as const,
   incidents: (id: string) => ["monitors", id, "incidents"] as const,
   slack: ["settings", "slack"] as const,
+  usage: ["usage"] as const,
 };
 
 export async function login(login: string, password: string): Promise<SessionInfo> {
@@ -100,3 +102,5 @@ export const putSlackSettings = (webhookUrl: string) =>
   unwrap(client.PUT("/api/v1/settings/slack", { body: { webhookUrl } }));
 
 export const testSlack = () => unwrap(client.POST("/api/v1/settings/slack/test"));
+
+export const getUsage = () => unwrap(client.GET("/api/v1/usage"));

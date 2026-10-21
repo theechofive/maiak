@@ -1,4 +1,4 @@
-import { ApiError } from "../api/client";
+import { ApiError, PLAN_LIMIT_PROBLEM_TYPE } from "../api/client";
 import {
   emptyMonitorForm,
   mapServerErrors,
@@ -111,15 +111,31 @@ describe("mapServerErrors", () => {
   });
 
   it("uses the problem for errors without fields", () => {
-    const limit = new ApiError({
+    const conflict = new ApiError({
       type: "x",
       title: "Conflict",
       status: 409,
-      detail: "The monitor limit (50) is reached.",
+      detail: "The monitor was changed meanwhile.",
+    });
+    expect(mapServerErrors(conflict)).toEqual({
+      fields: {},
+      general: "The monitor was changed meanwhile.",
+    });
+  });
+
+  it("explains a plan limit in plain words", () => {
+    const limit = new ApiError({
+      type: PLAN_LIMIT_PROBLEM_TYPE,
+      title: "Plan limit reached",
+      status: 409,
+      detail: "The Free plan allows at most 3 monitors.",
+      limit: "monitors",
+      max: 3,
     });
     expect(mapServerErrors(limit)).toEqual({
       fields: {},
-      general: "The monitor limit (50) is reached.",
+      general:
+        "Your plan allows at most 3 monitors, and the limit is reached. Delete a monitor to add a new one.",
     });
   });
 });

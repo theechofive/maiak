@@ -104,8 +104,10 @@ export interface paths {
     /**
      * Create a monitor
      * @description Creates an HTTPS monitor. It starts with status `unknown` and is first checked within
-     *     about 30 seconds. Fails with 409 when the tenant's monitor limit (50 by default) is reached
-     *     and with 503 when the probe location that runs new monitors is unavailable.
+     *     about 30 seconds. Fails with 409 `urn:maiak:problem:plan-limit-reached` (`limit` is
+     *     `monitors`) when the tenant already has as many monitors as its plan allows (deleted
+     *     monitors do not count, see `GET /api/v1/usage`), and with 503 when the probe location
+     *     that runs new monitors is unavailable.
      */
     post: operations["createMonitor"];
     delete?: never;
@@ -282,9 +284,34 @@ export interface paths {
     get: operations["getSlackSettings"];
     /**
      * Set the Slack webhook
-     * @description Stores the Incoming Webhook URL encrypted. It must match `https://hooks.slack.com/services/...` (422 otherwise).
+     * @description Stores the Incoming Webhook URL encrypted. It must match
+     *     `https://hooks.slack.com/services/...` (422 otherwise). Replacing the URL of the existing
+     *     channel is always allowed; creating the channel fails with 409
+     *     `urn:maiak:problem:plan-limit-reached` (`limit` is `channels`) when the tenant already has
+     *     as many notification channels as its plan allows.
      */
     put: operations["putSlackSettings"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/usage": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Plan, limits and usage
+     * @description The tenant's plan, its effective limits (the plan's limits with per-tenant overrides
+     *     applied) and the current usage. Deleted monitors do not count.
+     */
+    get: operations["getUsage"];
+    put?: never;
     post?: never;
     delete?: never;
     options?: never;
@@ -576,6 +603,24 @@ export interface components {
        */
       webhookUrl: string;
     };
+    Usage: {
+      plan: components["schemas"]["PlanRef"];
+      limits: components["schemas"]["ResourceCounts"];
+      usage: components["schemas"]["ResourceCounts"];
+    };
+    PlanRef: {
+      /** @example free */
+      key: string;
+      /** @example Free */
+      name: string;
+    };
+    ResourceCounts: {
+      monitors: number;
+      /** @description Heartbeat (watchdog) monitors; usage is always 0 until that monitor type exists */
+      heartbeats: number;
+      /** @description Notification channels (the Slack webhook) */
+      channels: number;
+    };
     FieldError: {
       /**
        * @description Dotted path of the request body field
@@ -599,6 +644,13 @@ export interface components {
       request_id?: string;
       /** @description Per-field validation errors (400 and 422) */
       fieldErrors?: components["schemas"]["FieldError"][];
+      /**
+       * @description Which plan limit was reached (only with `urn:maiak:problem:plan-limit-reached`)
+       * @enum {string}
+       */
+      limit?: "monitors" | "heartbeats" | "channels";
+      /** @description The value of that limit for the tenant (only with `urn:maiak:problem:plan-limit-reached`) */
+      max?: number;
     };
   };
   responses: {
@@ -638,12 +690,34 @@ export interface components {
         "application/problem+json": components["schemas"]["Problem"];
       };
     };
-    /** @description The request conflicts with the current state (for example the monitor limit is reached) */
+    /** @description The request conflicts with the current state (for example Slack is not configured) */
     Conflict: {
       headers: {
         [name: string]: unknown;
       };
       content: {
+        "application/problem+json": components["schemas"]["Problem"];
+      };
+    };
+    /**
+     * @description The tenant's plan does not allow one more of this resource: `type` is
+     *     `urn:maiak:problem:plan-limit-reached`, with the extension members `limit` and `max`
+     */
+    PlanLimitReached: {
+      headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        /**
+         * @example {
+         *       "type": "urn:maiak:problem:plan-limit-reached",
+         *       "title": "Plan limit reached",
+         *       "status": 409,
+         *       "detail": "The Free plan allows at most 3 monitors.",
+         *       "limit": "monitors",
+         *       "max": 3
+         *     }
+         */
         "application/problem+json": components["schemas"]["Problem"];
       };
     };
@@ -847,7 +921,7 @@ export interface operations {
       400: components["responses"]["BadRequest"];
       401: components["responses"]["Unauthorized"];
       403: components["responses"]["Forbidden"];
-      409: components["responses"]["Conflict"];
+      409: components["responses"]["PlanLimitReached"];
       422: components["responses"]["UnprocessableEntity"];
       503: components["responses"]["ServiceUnavailable"];
       default: components["responses"]["Error"];
@@ -1144,7 +1218,30 @@ export interface operations {
       400: components["responses"]["BadRequest"];
       401: components["responses"]["Unauthorized"];
       403: components["responses"]["Forbidden"];
+      409: components["responses"]["PlanLimitReached"];
       422: components["responses"]["UnprocessableEntity"];
+      default: components["responses"]["Error"];
+    };
+  };
+  getUsage: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Plan, limits and usage of the tenant */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Usage"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
       default: components["responses"]["Error"];
     };
   };

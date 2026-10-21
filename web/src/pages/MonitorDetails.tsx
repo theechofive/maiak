@@ -281,6 +281,7 @@ function Header({ monitor }: { monitor: MonitorDetail }) {
     onSuccess: () => {
       queryClient.removeQueries({ queryKey: queryKeys.monitor(monitor.id) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.monitors, exact: true });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.usage });
       toast("Monitor deleted");
       navigate("/");
     },

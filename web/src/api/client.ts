@@ -8,6 +8,8 @@ export type Problem = Schemas["Problem"];
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 /** Problem type of a rejected CSRF token (backend `urn:maiak:problem:csrf`). */
 export const CSRF_PROBLEM_TYPE = "urn:maiak:problem:csrf";
+/** Problem type of a plan quota failure (409, with the members `limit` and `max`, ADR-0093). */
+export const PLAN_LIMIT_PROBLEM_TYPE = "urn:maiak:problem:plan-limit-reached";
 const LOGIN_PATH = "/api/v1/auth/login";
 
 // The CSRF token lives only in memory (ADR-0015): it is fetched again from /auth/me after a reload.
@@ -41,6 +43,9 @@ export class ApiError extends Error {
   readonly fieldErrors: FieldError[];
   /** Seconds from the Retry-After header (429), when present and valid. */
   readonly retryAfter?: number;
+  /** Which plan limit was reached and its value (plan-limit problems only). */
+  readonly limit?: Problem["limit"];
+  readonly max?: number;
 
   constructor(problem: Problem, retryAfter?: number) {
     super(problem.detail ?? problem.title);
@@ -52,6 +57,8 @@ export class ApiError extends Error {
     this.requestId = problem.request_id;
     this.fieldErrors = problem.fieldErrors ?? [];
     this.retryAfter = retryAfter;
+    this.limit = problem.limit;
+    this.max = problem.max;
   }
 
   /** Field errors keyed by field name; the first message wins. */
@@ -74,6 +81,28 @@ function isFieldError(value: unknown): value is FieldError {
   return typeof v.field === "string" && typeof v.message === "string";
 }
 
+const PLAN_RESOURCES = new Set<unknown>(["monitors", "heartbeats", "channels"]);
+
+function isPlanResource(value: unknown): value is NonNullable<Problem["limit"]> {
+  return PLAN_RESOURCES.has(value);
+}
+
+const PLAN_RESOURCE_NAMES: Record<NonNullable<Problem["limit"]>, [string, string]> = {
+  monitors: ["monitor", "monitors"],
+  heartbeats: ["heartbeat monitor", "heartbeat monitors"],
+  channels: ["notification channel", "notification channels"],
+};
+
+/** A user-facing message for a plan-limit problem, or undefined for any other error. */
+export function planLimitMessage(err: unknown): string | undefined {
+  if (!(err instanceof ApiError) || err.type !== PLAN_LIMIT_PROBLEM_TYPE) return undefined;
+  if (!err.limit || err.max === undefined) return err.detail ?? err.title;
+  const [one, many] = PLAN_RESOURCE_NAMES[err.limit];
+  const what = `${err.max} ${err.max === 1 ? one : many}`;
+  const hint = err.limit === "channels" ? "" : ` Delete a ${one} to add a new one.`;
+  return `Your plan allows at most ${what}, and the limit is reached.${hint}`;
+}
+
 /** Builds an ApiError from an error response and its parsed body (whatever shape it has). */
 export function toApiError(response: Response, body: unknown): ApiError {
   const header = response.headers.get("Retry-After");
@@ -88,6 +117,8 @@ export function toApiError(response: Response, body: unknown): ApiError {
         type: typeof body.type === "string" ? body.type : "about:blank",
         status: response.status,
         fieldErrors,
+        limit: isPlanResource(body.limit) ? body.limit : undefined,
+        max: typeof body.max === "number" ? body.max : undefined,
       },
       seconds,
     );
@@ -167,7 +198,7 @@ export function errorMessage(err: unknown): string {
       return "The request was refused. Reload the page and try again.";
     }
     if (err.status >= 500) return "The server failed to answer. Try again later.";
-    return err.detail ?? err.title;
+    return planLimitMessage(err) ?? err.detail ?? err.title;
   }
   return "Something went wrong. Try again.";
 }

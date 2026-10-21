@@ -1,17 +1,25 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { ApiError, errorMessage } from "../api/client";
-import { getSlackSettings, putSlackSettings, queryKeys, testSlack } from "../api/endpoints";
+import {
+  getSlackSettings,
+  putSlackSettings,
+  queryKeys,
+  testSlack,
+  type Usage,
+} from "../api/endpoints";
 import { useAuth } from "../auth/AuthProvider";
 import { ErrorState, Loading } from "../components/QueryState";
 import { useToast } from "../components/Toasts";
 import { validateSlackUrl } from "../lib/slack";
+import { useUsage } from "../lib/usage";
 
 export default function Settings() {
   const auth = useAuth();
   return (
     <section>
       <h1>Settings</h1>
+      <PlanUsage />
       <SlackSettings />
       <section aria-labelledby="account-heading">
         <h2 id="account-heading">Account</h2>
@@ -20,6 +28,61 @@ export default function Settings() {
           the app.
         </p>
       </section>
+    </section>
+  );
+}
+
+const usageRows: { key: keyof Usage["limits"]; label: string }[] = [
+  { key: "monitors", label: "Monitors" },
+  { key: "heartbeats", label: "Heartbeat monitors" },
+  { key: "channels", label: "Notification channels" },
+];
+
+function PlanUsage() {
+  const usage = useUsage();
+  return (
+    <section aria-labelledby="plan-heading">
+      <h2 id="plan-heading">Plan</h2>
+      {usage.isPending ? (
+        <Loading label="Loading plan and usage…" />
+      ) : usage.isError && !usage.data ? (
+        <ErrorState
+          title="Cannot load plan and usage"
+          error={usage.error}
+          onRetry={() => void usage.refetch()}
+        />
+      ) : (
+        <>
+          <p>
+            Your tenant is on the <strong>{usage.data.plan.name}</strong> plan.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Resource</th>
+                <th scope="col">Used</th>
+                <th scope="col">Limit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {usageRows.map(({ key, label }) => {
+                const used = usage.data.usage[key];
+                const limit = usage.data.limits[key];
+                return (
+                  <tr key={key}>
+                    <th scope="row">{label}</th>
+                    <td>{used}</td>
+                    <td>
+                      {limit}
+                      {used >= limit && <small className="plan-full"> (limit reached)</small>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </>
+      )}
     </section>
   );
 }
@@ -35,6 +98,8 @@ function SlackSettings() {
     mutationFn: (url: string) => putSlackSettings(url),
     onSuccess: (data) => {
       queryClient.setQueryData(queryKeys.slack, data);
+      // A new channel counts against the plan.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.usage });
       // The URL is a secret: it is never shown again after saving.
       setWebhookUrl("");
       // Drop the URL from the mutation variables too.

@@ -4,6 +4,7 @@ import {
   CSRF_PROBLEM_TYPE,
   client,
   errorMessage,
+  PLAN_LIMIT_PROBLEM_TYPE,
   setCsrfToken,
   setUnauthorizedHandler,
   unwrap,
@@ -84,6 +85,47 @@ describe("generated client through the wrapper", () => {
     await unwrap(client.GET("/api/v1/settings/slack"));
     expect(lastRequest().method).toBe("GET");
     expect(lastRequest().headers.has("X-CSRF-Token")).toBe(false);
+  });
+
+  it("reads the plan-limit members and explains the limit", async () => {
+    fetchMock.mockResolvedValue(
+      problem(409, {
+        type: PLAN_LIMIT_PROBLEM_TYPE,
+        title: "Plan limit reached",
+        status: 409,
+        detail: "The Free plan allows at most 1 channels.",
+        limit: "channels",
+        max: 1,
+      }),
+    );
+    const err = await unwrap(
+      client.PUT("/api/v1/settings/slack", {
+        body: { webhookUrl: "https://hooks.slack.com/services/a" },
+      }),
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).limit).toBe("channels");
+    expect((err as ApiError).max).toBe(1);
+    expect(errorMessage(err)).toBe(
+      "Your plan allows at most 1 notification channel, and the limit is reached.",
+    );
+  });
+
+  it("ignores malformed plan-limit members", async () => {
+    fetchMock.mockResolvedValue(
+      problem(409, {
+        type: PLAN_LIMIT_PROBLEM_TYPE,
+        title: "Plan limit reached",
+        status: 409,
+        detail: "The Free plan allows at most 3 monitors.",
+        limit: "rockets",
+        max: "3",
+      }),
+    );
+    const err = await unwrap(client.GET("/api/v1/usage")).catch((e: unknown) => e);
+    expect((err as ApiError).limit).toBeUndefined();
+    expect((err as ApiError).max).toBeUndefined();
+    expect(errorMessage(err)).toBe("The Free plan allows at most 3 monitors.");
   });
 
   it("asks for a reload only when a 403 is the CSRF problem", () => {

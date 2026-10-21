@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ApiError } from "../api/client";
+import { ApiError, planLimitMessage } from "../api/client";
 import { createMonitor, getMonitor, queryKeys, updateMonitor } from "../api/endpoints";
 import MonitorNotFound from "../components/MonitorNotFound";
 import { ErrorState, Loading } from "../components/QueryState";
@@ -82,11 +82,14 @@ function MonitorFormBody({
         ? createMonitor(toMonitorRequest(v))
         : updateMonitor(id!, toMonitorRequest(v)),
     onSuccess: async (saved) => {
+      if (mode === "create") void queryClient.invalidateQueries({ queryKey: queryKeys.usage });
       await queryClient.invalidateQueries({ queryKey: queryKeys.monitors });
       toast(mode === "create" ? "Monitor created" : "Changes saved");
       navigate(`/monitors/${saved.id}`);
     },
     onError: (err) => {
+      // A plan-limit refusal means the cached usage is stale.
+      if (planLimitMessage(err)) void queryClient.invalidateQueries({ queryKey: queryKeys.usage });
       const mapped = mapServerErrors(err);
       setErrors(mapped.fields);
       setGeneral(mapped.general);

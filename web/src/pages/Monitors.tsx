@@ -1,10 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { listMonitors, POLL_MS, queryKeys } from "../api/endpoints";
+import { listMonitors, POLL_MS, queryKeys, type Usage } from "../api/endpoints";
 import { ErrorState, Loading } from "../components/QueryState";
 import { formatAgo, formatClock, formatMs, formatPercent } from "../lib/format";
 import { filterMonitors, statusText, summaryLine } from "../lib/monitors";
+import { atMonitorLimit, countOf, useUsage } from "../lib/usage";
 import { useNow } from "../lib/useNow";
 
 export default function Monitors() {
@@ -16,15 +17,12 @@ export default function Monitors() {
     queryFn: listMonitors,
     refetchInterval: POLL_MS,
   });
+  const usage = useUsage();
 
   const heading = (
     <div className="page-heading">
       <h1>Monitors</h1>
-      {monitors.data && monitors.data.items.length > 0 && (
-        <Link to="/monitors/new" role="button">
-          Add monitor
-        </Link>
-      )}
+      {monitors.data && monitors.data.items.length > 0 && <AddMonitor usage={usage.data} />}
     </div>
   );
 
@@ -59,9 +57,7 @@ export default function Monitors() {
           <p>
             Maiak checks your HTTPS endpoint every minute and alerts you in Slack when it fails.
           </p>
-          <Link to="/monitors/new" role="button">
-            Add monitor
-          </Link>
+          <AddMonitor usage={usage.data} />
         </article>
       </section>
     );
@@ -122,5 +118,35 @@ export default function Monitors() {
         </small>
       </p>
     </section>
+  );
+}
+
+/**
+ * The add button, or at the plan's monitor limit a button marked aria-disabled with the reason
+ * next to it (the server enforces the limit either way).
+ */
+function AddMonitor({ usage }: { usage: Usage | undefined }) {
+  if (!usage || !atMonitorLimit(usage)) {
+    return (
+      <Link to="/monitors/new" role="button">
+        Add monitor
+      </Link>
+    );
+  }
+  return (
+    <div className="plan-limit">
+      <button
+        type="button"
+        className="secondary"
+        aria-disabled="true"
+        aria-describedby="monitor-limit"
+      >
+        Add monitor
+      </button>
+      <small id="monitor-limit">
+        The {usage.plan.name} plan allows {countOf(usage.limits.monitors, "monitor", "monitors")}.
+        Delete a monitor to add a new one.
+      </small>
+    </div>
   );
 }

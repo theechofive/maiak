@@ -130,3 +130,28 @@ td.url {
 .secret-input {
   -webkit-text-security: disc;
 }
+
+/* At a plan limit the add button stays visible but inert, with the reason next to it. */
+.plan-limit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  max-width: 20rem;
+  text-align: right;
+}
+
+.empty-state .plan-limit {
+  align-items: flex-start;
+  text-align: left;
+}
+
+.plan-limit button[aria-disabled="true"] {
+  width: auto;
+  margin-bottom: 0.25rem;
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.plan-full {
+  color: var(--pico-del-color);
+}

@@ -38,6 +38,12 @@ const detail = (over: Partial<MonitorDetail> = {}): MonitorDetail => {
   };
 };
 
+const usageOf = (monitors: number, maxMonitors: number, plan = { key: "free", name: "Free" }) => ({
+  plan,
+  limits: { monitors: maxMonitors, heartbeats: 1, channels: 1 },
+  usage: { monitors, heartbeats: 0, channels: 1 },
+});
+
 describe("monitors list", () => {
   const list = {
     summary: { up: 1, down: 1, paused: 1, unknown: 0 },
@@ -95,6 +101,68 @@ describe("monitors list", () => {
     expect(screen.getByRole("button", { name: "Add monitor" })).toHaveAttribute(
       "href",
       "/monitors/new",
+    );
+  });
+
+  it("replaces the add button at the plan's monitor limit", async () => {
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/monitors": () => json(list),
+      "GET /api/v1/usage": () => json(usageOf(3, 3)),
+    });
+    renderApp("/");
+    const note = await screen.findByText(
+      "The Free plan allows 3 monitors. Delete a monitor to add a new one.",
+    );
+    const button = screen.getByRole("button", { name: "Add monitor" });
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).not.toHaveAttribute("href");
+    expect(button).toHaveAccessibleDescription(note.textContent!);
+    expect(screen.queryByRole("link", { name: "Add monitor" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the add link below the limit and when usage cannot be loaded", async () => {
+    let usage: Response | undefined = json(usageOf(2, 3));
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/monitors": () => json(list),
+      "GET /api/v1/usage": () => usage ?? problem(500, "Internal server error"),
+    });
+    const { unmount } = renderApp("/");
+    expect(await screen.findByText("3 monitors · 1 up · 1 down · 1 paused")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Add monitor" })).toHaveAttribute(
+        "href",
+        "/monitors/new",
+      ),
+    );
+    unmount();
+
+    usage = undefined;
+    renderApp("/");
+    expect(await screen.findByText("3 monitors · 1 up · 1 down · 1 paused")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add monitor" })).toHaveAttribute(
+      "href",
+      "/monitors/new",
+    );
+  });
+
+  it("explains the limit in the empty state of a plan without monitors", async () => {
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/monitors": () =>
+        json({ summary: { up: 0, down: 0, paused: 0, unknown: 0 }, items: [] }),
+      "GET /api/v1/usage": () => json(usageOf(0, 0, { key: "none", name: "Suspended" })),
+    });
+    renderApp("/");
+    expect(
+      await screen.findByText(
+        "The Suspended plan allows 0 monitors. Delete a monitor to add a new one.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add monitor" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
     );
   });
 
@@ -172,6 +240,33 @@ describe("monitor form", () => {
       notifySlack: false,
     });
     expect(screen.getByRole("status")).toHaveTextContent("Monitor created");
+  });
+
+  it("explains a plan-limit refusal and refreshes the usage", async () => {
+    let usageCalls = 0;
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/usage": () => {
+        usageCalls++;
+        return json(usageOf(3, 3));
+      },
+      "POST /api/v1/monitors": () =>
+        problem(409, "Plan limit reached", {
+          type: "urn:maiak:problem:plan-limit-reached",
+          detail: "The Free plan allows at most 3 monitors.",
+          limit: "monitors",
+          max: 3,
+        }),
+    });
+    renderApp("/monitors/new");
+    await userEvent.type(await screen.findByLabelText("Name"), "Website");
+    await userEvent.type(screen.getByLabelText("URL"), "https://example.com/");
+    await userEvent.click(screen.getByRole("button", { name: "Create monitor" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Your plan allows at most 3 monitors, and the limit is reached. Delete a monitor to add a new one.",
+    );
+    // The form does not show usage, so the invalidated query is only marked stale.
+    expect(usageCalls).toBe(0);
   });
 
   it("rejects 1xx and 3xx expected status codes before calling the API", async () => {
@@ -398,6 +493,35 @@ describe("monitor details", () => {
 });
 
 describe("settings", () => {
+  it("shows the plan and the usage against its limits", async () => {
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/settings/slack": () => json({ configured: true }),
+      "GET /api/v1/usage": () => json(usageOf(2, 3)),
+    });
+    renderApp("/settings");
+    expect(await screen.findByText(/Your tenant is on the/)).toHaveTextContent(
+      "Your tenant is on the Free plan.",
+    );
+    const table = screen.getByRole("table");
+    const rows = within(table)
+      .getAllByRole("row")
+      .map((r) => r.textContent);
+    expect(rows).toEqual([
+      "ResourceUsedLimit",
+      "Monitors23",
+      "Heartbeat monitors01",
+      "Notification channels11 (limit reached)",
+    ]);
+  });
+
+  it("shows an error for the plan without hiding the other settings", async () => {
+    mockApi({ ...signedIn, "GET /api/v1/settings/slack": () => json({ configured: false }) });
+    renderApp("/settings");
+    expect(await screen.findByText("Cannot load plan and usage")).toBeInTheDocument();
+    expect(screen.getByText(/No webhook is configured/)).toBeInTheDocument();
+  });
+
   it("saves the webhook without showing it again", async () => {
     let configured = false;
     let sent: unknown;
