@@ -131,6 +131,9 @@ keys (ADR-0016, L-042). Arg: root context
   value: {{ .Values.config.cookieSecure | quote }}
 - name: MAIAK_TRUSTED_PROXY_HOPS
   value: {{ .Values.config.trustedProxyHops | quote }}
+{{- /* Only an explicit false turns registration off; a missing value keeps the app default (true). */}}
+- name: MAIAK_REGISTRATION_ENABLED
+  value: {{ ternary "false" "true" (and (kindIs "bool" .Values.config.registrationEnabled) (not .Values.config.registrationEnabled)) | quote }}
 {{- end }}
 
 {{/* worker-only env (config.Worker). Arg: root context */}}

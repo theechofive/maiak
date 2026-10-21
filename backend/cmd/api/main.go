@@ -76,10 +76,11 @@ func run() error {
 
 	sched := scheduler.New()
 	handler, err := api.NewHandler(api.Config{
-		Version:          version,
-		Commit:           commit,
-		CookieSecure:     cfg.CookieSecure,
-		TrustedProxyHops: cfg.TrustedProxyHops,
+		Version:             version,
+		Commit:              commit,
+		CookieSecure:        cfg.CookieSecure,
+		TrustedProxyHops:    cfg.TrustedProxyHops,
+		RegistrationEnabled: cfg.RegistrationEnabled,
 	}, api.Deps{
 		Auth:     authSvc,
 		Monitors: monitors.NewService(pool, sched, incidents.NewService(sched)),

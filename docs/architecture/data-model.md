@@ -26,7 +26,7 @@ Owning module in brackets, as declared in the migrations; only the owner writes 
 |---|---|---|---|
 | `tenants` [tenants] | `id`, `slug` (unique, `^[a-z0-9][a-z0-9-]{0,62}$`), `name`, `status` (`active`/`suspended`), `plan_key` (FK `plans.key`, default `free`; `default` is on `internal`), `limits jsonb` (per-tenant overrides of `max_monitors`, `max_heartbeats`, `max_channels`), timestamps, `deleted_at`. No RLS | S I U | S |
 | `plans` [plans] | `key` (PK, slug pattern), `name`, `limits jsonb` (object: `max_monitors`, `max_heartbeats`, `max_channels`, non-negative integers), `created_at`. Seeded `free` (3/1/1) and `internal` (1000/100/10). No RLS; changed only by migrations | S | S |
-| `users` [auth] | `id`, `email citext` unique, `password_hash` (nullable), `display_name`, `status` (`active`/`disabled`), timestamps. No RLS | S I U(email, password_hash, display_name, status, updated_at) | none |
+| `users` [auth] | `id`, `email citext` unique (the login: `admin` for the system admin, the lowercase email address of a registered user; ADR-0009 amendment 2026-10-21), `password_hash` (nullable), `display_name`, `status` (`active`/`disabled`), timestamps. No RLS | S I U(email, password_hash, display_name, status, updated_at) | none |
 | `memberships` [auth] | PK `(tenant_id, user_id)`, `role` in owner/admin/member/viewer | S I U D | none |
 | `auth_identities` [auth] | PK `(provider, subject)`, `user_id`; unused until OAuth. No RLS | S I D | none |
 | `sessions` [auth] | `id`, `user_id`, `tenant_id`, `token_hash bytea` (SHA-256, unique), `csrf_token`, `expires_at`, `last_seen_at`, `ip`, `user_agent` | S I U D | none |
@@ -64,6 +64,7 @@ All are owned by `maiak_owner`, pin `search_path = public, pg_temp`, are not exe
 | Function | Grantee | Called by | Purpose |
 |---|---|---|---|
 | `auth_lookup_session(token_hash)` | `maiak_api` | api (`auth.Service.Authenticate`) | Finds a session before the tenant is known |
+| `auth_login_tenant(user_id)` | `maiak_api` | api (`auth.Service.Login`) | The tenant a login binds to: the user's oldest membership in a tenant that is not deleted, or NULL (P-02) |
 | `reset_monitor_runtime(monitor_id)` | `maiak_api` | api (`monitors` pause, resume, URL change, through `scheduler`) | Resets the monitor's location rows (status unknown, lease dropped, next run within 30 s); tenant taken from `app.tenant_id` |
 | `claim_due_monitors(n, p_location)` | `maiak_worker` | worker (`scheduler.Claim`), every second | Leases up to `n` due rows of one location, skipping paused or deleted monitors and suspended or deleted tenants |
 | `ensure_partitions()` | `maiak_worker` | worker (start, hourly), jobs (daily) | Creates missing partitions |

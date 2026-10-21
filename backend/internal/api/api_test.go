@@ -155,7 +155,7 @@ func TestLoginValidationDoesNotEchoPassword(t *testing.T) {
 		"not json":       `login=a`,
 		"empty login":    `{"login":"","password":"x"}`,
 		"login space":    `{"login":"ad min","password":"x"}`,
-		"login too long": `{"login":"` + strings.Repeat("a", 65) + `","password":"x"}`,
+		"login too long": `{"login":"` + strings.Repeat("a", 255) + `","password":"x"}`,
 	} {
 		rec, p := do(t, h, http.MethodPost, "/api/v1/auth/login", body, map[string]string{"Content-Type": "application/json"})
 		if rec.Code != http.StatusBadRequest || p.Type != problemBadRequest {
@@ -175,6 +175,8 @@ func TestWriteErrorMapping(t *testing.T) {
 		typ    string
 	}{
 		{auth.ErrInvalidCredentials, 401, problemInvalidCredentials},
+		{fmt.Errorf("auth: register: %w", auth.ErrEmailTaken), 409, problemEmailTaken},
+		{errRegistrationDisabled, 403, problemRegistrationOff},
 		{fmt.Errorf("wrapped: %w", auth.ErrUnauthenticated), 401, problemUnauthenticated},
 		{auth.ErrCSRF, 403, problemCSRF},
 		{&auth.RateLimitedError{RetryAfter: 1500 * time.Millisecond}, 429, problemRateLimited},
@@ -207,10 +209,10 @@ func TestWriteErrorMapping(t *testing.T) {
 		if c.status == 422 && (len(p.FieldErrors) != 1 || p.FieldErrors[0].Field != "url" || p.FieldErrors[0].Message != "must use https") {
 			t.Errorf("422 field errors = %+v", p.FieldErrors)
 		}
-		if c.status == 409 && (p.Limit != "monitors" || p.Max == nil || *p.Max != 3 || p.Detail != "The Free plan allows at most 3 monitors.") {
+		if c.typ == problemPlanLimitReached && (p.Limit != "monitors" || p.Max == nil || *p.Max != 3 || p.Detail != "The Free plan allows at most 3 monitors.") {
 			t.Errorf("409 problem = %+v", p)
 		}
-		if c.status != 409 && (p.Limit != "" || p.Max != nil) {
+		if c.typ != problemPlanLimitReached && (p.Limit != "" || p.Max != nil) {
 			t.Errorf("%v: unexpected limit members %+v", c.err, p)
 		}
 		if c.status == 429 && rec.Header().Get("Retry-After") != "2" {
@@ -244,5 +246,45 @@ func TestMissingXFFWarningIsRateLimited(t *testing.T) {
 	s.warnMissingXFF(context.Background())
 	if n := strings.Count(buf.String(), "X-Forwarded-For"); n != 2 {
 		t.Fatalf("warning not repeated after the interval: %d", n)
+	}
+}
+
+func TestPublicConfigReflectsKillSwitch(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		h, err := NewHandler(Config{RegistrationEnabled: enabled}, Deps{Logger: discard()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec, _ := do(t, h, http.MethodGet, "/api/v1/public/config", "", nil)
+		if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != fmt.Sprintf(`{"registrationEnabled":%v}`, enabled) {
+			t.Fatalf("enabled=%v: %d %s", enabled, rec.Code, rec.Body)
+		}
+	}
+}
+
+// With the kill switch off, a valid registration is refused before the auth service runs (the
+// test handler has none), and contract violations are still 400 without echoing the password.
+func TestRegisterKillSwitchAndContract(t *testing.T) {
+	h := newTestHandler(t) // RegistrationEnabled is false
+	jsonCT := map[string]string{"Content-Type": "application/json"}
+	rec, p := do(t, h, http.MethodPost, "/api/v1/auth/register", `{"email":"a@example.com","password":"a long enough password"}`, jsonCT)
+	if rec.Code != http.StatusForbidden || p.Type != problemRegistrationOff {
+		t.Fatalf("disabled: code=%d problem=%+v", rec.Code, p)
+	}
+	secret := strings.Repeat("s3cr3t", 200)
+	for name, body := range map[string]string{
+		"missing password":  `{"email":"a@example.com"}`,
+		"unknown field":     `{"email":"a@example.com","password":"x","role":"admin"}`,
+		"password too long": `{"email":"a@example.com","password":"` + secret + `"}`,
+		"email not string":  `{"email":1,"password":"x"}`,
+		"not json":          `email=a`,
+	} {
+		rec, p := do(t, h, http.MethodPost, "/api/v1/auth/register", body, jsonCT)
+		if rec.Code != http.StatusBadRequest || p.Type != problemBadRequest {
+			t.Errorf("%s: code=%d problem=%+v", name, rec.Code, p)
+		}
+		if strings.Contains(rec.Body.String(), "s3cr3t") {
+			t.Errorf("%s: validation error echoes the password", name)
+		}
 	}
 }

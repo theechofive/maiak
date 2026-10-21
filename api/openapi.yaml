@@ -8,8 +8,9 @@ info:
 
     Authentication is a server-side session in the HttpOnly cookie `maiak_session`. Unsafe
     methods (POST, PUT, PATCH, DELETE) on authenticated endpoints also need the header
-    `X-CSRF-Token` with the `csrf_token` returned by login and `GET /api/v1/auth/me`; a missing
-    or wrong token is answered with 403.
+    `X-CSRF-Token` with the `csrf_token` returned by login, registration and
+    `GET /api/v1/auth/me`; a missing or wrong token is answered with 403. Only health, the public
+    config, login and registration work without a session.
 
     Errors are `application/problem+json` (RFC 9457). A request that does not match this
     contract (malformed JSON, wrong types, unknown or missing fields) gets 400; a well-formed
@@ -54,15 +55,32 @@ paths:
                 $ref: "#/components/schemas/Health"
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/public/config:
+    get:
+      operationId: getPublicConfig
+      summary: Settings the web app needs before login
+      description: Public, needs no session. Tells the web app whether to offer registration.
+      tags: [system]
+      security: []
+      responses:
+        "200":
+          description: The public configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicConfig"
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/auth/login:
     post:
       operationId: login
       summary: Log in with login and password
       description: |
-        Creates a session and sets the `maiak_session` cookie. The login is case-insensitive
-        (normalised to lowercase). Failures always return the same generic error. Attempts are
-        rate limited per client IP and per normalised login. This is the only unsafe operation
-        without a CSRF token (there is no session yet).
+        Creates a session and sets the `maiak_session` cookie. The login is an email address or
+        the system login (`admin`), case-insensitive (normalised to lowercase); the session is
+        bound to the user's tenant. Failures always return the same generic error. Attempts are
+        rate limited per client IP and per normalised login. Like registration, it needs no CSRF
+        token (there is no session yet).
       tags: [auth]
       security: []
       requestBody:
@@ -87,6 +105,66 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/register:
+    post:
+      operationId: register
+      summary: Register a new account and workspace
+      description: |
+        Self-service registration (ADR-0092). Creates a tenant on the `free` plan, the user as its
+        `owner` and a session, sets the `maiak_session` cookie and answers like login (the user is
+        logged in). There is no email verification and no email is sent.
+
+        The email is trimmed and lowercased; it must be 3-254 characters of `a-z 0-9 . _ + - @`
+        (the characters a login may contain) with one `@`, a non-empty local part and a domain
+        with a dot. The password must be 12-128 characters (Unicode code points) and differ from
+        the email; there are no composition rules. Policy failures are 422 with `fieldErrors`.
+
+        An email that is already registered is answered with 409 `urn:maiak:problem:email-taken`:
+        without verification, registration cannot hide whether an account exists. When
+        registration is turned off (`MAIAK_REGISTRATION_ENABLED=false`) the answer is 403
+        `urn:maiak:problem:registration-disabled`. Every attempt that reaches the password hash
+        counts against the per-client-IP limit of the login, and hashing shares the login's
+        bounded queue (429 with Retry-After). No CSRF token is needed (there is no session yet).
+      tags: [auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Registered and logged in
+          headers:
+            Set-Cookie:
+              description: The session cookie (`maiak_session`, HttpOnly, SameSite=Lax)
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionInfo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          description: Registration is turned off (`urn:maiak:problem:registration-disabled`)
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: The email is already registered (`urn:maiak:problem:email-taken`)
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         default:
@@ -657,16 +735,41 @@ components:
       properties:
         login:
           type: string
-          description: The user's login, case-insensitive (the default admin is `admin`)
+          description: An email address or the system login (the default admin is `admin`), case-insensitive
           minLength: 1
-          maxLength: 64
-          pattern: "^[A-Za-z0-9._@-]+$"
+          maxLength: 254
+          pattern: "^[A-Za-z0-9._@+-]+$"
           example: admin
         password:
           type: string
           format: password
           minLength: 1
           maxLength: 1024
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          description: Email address; the policy (see the operation) is checked by the server (422)
+          minLength: 1
+          maxLength: 1024
+          example: owner@example.com
+        password:
+          type: string
+          format: password
+          description: 12-128 characters, not equal to the email; checked by the server (422)
+          minLength: 1
+          maxLength: 1024
+    PublicConfig:
+      type: object
+      additionalProperties: false
+      required: [registrationEnabled]
+      properties:
+        registrationEnabled:
+          type: boolean
+          description: Whether `POST /api/v1/auth/register` accepts registrations
     SessionInfo:
       type: object
       additionalProperties: false
@@ -694,7 +797,7 @@ components:
           format: uuid
         login:
           type: string
-          description: Lowercase login (the default admin is `admin`)
+          description: Lowercase login, the email address of a registered user (the default admin is `admin`)
           example: admin
         display_name:
           type: string

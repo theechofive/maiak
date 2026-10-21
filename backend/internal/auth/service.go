@@ -1,5 +1,6 @@
 // Package auth owns users, memberships, auth identities and sessions: the admin bootstrap from
-// the Secret, password login, server-side sessions with CSRF tokens, and the login rate limit.
+// the Secret, self-service registration, password login, server-side sessions with CSRF tokens,
+// and the login rate limit.
 package auth
 
 import (
@@ -39,6 +40,7 @@ const (
 	ActionLoginFailed    = "auth.login.failed"
 	ActionLogout         = "auth.logout"
 	ActionAdminRotated   = "admin.rotated"
+	ActionRegister       = "auth.register"
 )
 
 const (
@@ -85,10 +87,11 @@ type Service struct {
 	hashWait   time.Duration
 	// dummy is verified for unknown or password-less users. BootstrapAdmin builds it with the
 	// admin hash's parameters, so both cost the same and timing does not reveal the login.
-	dummy  *crypto.ParsedHash
-	logins *prometheus.CounterVec
+	dummy         *crypto.ParsedHash
+	logins        *prometheus.CounterVec
+	registrations *prometheus.CounterVec
 
-	// defaultTenant is set by BootstrapAdmin; login binds sessions to it (single-tenant MVP).
+	// defaultTenant is set by BootstrapAdmin. Failed logins of unknown users are audited in it.
 	defaultTenant uuid.UUID
 }
 
@@ -122,10 +125,16 @@ func NewService(pool *db.Pool, opts Options) (*Service, error) {
 			Name: "maiak_auth_logins_total",
 			Help: "Login attempts by result (succeeded, failed, rate_limited).",
 		}, []string{"result"}),
+		registrations: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "maiak_auth_registrations_total",
+			Help: "Registration attempts by result (succeeded, invalid, email_taken, rate_limited).",
+		}, []string{"result"}),
 	}
 	if opts.Registerer != nil {
-		if err := opts.Registerer.Register(s.logins); err != nil {
-			return nil, fmt.Errorf("auth: register metrics: %w", err)
+		for _, c := range []prometheus.Collector{s.logins, s.registrations} {
+			if err := opts.Registerer.Register(c); err != nil {
+				return nil, fmt.Errorf("auth: register metrics: %w", err)
+			}
 		}
 	}
 	return s, nil
@@ -273,29 +282,34 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 	if s.defaultTenant == uuid.Nil {
 		return LoginResult{}, errors.New("auth: BootstrapAdmin has not run")
 	}
-	ipKey := unattributedIPKey
-	if in.IP.IsValid() {
-		ipKey = "ip:" + in.IP.String()
-	}
+	ipKey := limiterIPKey(in.IP)
 	loginKey := normalizeLogin(in.Login)
 	// Attempts are reserved before the verification and stay counted when it fails; a success
 	// or an attempt that never reached a verdict is refunded.
 	if ok, wait := s.ipLimit.Reserve(ipKey); !ok {
-		return LoginResult{}, s.rateLimited(ctx, wait)
+		return LoginResult{}, s.loginRateLimited(ctx, wait)
 	}
 	if ok, wait := s.loginLimit.Reserve(loginKey); !ok {
 		s.ipLimit.Refund(ipKey)
-		return LoginResult{}, s.rateLimited(ctx, wait)
+		return LoginResult{}, s.loginRateLimited(ctx, wait)
 	}
 	refund := func() {
 		s.ipLimit.Refund(ipKey)
 		s.loginLimit.Refund(loginKey)
 	}
 
-	user, ok, err := s.checkPassword(ctx, loginKey, in.Password)
+	user, tenantID, ok, err := s.checkPassword(ctx, loginKey, in.Password)
 	if err != nil {
 		refund()
+		if errors.Is(err, ErrRateLimited) {
+			s.logins.WithLabelValues("rate_limited").Inc()
+		}
 		return LoginResult{}, err
+	}
+	// Failures are audited in the user's tenant when there is one, otherwise in the default tenant.
+	auditTenant := s.defaultTenant
+	if tenantID != uuid.Nil {
+		auditTenant = tenantID
 	}
 	if !ok {
 		s.logins.WithLabelValues("failed").Inc()
@@ -304,66 +318,50 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 			actor = &user.ID
 		}
 		// The attempted login is not recorded: users sometimes type a password into it.
-		if err := s.auditFailure(ctx, actor, in.IP, "invalid_credentials"); err != nil {
+		if err := s.auditFailure(ctx, auditTenant, actor, in.IP, "invalid_credentials"); err != nil {
 			return LoginResult{}, err
 		}
 		return LoginResult{}, ErrInvalidCredentials
 	}
 
-	token, err := newToken()
-	if err != nil {
-		return LoginResult{}, err
-	}
-	csrf, err := newToken()
-	if err != nil {
-		return LoginResult{}, err
-	}
-	now := s.clock.Now()
 	var res LoginResult
-	err = db.WithTenantTx(ctx, s.pool, s.defaultTenant, func(tx pgx.Tx) error {
-		q := authdb.New(tx)
-		role, err := q.GetMembershipRole(ctx, authdb.GetMembershipRoleParams{TenantID: s.defaultTenant, UserID: user.ID})
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrInvalidCredentials
-		}
-		if err != nil {
-			return fmt.Errorf("get membership: %w", err)
-		}
-		t, err := tenants.Get(ctx, tx, s.defaultTenant)
-		if err != nil {
-			return err
-		}
-		if t.Status != tenants.StatusActive {
-			return ErrInvalidCredentials
-		}
-		sessionID := uuidv7.New()
-		params := authdb.InsertSessionParams{
-			ID: sessionID, UserID: user.ID, TenantID: s.defaultTenant, TokenHash: hashToken(token),
-			CsrfToken: csrf, CreatedAt: now, ExpiresAt: now.Add(s.ttl),
-		}
-		if in.IP.IsValid() {
-			params.Ip = &in.IP
-		}
-		if ua := truncate(in.UserAgent, maxUserAgent); ua != "" {
-			params.UserAgent = &ua
-		}
-		if err := q.InsertSession(ctx, params); err != nil {
-			return fmt.Errorf("insert session: %w", err)
-		}
-		if err := audit.Record(ctx, tx, audit.Entry{
-			TenantID: s.defaultTenant, ActorUserID: &user.ID, Action: ActionLoginSucceeded,
-			EntityType: "session", EntityID: sessionID.String(), IP: in.IP,
-		}); err != nil {
-			return err
-		}
-		res = LoginResult{Token: token, SessionInfo: SessionInfo{
-			User: *user, Tenant: t, Role: role, CSRFToken: csrf, ExpiresAt: params.ExpiresAt,
-		}}
-		return nil
-	})
-	if errors.Is(err, ErrInvalidCredentials) {
+	err = errNoMembership
+	if tenantID != uuid.Nil {
+		err = db.WithTenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+			q := authdb.New(tx)
+			role, err := q.GetMembershipRole(ctx, authdb.GetMembershipRoleParams{TenantID: tenantID, UserID: user.ID})
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errNoMembership
+			}
+			if err != nil {
+				return fmt.Errorf("get membership: %w", err)
+			}
+			t, err := tenants.Get(ctx, tx, tenantID)
+			if err != nil {
+				return err
+			}
+			if t.Status != tenants.StatusActive {
+				return errNoMembership
+			}
+			sess, err := s.insertSession(ctx, q, tenantID, user.ID, in.IP, in.UserAgent)
+			if err != nil {
+				return err
+			}
+			if err := audit.Record(ctx, tx, audit.Entry{
+				TenantID: tenantID, ActorUserID: &user.ID, Action: ActionLoginSucceeded,
+				EntityType: "session", EntityID: sess.id.String(), IP: in.IP,
+			}); err != nil {
+				return err
+			}
+			res = LoginResult{Token: sess.token, SessionInfo: SessionInfo{
+				User: *user, Tenant: t, Role: role, CSRFToken: sess.csrf, ExpiresAt: sess.expiresAt,
+			}}
+			return nil
+		})
+	}
+	if errors.Is(err, errNoMembership) {
 		s.logins.WithLabelValues("failed").Inc()
-		if aerr := s.auditFailure(ctx, &user.ID, in.IP, "no_active_membership"); aerr != nil {
+		if aerr := s.auditFailure(ctx, auditTenant, &user.ID, in.IP, "no_active_membership"); aerr != nil {
 			return LoginResult{}, aerr
 		}
 		return LoginResult{}, ErrInvalidCredentials
@@ -378,11 +376,17 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 	return res, nil
 }
 
-// checkPassword looks the user up and verifies the password. It always runs one argon2
-// verification (against a dummy hash for unknown or password-less users), so the response
-// time does not reveal whether the login exists.
-func (s *Service) checkPassword(ctx context.Context, login, password string) (*User, bool, error) {
+// errNoMembership means the credentials are right but the user has no usable tenant (no
+// membership, or the tenant is suspended). The caller answers ErrInvalidCredentials.
+var errNoMembership = errors.New("auth: no active membership")
+
+// checkPassword looks the user and the tenant the login binds to up and verifies the password.
+// It always runs one argon2 verification (against a dummy hash for unknown or password-less
+// users), so the response time does not reveal whether the login exists. tenantID is uuid.Nil
+// when the user is unknown or has no membership in a live tenant.
+func (s *Service) checkPassword(ctx context.Context, login, password string) (*User, uuid.UUID, bool, error) {
 	var row *authdb.GetUserByEmailRow
+	var tenantID *uuid.UUID
 	err := db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
 		r, err := authdb.New(tx).GetUserByEmail(ctx, login)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -392,10 +396,12 @@ func (s *Service) checkPassword(ctx context.Context, login, password string) (*U
 			return err
 		}
 		row = &r
-		return nil
+		// Hand-written like auth_lookup_session: a SECURITY DEFINER function, because the
+		// memberships policy hides every row until the tenant is known.
+		return tx.QueryRow(ctx, `SELECT auth_login_tenant($1)`, r.ID).Scan(&tenantID)
 	})
 	if err != nil {
-		return nil, false, fmt.Errorf("auth: get user: %w", err)
+		return nil, uuid.Nil, false, fmt.Errorf("auth: get user: %w", err)
 	}
 
 	hash := s.dummy
@@ -407,17 +413,20 @@ func (s *Service) checkPassword(ctx context.Context, login, password string) (*U
 		}
 	}
 	if err := s.acquireHash(ctx); err != nil {
-		return nil, false, err
+		return nil, uuid.Nil, false, err
 	}
 	match := hash.Verify(password)
 	<-s.hashSem
 
 	if row == nil {
-		return nil, false, nil
+		return nil, uuid.Nil, false, nil
 	}
 	u := &User{ID: row.ID, Login: row.Email, DisplayName: row.DisplayName}
 	ok := match && hash != s.dummy && row.Status == userStatusActive
-	return u, ok, nil
+	if tenantID == nil {
+		return u, uuid.Nil, ok, nil
+	}
+	return u, *tenantID, ok, nil
 }
 
 // normalizeLogin is the one place logins are made case-insensitive: bootstrap, lookup and
@@ -426,7 +435,16 @@ func normalizeLogin(login string) string {
 	return strings.ToLower(strings.TrimSpace(login))
 }
 
-// acquireHash takes a verification slot, waiting at most hashWait.
+// limiterIPKey is the per-client limiter key; requests without a usable address share one.
+func limiterIPKey(ip netip.Addr) string {
+	if ip.IsValid() {
+		return "ip:" + ip.String()
+	}
+	return unattributedIPKey
+}
+
+// acquireHash takes a slot of the argon2 queue shared by login and registration, waiting at
+// most hashWait; a full queue is a *RateLimitedError (the caller counts and logs it).
 func (s *Service) acquireHash(ctx context.Context) error {
 	t := time.NewTimer(s.hashWait)
 	defer t.Stop()
@@ -436,21 +454,58 @@ func (s *Service) acquireHash(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-t.C:
-		return s.rateLimited(ctx, s.hashWait)
+		s.log.WarnContext(ctx, "password hash queue full; request rate limited")
+		return &RateLimitedError{RetryAfter: s.hashWait}
 	}
 }
 
-func (s *Service) rateLimited(ctx context.Context, wait time.Duration) error {
+func (s *Service) loginRateLimited(ctx context.Context, wait time.Duration) error {
 	s.logins.WithLabelValues("rate_limited").Inc()
 	// Not audited: a flood of attempts would turn into a flood of audit rows.
 	s.log.WarnContext(ctx, "login rate limited")
 	return &RateLimitedError{RetryAfter: wait}
 }
 
-func (s *Service) auditFailure(ctx context.Context, actor *uuid.UUID, ip netip.Addr, reason string) error {
-	err := db.WithTenantTx(ctx, s.pool, s.defaultTenant, func(tx pgx.Tx) error {
+// session is a freshly created session; token goes into the cookie and is never stored.
+type session struct {
+	id        uuid.UUID
+	token     string
+	csrf      string
+	expiresAt time.Time
+}
+
+// insertSession creates a session of the membership (tenantID, userID) in the caller's tenant
+// transaction.
+func (s *Service) insertSession(ctx context.Context, q *authdb.Queries, tenantID, userID uuid.UUID, ip netip.Addr, userAgent string) (session, error) {
+	token, err := newToken()
+	if err != nil {
+		return session{}, err
+	}
+	csrf, err := newToken()
+	if err != nil {
+		return session{}, err
+	}
+	now := s.clock.Now()
+	params := authdb.InsertSessionParams{
+		ID: uuidv7.New(), UserID: userID, TenantID: tenantID, TokenHash: hashToken(token),
+		CsrfToken: csrf, CreatedAt: now, ExpiresAt: now.Add(s.ttl),
+	}
+	if ip.IsValid() {
+		params.Ip = &ip
+	}
+	if ua := truncate(userAgent, maxUserAgent); ua != "" {
+		params.UserAgent = &ua
+	}
+	if err := q.InsertSession(ctx, params); err != nil {
+		return session{}, fmt.Errorf("insert session: %w", err)
+	}
+	return session{id: params.ID, token: token, csrf: csrf, expiresAt: params.ExpiresAt}, nil
+}
+
+func (s *Service) auditFailure(ctx context.Context, tenantID uuid.UUID, actor *uuid.UUID, ip netip.Addr, reason string) error {
+	err := db.WithTenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
 		return audit.Record(ctx, tx, audit.Entry{
-			TenantID: s.defaultTenant, ActorUserID: actor, Action: ActionLoginFailed,
+			TenantID: tenantID, ActorUserID: actor, Action: ActionLoginFailed,
 			EntityType: "user", Metadata: map[string]any{"reason": reason}, IP: ip,
 		})
 	})

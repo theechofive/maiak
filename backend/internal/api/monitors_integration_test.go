@@ -245,7 +245,7 @@ func TestIntegrationMonitorPlanLimitUnderConcurrency(t *testing.T) {
 }
 
 // otherTenantSession creates a second tenant with its own owner and session directly in the
-// database (login always binds to the default tenant) and returns the session headers.
+// database (without going through registration) and returns the session headers.
 func otherTenantSession(t *testing.T, env *pgtest.Env) (map[string]string, string) {
 	t.Helper()
 	b := make([]byte, 32)

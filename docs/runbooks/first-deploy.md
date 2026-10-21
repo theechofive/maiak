@@ -23,7 +23,7 @@ Conventions for every command:
 
 The Job never overwrites a Secret. If one exists but lacks keys, the Job fails and names them: fix or delete that Secret.
 
-**Login.** The login is `secrets.admin.login`, default `admin` (a system user, like Grafana; 1-64 of `[a-z0-9._@-]`). The api reads it as `MAIAK_ADMIN_LOGIN` and logins are case-insensitive. Keep the default unless you have a reason; changing it later disables the previous admin and revokes its sessions (ADR-0009).
+**Login.** The login is `secrets.admin.login`, default `admin` (a system user, like Grafana; 3-254 of `[a-z0-9._@+-]`). The api reads it as `MAIAK_ADMIN_LOGIN` and logins are case-insensitive. Keep the default unless you have a reason; changing it later disables the previous admin and revokes its sessions (ADR-0009).
 
 ### Read the one-time admin password (after wave -3)
 
@@ -58,7 +58,7 @@ JSON shape (exactly two properties):
 { "login": "admin", "password_hash": "$argon2id$v=19$m=...,t=...,p=...$<salt>$<hash>" }
 ```
 
-`login` is 1-64 of `[a-z0-9._@-]` (write it in lowercase; the api lowercases it anyway). `password_hash` is an argon2id PHC string produced by `maiakctl hashpw`, which prompts twice without echo on a terminal (pipe mode reads one line from stdin and would leave the password in your history, so use the prompt). Two ways to run it, pick one:
+`login` is 3-254 of `[a-z0-9._@+-]` (write it in lowercase; the api lowercases it anyway). `password_hash` is an argon2id PHC string produced by `maiakctl hashpw`, which prompts twice without echo on a terminal (pipe mode reads one line from stdin and would leave the password in your history, so use the prompt). Two ways to run it, pick one:
 
 ```sh
 # a) with Go, from a checkout of this repository
@@ -161,6 +161,8 @@ curl -fsS https://maiak.klr-ops.net/healthz            # answered by nginx in th
 
 Open `https://maiak.klr-ops.net/` in a browser, sign in with the login `admin` and the one-time password from `maiak-admin-initial` (section 1; with Secrets Manager mode, the login from `platform/maiak/admin` and the password you hashed), delete `maiak-admin-initial`, create a monitor against a public HTTPS site, and watch its status turn `up` within about a minute (worker), then set the Slack webhook in Settings and use "Send test" (api, needs the encryption keys). The logs show the worker claiming checks (`kubectl --context CTX -n maiak logs deploy/maiak-worker --tail=20`); metrics stay on the admin port 9090 and are not routed (self-monitoring is L-003).
 
+**Registration is open by default.** Anyone who can reach `https://maiak.klr-ops.net/` can create an account and a tenant on the free plan from the "Create account" link (P-02, ADR-0092): no email verification, no email sent, no CAPTCHA, only the per-replica per-IP limit of the login (L-171). Today that means anyone on the VPN. The kill switch is `config.registrationEnabled: false` in `values-platform.yaml` (env `MAIAK_REGISTRATION_ENABLED`, api only): commit it and let ArgoCD sync; the registration endpoint then answers 403, the web app hides the link, and existing users keep logging in. Turn it off before the service is reachable from anywhere but the VPN unless the public-domain gates are met (R-130, L-172). Lost passwords of registered users are reset by the platform admin (P-04); there is no self-service reset.
+
 The web UI has never run against the real API (L-052) and the nginx image has never run read-only in a cluster (L-023); a blank page or a CSP error in the browser console are the first things to look at.
 
 ## 7. After the first success: switch the bootstrap off
@@ -187,6 +189,7 @@ The bootstrap ServiceAccount, Role and RoleBinding were created as hooks and Arg
 - **L-022** unverified at the first sync: that ArgoCD deletes `maiak-db-admin` after the Job (`HookSucceeded`), that the bootstrap RBAC is sufficient, that ESO resolves `platform/grafana/db`, and the real RDS path of the bootstrap (tested only with a superuser and a `CREATEROLE CREATEDB` approximation).
 - **L-023** the web image was never built or run: nginx as uid 65532 with a read-only root filesystem and only `/tmp` writable, the `/healthz` probes, the CSP.
 - **L-002** the pull secret (section 2) blocks the first pod.
+- **R-130** registration is open by default with no email verification (section 6); the kill switch is `config.registrationEnabled`.
 - **R-110** the one-time admin password stays readable in `maiak-admin-initial` until you delete it.
 - **L-102 / R-010 / R-008** the release workflow has never run; the bump commit needs a `main` without branch protection for the bot.
 - **R-001** a failure or maintenance window of the shared RDS `grafana` takes Maiak and Grafana down together; **R-003** memory requests total 512Mi with the platform replicas, on a memory-tight cluster; **R-002** NetworkPolicy is not enforced (see L-100 for extra blocked CIDRs); **L-052** the SPA has never run against the real API.

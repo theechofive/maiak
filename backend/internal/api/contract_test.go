@@ -14,7 +14,15 @@ import (
 
 // publicOperations need no session (compared case-insensitively: the embedded spec has the
 // operation ids as Go names). Everything else in the contract must answer 401 without one.
-var publicOperations = []string{"getHealth", "login"}
+// register and getPublicConfig were added deliberately with self-service registration (P-02).
+var publicOperations = []string{"getHealth", "getPublicConfig", "login", "register"}
+
+// csrfExempt are the unsafe operations without a session, hence without a CSRF token.
+var csrfExempt = []string{"login", "register"}
+
+func isCSRFExempt(operationID string) bool {
+	return slices.ContainsFunc(csrfExempt, func(id string) bool { return strings.EqualFold(id, operationID) })
+}
 
 type specOperation struct {
 	method, path, id string
@@ -51,13 +59,13 @@ func TestSpecValidates(t *testing.T) {
 	}
 }
 
-// Every unsafe operation except login must declare the CSRF token, both as a security
+// Every unsafe operation except login and registration must declare the CSRF token, both as a security
 // requirement (enforced by the validator) and as a required header parameter (documented for
 // the generated client).
 func TestSpecUnsafeOperationsRequireCSRF(t *testing.T) {
 	spec, ops := specOperations(t)
 	for _, o := range ops {
-		if !isUnsafe(o.method) || strings.EqualFold(o.id, "login") {
+		if !isUnsafe(o.method) || isCSRFExempt(o.id) {
 			continue
 		}
 		security := spec.Security

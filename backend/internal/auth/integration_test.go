@@ -299,3 +299,55 @@ func TestIntegrationLoginLimitHoldsUnderConcurrency(t *testing.T) {
 		t.Fatalf("login after the limit: err = %v", err)
 	}
 }
+
+// A registered user logs in to their own tenant; a suspended or deleted tenant refuses the login
+// with the generic error, and a user without any membership cannot log in.
+func TestIntegrationRegisteredLoginBindsToOwnTenant(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("auth_registered"))
+	ctx := context.Background()
+	admin := env.AdminConn(t)
+	hash, _ := crypto.HashPassword("pw", cheap)
+	svc := newBootstrapped(t, env, "admin", hash)
+	const password = "registered user password"
+
+	reg, err := svc.Register(ctx, auth.RegisterInput{Email: "User@Example.com", Password: password, IP: testIP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.Tenant.Slug == "default" || reg.Role != auth.RoleOwner || reg.User.Login != "user@example.com" {
+		t.Fatalf("register result: %+v", reg.SessionInfo)
+	}
+	res, err := login(t, svc, "USER@example.com", password)
+	if err != nil || res.Tenant.ID != reg.Tenant.ID {
+		t.Fatalf("login: tenant %v, err %v; want %v", res.Tenant.ID, err, reg.Tenant.ID)
+	}
+	if p, err := svc.Authenticate(ctx, res.Token); err != nil || p.TenantID != reg.Tenant.ID {
+		t.Fatalf("authenticate: %+v %v", p, err)
+	}
+	if _, err := svc.Register(ctx, auth.RegisterInput{Email: "user@example.COM", Password: password, IP: testIP}); !errors.Is(err, auth.ErrEmailTaken) {
+		t.Fatalf("duplicate: err = %v", err)
+	}
+
+	for _, c := range []struct{ disable, enable string }{
+		{`UPDATE tenants SET status = 'suspended' WHERE id = $1`, `UPDATE tenants SET status = 'active' WHERE id = $1`},
+		{`UPDATE tenants SET deleted_at = now() WHERE id = $1`, `UPDATE tenants SET deleted_at = NULL WHERE id = $1`},
+		{`DELETE FROM memberships WHERE tenant_id = $1`, `INSERT INTO memberships (tenant_id, user_id, role) SELECT $1, id, 'owner' FROM users WHERE email = 'user@example.com'`},
+	} {
+		if _, err := admin.Exec(ctx, c.disable, reg.Tenant.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := login(t, svc, "user@example.com", password); !errors.Is(err, auth.ErrInvalidCredentials) {
+			t.Fatalf("after %q: err = %v, want ErrInvalidCredentials", c.disable, err)
+		}
+		if _, err := admin.Exec(ctx, c.enable, reg.Tenant.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := login(t, svc, "user@example.com", password); err != nil {
+			t.Fatalf("after %q: %v", c.enable, err)
+		}
+	}
+	// The admin is unaffected.
+	if res := mustLogin(t, svc, "admin", "pw"); res == "" {
+		t.Fatal("admin login")
+	}
+}

@@ -36,7 +36,7 @@ flowchart LR
 | Module | Responsibility | Owns tables |
 |---|---|---|
 | `tenants` | tenant rows and limits | `tenants` |
-| `auth` | admin bootstrap, login/logout, sessions, CSRF, login rate limit | `users`, `memberships`, `auth_identities`, `sessions` |
+| `auth` | admin bootstrap, self-service registration (creates the tenant through `tenants`), login/logout, sessions, CSRF, login rate limit | `users`, `memberships`, `auth_identities`, `sessions` |
 | `monitors` | monitor definition and validation, lifecycle (pause, resume, URL change, soft delete), location assignment | `monitors`, `monitor_locations`, `monitor_state` (the incident state machine updates it inside the result transaction) |
 | `scheduler` | claims and leases, schedule resets, home location | `monitor_location_state`, `probe_locations` |
 | `safehttp` | SSRF guard: guarded `http.Client` for the prober and the Slack notifier | none |
@@ -78,7 +78,7 @@ Create inserts the monitor, its home location and the initial state rows in one 
 ### Who calls which database function
 | Caller | Functions |
 |---|---|
-| api | `auth_lookup_session`, `reset_monitor_runtime` |
+| api | `auth_lookup_session`, `auth_login_tenant`, `reset_monitor_runtime` |
 | worker | `claim_due_monitors`, `ensure_partitions` |
 | jobs | `claim_deliveries`, `finish_delivery`, `outbox_pending`, `ensure_partitions`, `compute_rollups_catch_up`, `list_droppable_partitions`, `detach_expired_partition`, `drop_detached_partition`, `purge_expired_sessions` |
 

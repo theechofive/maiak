@@ -289,7 +289,7 @@ func (c *client) login() (map[string]string, string) {
 	return map[string]string{"Cookie": api.SessionCookie + "=" + sessionCookie(c.t, r).Value}, csrf
 }
 
-// Every unsafe operation of the contract except login refuses a valid session without the
+// Every unsafe operation of the contract except login and register refuses a valid session without the
 // right CSRF token, before any handler (implemented or not) runs.
 func TestIntegrationUnsafeOperationsNeedCSRF(t *testing.T) {
 	env := pgtest.New(t, pgtest.DBName("apicsrf"))
@@ -303,7 +303,8 @@ func TestIntegrationUnsafeOperationsNeedCSRF(t *testing.T) {
 	checked := 0
 	for _, path := range spec.Paths.InMatchingOrder() {
 		for method, op := range spec.Paths.Value(path).Operations() {
-			if method == http.MethodGet || strings.EqualFold(op.OperationID, "login") {
+			// login and register run without a session, so they have no CSRF token (contract_test.go).
+			if method == http.MethodGet || isCSRFExemptOperation(op.OperationID) {
 				continue
 			}
 			url := strings.ReplaceAll(path, "{monitorId}", "0192b9c4-7c5e-7000-8000-000000000001")
@@ -327,4 +328,8 @@ func TestIntegrationUnsafeOperationsNeedCSRF(t *testing.T) {
 	if r := c.do(http.MethodGet, "/api/v1/auth/me", "", cookie); r.code != http.StatusOK {
 		t.Fatalf("me: %d %s", r.code, r.raw)
 	}
+}
+
+func isCSRFExemptOperation(id string) bool {
+	return strings.EqualFold(id, "login") || strings.EqualFold(id, "register")
 }

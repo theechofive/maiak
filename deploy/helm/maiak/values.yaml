@@ -22,6 +22,10 @@ config:
   sessionTTL: 24h          # MAIAK_SESSION_TTL (api only)
   cookieSecure: true       # MAIAK_COOKIE_SECURE (api only)
   trustedProxyHops: 1      # MAIAK_TRUSTED_PROXY_HOPS (api only); 1 = Envoy Gateway
+  # MAIAK_REGISTRATION_ENABLED (api only): self-service registration (ADR-0092). Open by default;
+  # set false to stop new sign-ups (existing users keep logging in). There is no email
+  # verification, so keep it reachable only from the VPN until the public-domain gates (L-172).
+  registrationEnabled: true
   # MAIAK_PUBLIC_URL (api and jobs, required): https URL without trailing slash, linked from Slack messages.
   publicUrl: https://maiak.klr-ops.net
   # MAIAK_BLOCKED_CIDRS (api, worker, jobs): extra ranges for the SSRF guard on top of its built-in
@@ -41,7 +45,7 @@ config:
 secrets:
   admin:
     source: generate
-    # System admin login (generate mode), 1-64 of [a-z0-9._@-]; the app treats logins case-insensitively.
+    # System admin login (generate mode), 3-254 of [a-z0-9._@+-]; the app treats logins case-insensitively.
     login: admin
     # externalSecret mode: JSON secret with properties login, password_hash
     remoteKey: platform/maiak/admin

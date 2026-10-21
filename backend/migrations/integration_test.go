@@ -40,9 +40,11 @@ func TestIntegrationMigrateFromScratchAndRerun(t *testing.T) {
 // A new definer function fails the lint until it is reviewed and added here (ADR-0016).
 var definerAllowList = map[string][]string{
 	"auth_lookup_session": {"maiak_api"},
-	"ensure_partitions":   {"maiak_worker"},
-	"claim_due_monitors":  {"maiak_worker"},
-	"compute_rollups":     {"maiak_worker"},
+	// The login finds the user's tenant before the tenant is known (P-02, ADR-0009 amendment).
+	"auth_login_tenant":  {"maiak_api"},
+	"ensure_partitions":  {"maiak_worker"},
+	"claim_due_monitors": {"maiak_worker"},
+	"compute_rollups":    {"maiak_worker"},
 	// Rollups from the watermark in rollup_state (ADR-0090).
 	"compute_rollups_catch_up": {"maiak_worker"},
 	// Retention in three steps driven by jobs (ADR-0060).
@@ -66,6 +68,8 @@ var extraPolicies = map[string]struct {
 }{
 	// The SECURITY DEFINER session lookup runs as maiak_owner before the tenant is known (ADR-0004).
 	"sessions.owner_session_lookup": {cmd: "r", roles: []string{"maiak_owner"}},
+	// auth_login_tenant reads the user's memberships before the tenant is known (P-02).
+	"memberships.owner_membership_lookup": {cmd: "r", roles: []string{"maiak_owner"}},
 	// The cross-tenant definer functions of the results migration (ADR-0016, ADR-0021).
 	"sessions.owner_session_purge":             {cmd: "d", roles: []string{"maiak_owner"}},
 	"monitors.owner_claim_read":                {cmd: "r", roles: []string{"maiak_owner"}},

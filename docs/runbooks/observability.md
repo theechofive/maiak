@@ -19,6 +19,7 @@ No metric is labelled per tenant, monitor, incident, user, channel, URL, host, p
 | `maiak_http_requests_total` | counter | `route`, `method`, `code` | Requests by route template and status; `route="unmatched"` for paths no route matched; `method` is one of `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, else `other` |
 | `maiak_http_request_duration_seconds` | histogram | `route`, `method` | Request latency |
 | `maiak_auth_logins_total` | counter | `result` (`succeeded`, `failed`, `rate_limited`) | Login attempts |
+| `maiak_auth_registrations_total` | counter | `result` (`succeeded`, `invalid`, `email_taken`, `rate_limited`) | Self-service registrations (P-02); a burst of `succeeded` while registration is open is the signal for the kill switch (R-130) |
 
 ### worker
 | Metric | Type | Labels | Meaning |
@@ -83,3 +84,4 @@ Written for the VictoriaMetrics/Alertmanager stack of L-003; thresholds are firs
 | APIErrors | `sum(rate(maiak_http_requests_total{code=~"5.."}[5m])) / sum(rate(maiak_http_requests_total[5m])) > 0.05` | 10m | api failing |
 | APILatency | `histogram_quantile(0.95, sum(rate(maiak_http_request_duration_seconds_bucket{route!="unmatched"}[10m])) by (le, route)) > 1` | 15m | Slow dashboard reads (R-050) |
 | LoginAbuse | `sum(rate(maiak_auth_logins_total{result="rate_limited"}[15m])) > 0.2` | 15m | Password guessing or a lockout (R-013) |
+| RegistrationBurst | `sum(increase(maiak_auth_registrations_total{result="succeeded"}[1h])) > 20` | 0m | Mass sign-ups; consider `config.registrationEnabled: false` (R-130) |

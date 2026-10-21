@@ -63,3 +63,12 @@ ORDER BY m.user_id;
 -- name: DeleteUserSessions :execrows
 DELETE FROM sessions
 WHERE tenant_id = @tenant_id AND user_id = @user_id;
+
+-- name: InsertUser :exec
+-- Registration: a duplicate email fails on users_email_key, which the caller maps to email-taken.
+INSERT INTO users (id, email, password_hash, display_name)
+VALUES (@id, @email, @password_hash, @display_name);
+
+-- name: InsertMembership :exec
+INSERT INTO memberships (tenant_id, user_id, role)
+VALUES (@tenant_id, @user_id, @role);

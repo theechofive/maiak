@@ -290,7 +290,7 @@ func TestSkipModes(t *testing.T) {
 }
 
 func TestBadLogin(t *testing.T) {
-	for _, login := range []string{"", "ad min", "admin\n", strings.Repeat("a", 65), "adm!n"} {
+	for _, login := range []string{"", "ab", "ad min", "admin\n", strings.Repeat("a", 255), "adm!n"} {
 		f := pgtest.NewFakeSecrets()
 		o := opts(f, nil)
 		o.AdminLogin = login

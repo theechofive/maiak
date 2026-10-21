@@ -26,14 +26,18 @@ func TestIntegrationPlans(t *testing.T) {
 		t.Fatalf("plans = %s\nwant    %s", seeded, want)
 	}
 
-	// Replay the migration over a database of the previous release that already has tenants.
+	// Replay the migration over a database of the previous release that already has tenants. The
+	// later migrations are rolled back too, since goose refuses to apply a missing older version.
 	pgtest.MustExec(t, admin,
+		`DROP FUNCTION auth_login_tenant(uuid)`,
+		`DROP POLICY owner_membership_lookup ON memberships`,
+		`DELETE FROM goose_db_version WHERE version_id = 20261021120000`,
 		`ALTER TABLE tenants DROP COLUMN plan_key`,
 		`DROP TABLE plans`,
 		`DELETE FROM goose_db_version WHERE version_id = 20261021090000`,
 		`INSERT INTO tenants (id, slug, name) VALUES ('`+tenantA+`', 'default', 'Default'), ('`+tenantB+`', 'b', 'B')`)
-	if n, err := env.Migrate(ctx); err != nil || n != 1 {
-		t.Fatalf("re-applied %d migrations, err=%v; want 1", n, err)
+	if n, err := env.Migrate(ctx); err != nil || n != 2 {
+		t.Fatalf("re-applied %d migrations, err=%v; want 2 (plans and the later registration migration)", n, err)
 	}
 	pgtest.MustExec(t, admin, `INSERT INTO tenants (id, slug, name) VALUES ('01920000-0000-7000-8000-00000000000c', 'c', 'C')`)
 	var plansBySlug string

@@ -139,6 +139,22 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (GetUserByIDRow
 	return i, err
 }
 
+const insertMembership = `-- name: InsertMembership :exec
+INSERT INTO memberships (tenant_id, user_id, role)
+VALUES ($1, $2, $3)
+`
+
+type InsertMembershipParams struct {
+	TenantID uuid.UUID
+	UserID   uuid.UUID
+	Role     string
+}
+
+func (q *Queries) InsertMembership(ctx context.Context, arg InsertMembershipParams) error {
+	_, err := q.db.Exec(ctx, insertMembership, arg.TenantID, arg.UserID, arg.Role)
+	return err
+}
+
 const insertSession = `-- name: InsertSession :exec
 INSERT INTO sessions (id, user_id, tenant_id, token_hash, csrf_token, created_at, expires_at, last_seen_at, ip, user_agent)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $6, $8, $9)
@@ -167,6 +183,29 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.ExpiresAt,
 		arg.Ip,
 		arg.UserAgent,
+	)
+	return err
+}
+
+const insertUser = `-- name: InsertUser :exec
+INSERT INTO users (id, email, password_hash, display_name)
+VALUES ($1, $2, $3, $4)
+`
+
+type InsertUserParams struct {
+	ID           uuid.UUID
+	Email        string
+	PasswordHash *string
+	DisplayName  string
+}
+
+// Registration: a duplicate email fails on users_email_key, which the caller maps to email-taken.
+func (q *Queries) InsertUser(ctx context.Context, arg InsertUserParams) error {
+	_, err := q.db.Exec(ctx, insertUser,
+		arg.ID,
+		arg.Email,
+		arg.PasswordHash,
+		arg.DisplayName,
 	)
 	return err
 }

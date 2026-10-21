@@ -37,6 +37,8 @@ const (
 	problemValidation         = "urn:maiak:problem:validation"
 	problemNotImplemented     = "urn:maiak:problem:not-implemented"
 	problemPlanLimitReached   = "urn:maiak:problem:plan-limit-reached"
+	problemEmailTaken         = "urn:maiak:problem:email-taken"
+	problemRegistrationOff    = "urn:maiak:problem:registration-disabled"
 	problemSlackNotConfigured = "urn:maiak:problem:slack-not-configured"
 	problemSlackFailed        = "urn:maiak:problem:slack-delivery-failed"
 	problemUnavailable        = "urn:maiak:problem:unavailable"
@@ -52,6 +54,8 @@ var (
 	errNotFound         = errors.New("not found")
 	errMethodNotAllowed = errors.New("method not allowed")
 	errNotImplemented   = errors.New("not implemented")
+	// errRegistrationDisabled is the kill switch MAIAK_REGISTRATION_ENABLED=false.
+	errRegistrationDisabled = errors.New("registration disabled")
 )
 
 // writeError is the single place where errors become HTTP responses. Unknown errors are
@@ -82,6 +86,12 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 		p.Type, p.Title, p.Status = problemUnauthenticated, "Not authenticated", http.StatusUnauthorized
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		p.Type, p.Title, p.Status = problemInvalidCredentials, "Wrong login or password", http.StatusUnauthorized
+	case errors.Is(err, auth.ErrEmailTaken):
+		// Neutral wording; registration without verification cannot hide that the account exists.
+		p.Type, p.Title, p.Status = problemEmailTaken, "This email is already registered", http.StatusConflict
+		p.Detail = "Sign in instead. Lost passwords are reset by the platform administrator."
+	case errors.Is(err, errRegistrationDisabled):
+		p.Type, p.Title, p.Status = problemRegistrationOff, "Registration is turned off", http.StatusForbidden
 	case errors.As(err, &rateErr):
 		secs := int(math.Ceil(rateErr.RetryAfter.Seconds()))
 		w.Header().Set("Retry-After", strconv.Itoa(max(secs, 1)))

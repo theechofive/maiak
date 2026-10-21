@@ -507,7 +507,7 @@ func near(v any, want float64) bool {
 }
 
 // otherTenantSession creates a second tenant with an owner and a session directly in the
-// database (login always binds to the default tenant) and returns its session headers.
+// database (without going through registration) and returns its session headers.
 func otherTenantSession(t *testing.T, env *pgtest.Env) map[string]string {
 	t.Helper()
 	b := make([]byte, 32)

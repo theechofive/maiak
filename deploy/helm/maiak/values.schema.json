@@ -37,6 +37,7 @@
         "sessionTTL": {"type": "string"},
         "cookieSecure": {"type": "boolean"},
         "trustedProxyHops": {"type": "integer", "minimum": 0, "maximum": 10},
+        "registrationEnabled": {"type": "boolean", "description": "MAIAK_REGISTRATION_ENABLED: self-service registration kill switch (default true)"},
         "publicUrl": {
           "type": "string",
           "description": "MAIAK_PUBLIC_URL: https, no trailing slash, no user info, query or link-breaking characters",
@@ -60,8 +61,8 @@
             "source": {"type": "string", "enum": ["generate", "externalSecret"]},
             "login": {
               "type": "string",
-              "description": "system admin login (generate mode): 1-64 of [a-z0-9._@-]",
-              "pattern": "^[a-z0-9._@-]{1,64}$"
+              "description": "system admin login (generate mode): 3-254 of [a-z0-9._@+-]",
+              "pattern": "^[a-z0-9._@+-]{3,254}$"
             },
             "remoteKey": {"type": "string"}
           },

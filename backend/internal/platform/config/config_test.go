@@ -44,7 +44,7 @@ func TestLoadAPIDefaults(t *testing.T) {
 	if cfg.Env != "production" || cfg.LogLevel != slog.LevelInfo || cfg.HTTPAddr != ":8080" || cfg.AdminAddr != ":9090" {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
-	if cfg.SessionTTL != 12*time.Hour || !cfg.CookieSecure || cfg.TrustedProxyHops != 1 {
+	if cfg.SessionTTL != 12*time.Hour || !cfg.CookieSecure || cfg.TrustedProxyHops != 1 || !cfg.RegistrationEnabled {
 		t.Fatalf("unexpected auth defaults: ttl=%v secure=%v hops=%d", cfg.SessionTTL, cfg.CookieSecure, cfg.TrustedProxyHops)
 	}
 	if cfg.ShutdownTimeout != 25*time.Second {
@@ -285,10 +285,32 @@ func TestPublicURL(t *testing.T) {
 	}
 }
 
+func TestRegistrationKillSwitch(t *testing.T) {
+	for in, want := range map[string]bool{"false": false, "0": false, "true": true, "TRUE": true, " false ": false} {
+		e := apiEnv(t)
+		e["MAIAK_REGISTRATION_ENABLED"] = in
+		cfg, err := LoadAPI(env(e))
+		if err != nil {
+			t.Fatalf("%q: %v", in, err)
+		}
+		if cfg.RegistrationEnabled != want {
+			t.Fatalf("%q: RegistrationEnabled = %v", in, cfg.RegistrationEnabled)
+		}
+	}
+	for _, in := range []string{"yes", "off", "2"} {
+		e := apiEnv(t)
+		e["MAIAK_REGISTRATION_ENABLED"] = in
+		if _, err := LoadAPI(env(e)); err == nil || !strings.Contains(err.Error(), "MAIAK_REGISTRATION_ENABLED: must be true or false") {
+			t.Fatalf("%q accepted: %v", in, err)
+		}
+	}
+}
+
 func TestAdminLogin(t *testing.T) {
 	for in, want := range map[string]string{
 		"admin": "admin", "Admin": "admin", " ADMIN ": "admin", "owner@example.com": "owner@example.com",
-		"ops.team_1-a": "ops.team_1-a", strings.Repeat("a", 64): strings.Repeat("a", 64),
+		"ops.team_1-a": "ops.team_1-a", strings.Repeat("a", 254): strings.Repeat("a", 254),
+		"abc": "abc", "User+Tag@Example.com": "user+tag@example.com",
 	} {
 		e := apiEnv(t)
 		e["MAIAK_ADMIN_LOGIN"] = in
@@ -300,7 +322,8 @@ func TestAdminLogin(t *testing.T) {
 			t.Fatalf("%q: AdminLogin = %q, want %q", in, cfg.AdminLogin, want)
 		}
 	}
-	for _, in := range []string{"ad min", "adm!n", "Admin <a@example.com>", strings.Repeat("a", 65), "Kdmin", "admín"} {
+	// Shorter than 3 (L-160: users.email requires 3) or longer than 254 is rejected.
+	for _, in := range []string{"ab", "a", "ad min", "adm!n", "Admin <a@example.com>", strings.Repeat("a", 255), "Kdmin", "admín"} {
 		e := apiEnv(t)
 		e["MAIAK_ADMIN_LOGIN"] = in
 		if _, err := LoadAPI(env(e)); err == nil || !strings.Contains(err.Error(), "MAIAK_ADMIN_LOGIN") {

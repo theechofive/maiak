@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/theechofive/maiak/backend/internal/platform/db"
 	"github.com/theechofive/maiak/backend/internal/platform/uuidv7"
 	"github.com/theechofive/maiak/backend/internal/tenants/tenantsdb"
 )
@@ -41,6 +42,21 @@ func Ensure(ctx context.Context, tx pgx.Tx, slug, name, planKey string) (Tenant,
 	row, err := q.GetTenantBySlug(ctx, slug)
 	if err != nil {
 		return Tenant{}, notFound(err, slug)
+	}
+	return Tenant(row), nil
+}
+
+// ErrSlugTaken means another tenant already has the slug; the transaction is aborted.
+var ErrSlugTaken = errors.New("tenants: slug taken")
+
+// Create inserts a new tenant with id on planKey (registration, P-02).
+func Create(ctx context.Context, tx pgx.Tx, id uuid.UUID, slug, name, planKey string) (Tenant, error) {
+	row, err := tenantsdb.New(tx).InsertTenant(ctx, tenantsdb.InsertTenantParams{ID: id, Slug: slug, Name: name, PlanKey: planKey})
+	if err != nil {
+		if db.IsUniqueViolation(err, "tenants_slug_key") {
+			return Tenant{}, ErrSlugTaken
+		}
+		return Tenant{}, fmt.Errorf("tenants: create %q: %w", slug, err)
 	}
 	return Tenant(row), nil
 }

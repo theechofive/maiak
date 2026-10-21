@@ -97,6 +97,9 @@ type API struct {
 	// PublicURL is where users open Maiak (MAIAK_PUBLIC_URL, https, no trailing slash); used in
 	// Slack messages.
 	PublicURL string
+	// RegistrationEnabled is the kill switch of self-service registration
+	// (MAIAK_REGISTRATION_ENABLED, default true, ADR-0092).
+	RegistrationEnabled bool
 }
 
 // Worker is the configuration of cmd/worker. It has no encryption keys (L-042).
@@ -154,16 +157,17 @@ const shutdownTimeout = 25 * time.Second
 func LoadAPI(lookup LookupFunc) (API, error) {
 	l := &loader{lookup: lookup}
 	cfg := API{
-		Server:            l.server(10),
-		Encryption:        l.encryption(),
-		Guard:             l.guard(),
-		HTTPAddr:          l.addr("MAIAK_HTTP_ADDR", ":8080"),
-		AdminLogin:        l.login("MAIAK_ADMIN_LOGIN"),
-		AdminPasswordHash: l.passwordHash("MAIAK_ADMIN_PASSWORD_HASH"),
-		SessionTTL:        l.duration("MAIAK_SESSION_TTL", 12*time.Hour, 5*time.Minute, 30*24*time.Hour),
-		CookieSecure:      l.boolean("MAIAK_COOKIE_SECURE", true),
-		TrustedProxyHops:  l.integer("MAIAK_TRUSTED_PROXY_HOPS", 1, 0, 10),
-		PublicURL:         l.publicURL("MAIAK_PUBLIC_URL"),
+		Server:              l.server(10),
+		Encryption:          l.encryption(),
+		Guard:               l.guard(),
+		HTTPAddr:            l.addr("MAIAK_HTTP_ADDR", ":8080"),
+		AdminLogin:          l.login("MAIAK_ADMIN_LOGIN"),
+		AdminPasswordHash:   l.passwordHash("MAIAK_ADMIN_PASSWORD_HASH"),
+		SessionTTL:          l.duration("MAIAK_SESSION_TTL", 12*time.Hour, 5*time.Minute, 30*24*time.Hour),
+		CookieSecure:        l.boolean("MAIAK_COOKIE_SECURE", true),
+		TrustedProxyHops:    l.integer("MAIAK_TRUSTED_PROXY_HOPS", 1, 0, 10),
+		PublicURL:           l.publicURL("MAIAK_PUBLIC_URL"),
+		RegistrationEnabled: l.boolean("MAIAK_REGISTRATION_ENABLED", true),
 	}
 	if cfg.HTTPAddr != "" && cfg.HTTPAddr == cfg.AdminAddr {
 		l.fail("MAIAK_HTTP_ADDR", "must differ from MAIAK_ADMIN_ADDR")
@@ -338,16 +342,18 @@ func (l *loader) login(name string) string {
 	return n
 }
 
-// NormalizeLogin lowercases a login and checks that it is 1-64 characters of [a-z0-9._@-]
-// (ADR-0009). Logins are case-insensitive: every input is normalised with this function.
+// NormalizeLogin lowercases a login and checks that it is 3-254 characters of [a-z0-9._@+-]
+// (ADR-0009): the system login such as `admin`, or an email address. The minimum matches the
+// users.email check (L-160). Logins are case-insensitive: every input is normalised with this
+// function.
 func NormalizeLogin(s string) (string, error) {
-	if len(s) == 0 || len(s) > 64 {
-		return "", fmt.Errorf("login must be 1-64 characters, got %d", len(s))
+	if len(s) < 3 || len(s) > 254 {
+		return "", fmt.Errorf("login must be 3-254 characters, got %d", len(s))
 	}
 	// Checked before lowercasing: strings.ToLower maps some non-ASCII runes (the Kelvin sign) to ASCII.
 	for _, c := range s {
-		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && !strings.ContainsRune("._@-", c) {
-			return "", errors.New("login must contain only letters, digits and . _ @ -")
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && !strings.ContainsRune("._@+-", c) {
+			return "", errors.New("login must contain only letters, digits and . _ @ + -")
 		}
 	}
 	return strings.ToLower(s), nil

@@ -22,7 +22,8 @@ combos=(
   "platform|-f $platform"
   "platform-no-bootstrap|-f $platform --set dbBootstrap.enabled=false"
   "platform-no-web|-f $platform --set web.enabled=false"
-  "platform-login-set|-f $platform --set secrets.admin.login=owner@example.com"
+  "platform-login-set|-f $platform --set secrets.admin.login=owner+ops@example.com"
+  "platform-registration-off|-f $platform --set config.registrationEnabled=false"
   "platform-external-secrets|-f $platform --set secrets.admin.source=externalSecret --set secrets.crypto.source=externalSecret"
   "platform-admin-external|-f $platform --set secrets.admin.source=externalSecret"
   "platform-crypto-external|-f $platform --set secrets.crypto.source=externalSecret"
@@ -43,6 +44,12 @@ for combo in "${combos[@]}"; do
   renders+=("$out/$name.yaml")
 done
 
+echo "== registration kill switch (MAIAK_REGISTRATION_ENABLED, api only)"
+kill_switch() { grep -A1 'name: MAIAK_REGISTRATION_ENABLED' "$out/$1.yaml" | sed -n 's/.*value: //p'; }
+[ "$(kill_switch platform)" = '"true"' ] || { echo "FAIL: registration not enabled by default" >&2; exit 1; }
+[ "$(kill_switch platform-registration-off)" = '"false"' ] || { echo "FAIL: config.registrationEnabled=false not rendered" >&2; exit 1; }
+echo "default \"true\", config.registrationEnabled=false renders \"false\""
+
 echo "== negative checks (rendering must fail)"
 expect_fail() {
   local label=$1
@@ -61,6 +68,8 @@ expect_fail "memory limit missing" --set worker.resources.limits=null
 expect_fail "unknown secrets source" --set secrets.admin.source=manual
 expect_fail "upper-case admin login" --set secrets.admin.login=Admin
 expect_fail "admin login with a space" --set "secrets.admin.login=a b"
+expect_fail "admin login shorter than 3" --set secrets.admin.login=ab
+expect_fail "registrationEnabled not a boolean" --set-string config.registrationEnabled=yes
 expect_fail "empty admin login in generate mode" --set secrets.admin.login=
 expect_fail "admin login removed in generate mode" -f "$platform" --set secrets.admin.login=null
 expect_fail "invalid crypto key id" --set "secrets.crypto.keyId=k 1"

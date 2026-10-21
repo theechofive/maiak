@@ -49,6 +49,8 @@ type Config struct {
 	Commit           string
 	CookieSecure     bool
 	TrustedProxyHops int
+	// RegistrationEnabled is the kill switch of POST /auth/register (MAIAK_REGISTRATION_ENABLED).
+	RegistrationEnabled bool
 }
 
 // Deps are the collaborators of the HTTP layer.
@@ -231,19 +233,28 @@ func (s *server) GetHealth(_ context.Context, _ gen.GetHealthRequestObject) (gen
 	return gen.GetHealth200JSONResponse{Status: gen.Ok, Version: s.cfg.Version, Commit: s.cfg.Commit}, nil
 }
 
-func (s *server) Login(ctx context.Context, req gen.LoginRequestObject) (gen.LoginResponseObject, error) {
-	r := httpRequest(ctx)
+func (s *server) GetPublicConfig(_ context.Context, _ gen.GetPublicConfigRequestObject) (gen.GetPublicConfigResponseObject, error) {
+	return gen.GetPublicConfig200JSONResponse{RegistrationEnabled: s.cfg.RegistrationEnabled}, nil
+}
+
+// limiterIP is the client address the login and registration limits are keyed by.
+func (s *server) limiterIP(ctx context.Context, r *http.Request) netip.Addr {
 	ip, trusted := httpx.ForwardedClientIP(r, s.cfg.TrustedProxyHops)
 	if !trusted {
 		// The peer is the proxy: limiting by it would let one client lock everybody out.
 		// An invalid address makes auth use one shared bucket for such requests.
 		s.warnMissingXFF(ctx)
-		ip = netip.Addr{}
+		return netip.Addr{}
 	}
+	return ip
+}
+
+func (s *server) Login(ctx context.Context, req gen.LoginRequestObject) (gen.LoginResponseObject, error) {
+	r := httpRequest(ctx)
 	res, err := s.auth.Login(ctx, auth.LoginInput{
 		Login:     req.Body.Login,
 		Password:  req.Body.Password,
-		IP:        ip,
+		IP:        s.limiterIP(ctx, r),
 		UserAgent: r.UserAgent(),
 	})
 	if err != nil {
@@ -257,13 +268,35 @@ func (s *server) Login(ctx context.Context, req gen.LoginRequestObject) (gen.Log
 	}, nil
 }
 
+func (s *server) Register(ctx context.Context, req gen.RegisterRequestObject) (gen.RegisterResponseObject, error) {
+	if !s.cfg.RegistrationEnabled {
+		return nil, errRegistrationDisabled
+	}
+	r := httpRequest(ctx)
+	res, err := s.auth.Register(ctx, auth.RegisterInput{
+		Email:     req.Body.Email,
+		Password:  req.Body.Password,
+		IP:        s.limiterIP(ctx, r),
+		UserAgent: r.UserAgent(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	logging.SetTenantID(ctx, res.Tenant.ID.String())
+	cookie := s.sessionCookie(res.Token, res.ExpiresAt).String()
+	return gen.Register201JSONResponse{
+		Body:    toSessionInfo(res.SessionInfo),
+		Headers: gen.Register201ResponseHeaders{SetCookie: &cookie},
+	}, nil
+}
+
 func (s *server) warnMissingXFF(ctx context.Context) {
 	now := time.Now().UnixNano()
 	last := s.lastXFFWarn.Load()
 	if now-last < int64(xffWarnInterval) || !s.lastXFFWarn.CompareAndSwap(last, now) {
 		return
 	}
-	s.log.WarnContext(ctx, "login without a valid X-Forwarded-For although MAIAK_TRUSTED_PROXY_HOPS > 0; rate limiting it under a shared key",
+	s.log.WarnContext(ctx, "login or registration without a valid X-Forwarded-For although MAIAK_TRUSTED_PROXY_HOPS > 0; rate limiting it under a shared key",
 		"trusted_proxy_hops", s.cfg.TrustedProxyHops)
 }
 

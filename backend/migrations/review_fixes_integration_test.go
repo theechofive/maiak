@@ -17,6 +17,7 @@ import (
 // definerCalls calls every allow-listed SECURITY DEFINER function with harmless arguments.
 var definerCalls = map[string]string{
 	"auth_lookup_session":       `SELECT * FROM auth_lookup_session('\x00')`,
+	"auth_login_tenant":         `SELECT auth_login_tenant(gen_random_uuid())`,
 	"ensure_partitions":         `SELECT ensure_partitions()`,
 	"claim_due_monitors":        `SELECT * FROM claim_due_monitors(1, 'home-eu-central-1')`,
 	"compute_rollups":           `SELECT compute_rollups(now() - interval '2 hours', now())`,

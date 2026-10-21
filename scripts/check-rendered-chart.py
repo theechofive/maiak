@@ -138,9 +138,15 @@ def check(path):
         if n not in worker:
             fail(f"worker lacks {n}")
     api, jobs = env_of("api"), env_of("jobs")
-    for n in ("MAIAK_ADMIN_LOGIN", "MAIAK_ADMIN_PASSWORD_HASH", "MAIAK_SESSION_TTL", "MAIAK_COOKIE_SECURE", "MAIAK_TRUSTED_PROXY_HOPS", "MAIAK_PUBLIC_URL", "MAIAK_HTTP_ADDR"):
+    for n in ("MAIAK_ADMIN_LOGIN", "MAIAK_ADMIN_PASSWORD_HASH", "MAIAK_SESSION_TTL", "MAIAK_COOKIE_SECURE", "MAIAK_TRUSTED_PROXY_HOPS", "MAIAK_PUBLIC_URL", "MAIAK_HTTP_ADDR", "MAIAK_REGISTRATION_ENABLED"):
         if n not in api:
             fail(f"api lacks {n}")
+    # The kill switch is parsed with strconv.ParseBool: render exactly "true" or "false" (P-02).
+    if api and api.get("MAIAK_REGISTRATION_ENABLED", {}).get("value") not in ("true", "false"):
+        fail(f"api MAIAK_REGISTRATION_ENABLED must be \"true\" or \"false\", got {api.get('MAIAK_REGISTRATION_ENABLED')}")
+    for comp, env in (("worker", worker), ("jobs", jobs)):
+        if "MAIAK_REGISTRATION_ENABLED" in env:
+            fail(f"{comp} has MAIAK_REGISTRATION_ENABLED (api only)")
     if ADMIN_ENV & set(jobs):
         fail("jobs has admin credentials")
     for n, key in ADMIN_SECRET_KEYS.items():

@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
@@ -96,4 +97,11 @@ func SetTenant(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error {
 		return fmt.Errorf("db: set tenant: %w", err)
 	}
 	return nil
+}
+
+// IsUniqueViolation reports whether err is a unique violation (SQLSTATE 23505) of constraint.
+// The transaction that produced it is aborted and must be rolled back.
+func IsUniqueViolation(err error, constraint string) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == constraint
 }

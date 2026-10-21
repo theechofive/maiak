@@ -19,7 +19,8 @@ helm template maiak deploy/helm/maiak -n maiak -f deploy/helm/maiak/values-platf
 helm template maiak deploy/helm/maiak -n maiak -f deploy/helm/maiak/values-platform.yaml --set web.enabled=false
 ```
 
-`values.schema.json` rejects, among others, a `config.publicUrl` that is not https or ends with a slash and a
+`values.schema.json` rejects, among others, a `config.publicUrl` that is not https or ends with a slash, a
+`config.registrationEnabled` that is not a boolean, an admin login outside 3-254 of `[a-z0-9._@+-]` and a
 workload without `resources.requests` and `resources.limits`. `scripts/check-rendered-chart.py` asserts the
 invariants listed under "Environment per workload" and "Hardening" on every render.
 
@@ -34,6 +35,7 @@ Source of truth: `backend/internal/platform/config/config.go`.
 | `MAIAK_ENCRYPTION_KEYS`, `MAIAK_ENCRYPTION_ACTIVE_KEY_ID` (`maiak-crypto`) | x | **never** | x | | |
 | `MAIAK_ADMIN_LOGIN`, `MAIAK_ADMIN_PASSWORD_HASH` (`maiak-admin`) | x | **never** | **never** | | |
 | `MAIAK_HTTP_ADDR`, `MAIAK_SESSION_TTL`, `MAIAK_COOKIE_SECURE`, `MAIAK_TRUSTED_PROXY_HOPS` | x | | | | |
+| `MAIAK_REGISTRATION_ENABLED` (`config.registrationEnabled`, default `true`; only an explicit `false` turns self-service registration off) | x | | | | |
 | `MAIAK_PUBLIC_URL` (`config.publicUrl`, default `https://maiak.klr-ops.net`) | x | | x | | |
 | `MAIAK_BLOCKED_CIDRS` (`config.blockedCIDRs`, only rendered when non-empty) | x | x | x | | |
 | `MAIAK_WORKER_CLAIM_BATCH`, `_CONCURRENCY`, `_TENANT_CONCURRENCY`, `_HOST_CONCURRENCY` | | x | | | |
