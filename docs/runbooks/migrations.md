@@ -24,6 +24,7 @@ Rules are in [ADR-0013](../adr/0013-migrations.md). This page is the practical s
 | `20261020170000_outbox_stats.sql` | `outbox_pending` |
 | `20261020180000_review_fixes_b10_b12.sql` | B-20: `incidents.monitor_id` and the one-open-incident index, `claim_due_monitors(n, p_location)`, `notification_deliveries.claim_token`, new `claim_deliveries` and `finish_delivery(id, token, ...)`, `compute_rollups` under an advisory lock, `drop_expired_partitions` replaced by `list_droppable_partitions` / `detach_expired_partition` / `drop_detached_partition` (L-090) |
 | `20261020190000_rollup_watermark_review_fixes_b21.sql` | B-21: `rollup_state` and `compute_rollups_catch_up` (ADR-0090; `compute_rollups(from, to)` kept), `reset_monitor_runtime` skips soft-deleted monitors |
+| `20261021090000_plans.sql` | P-01: `plans` (global, read-only for runtime roles; seeds `free` and `internal`), `tenants.plan_key` (default `free`, FK to `plans`), the `default` tenant moved to `internal` (ADR-0093) |
 
 `claim_due_monitors(n)`, `finish_delivery(id, status, error, retry_at)` and `drop_expired_partitions()` no longer exist; the [data model](../architecture/data-model.md) lists the current functions.
 
@@ -36,7 +37,7 @@ Rules are in [ADR-0013](../adr/0013-migrations.md). This page is the practical s
   - runtime roles own nothing, are not superusers, do not bypass RLS and are not members of `maiak_owner`;
   - every `SECURITY DEFINER` function is in `definerAllowList`, owned by `maiak_owner`, has a pinned `search_path`, is not executable by PUBLIC and is executable only by its allow-listed role (directly or through a group).
   The test also proves each rule fails on a deliberately broken object.
-- Further integration tests in `backend/migrations` cover the results, outbox, runtime grants, monitors and review-fix migrations (partitions, rollups, retention, claims, fencing, grants of `maiak_api`).
+- Further integration tests in `backend/migrations` cover the results, outbox, runtime grants, monitors, review-fix and plans migrations (partitions, rollups, retention, claims, fencing, grants of `maiak_api`, plans read-only for runtime roles and the `default` tenant moved to `internal` when the plans migration runs over existing data).
 
 ## How it runs in the cluster
 ArgoCD sync order: bootstrap hook (wave -3, when enabled), migrate Job (wave -1), workloads (wave 0). A failed migration stops the sync; old pods keep running. Look at the Job logs: `kubectl --context <klr-platform context> -n maiak logs job/maiak-migrate`.

@@ -12,19 +12,6 @@ import (
 	"github.com/google/uuid"
 )
 
-const countLiveMonitors = `-- name: CountLiveMonitors :one
-SELECT count(*)
-FROM monitors
-WHERE tenant_id = $1 AND deleted_at IS NULL
-`
-
-func (q *Queries) CountLiveMonitors(ctx context.Context, tenantID uuid.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countLiveMonitors, tenantID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const getMonitor = `-- name: GetMonitor :one
 SELECT m.id, m.name, m.config, m.interval_seconds, m.timeout_seconds, m.failure_threshold,
        m.notify_slack, m.paused, m.created_at, m.updated_at,

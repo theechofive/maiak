@@ -17,6 +17,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/auth"
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/notify"
+	"github.com/theechofive/maiak/backend/internal/plans"
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
 	"github.com/theechofive/maiak/backend/internal/platform/validation"
@@ -35,7 +36,7 @@ const (
 	problemMethodNotAllowed   = "urn:maiak:problem:method-not-allowed"
 	problemValidation         = "urn:maiak:problem:validation"
 	problemNotImplemented     = "urn:maiak:problem:not-implemented"
-	problemLimitReached       = "urn:maiak:problem:limit-reached"
+	problemPlanLimitReached   = "urn:maiak:problem:plan-limit-reached"
 	problemSlackNotConfigured = "urn:maiak:problem:slack-not-configured"
 	problemSlackFailed        = "urn:maiak:problem:slack-delivery-failed"
 	problemUnavailable        = "urn:maiak:problem:unavailable"
@@ -62,7 +63,7 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 	var reqErr *openapi3filter.RequestError
 	var rateErr *auth.RateLimitedError
 	var valErr *validation.Error
-	var limitErr *monitors.LimitError
+	var limitErr *plans.LimitError
 	var sendErr *notify.SendError
 	switch {
 	case errors.As(err, &badReq):
@@ -86,8 +87,9 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 		w.Header().Set("Retry-After", strconv.Itoa(max(secs, 1)))
 		p.Type, p.Title, p.Status = problemRateLimited, "Too many attempts, try again later", http.StatusTooManyRequests
 	case errors.As(err, &limitErr):
-		p.Type, p.Title, p.Status = problemLimitReached, "Monitor limit reached", http.StatusConflict
-		p.Detail = fmt.Sprintf("This tenant can have at most %d monitors.", limitErr.Limit)
+		p.Type, p.Title, p.Status = problemPlanLimitReached, "Plan limit reached", http.StatusConflict
+		p.Detail = fmt.Sprintf("The %s plan allows at most %d %s.", limitErr.PlanName, limitErr.Max, limitErr.Resource)
+		p.Limit, p.Max = string(limitErr.Resource), &limitErr.Max
 	case errors.Is(err, notify.ErrNotConfigured):
 		p.Type, p.Title, p.Status = problemSlackNotConfigured, "Slack is not configured", http.StatusConflict
 	case errors.As(err, &sendErr) && sendErr.Kind == notify.KindRateLimited:

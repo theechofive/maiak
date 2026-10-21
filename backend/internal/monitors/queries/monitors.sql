@@ -1,8 +1,3 @@
--- name: CountLiveMonitors :one
-SELECT count(*)
-FROM monitors
-WHERE tenant_id = @tenant_id AND deleted_at IS NULL;
-
 -- name: InsertMonitor :exec
 INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, timeout_seconds, failure_threshold, notify_slack)
 VALUES (@id, @tenant_id, @name, @type, @config, @interval_seconds, @timeout_seconds, @failure_threshold, @notify_slack);

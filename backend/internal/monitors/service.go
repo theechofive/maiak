@@ -1,5 +1,5 @@
 // Package monitors owns monitors, monitor_locations and monitor_state: creating, editing,
-// pausing, resuming and (soft) deleting HTTPS monitors under the tenant limit. Schedules
+// pausing, resuming and (soft) deleting HTTPS monitors under the tenant's plan quota. Schedules
 // (monitor_location_state) belong to internal/scheduler and are written through its service in
 // the same transaction (ADR-0016 lifecycle).
 package monitors
@@ -19,11 +19,11 @@ import (
 	"github.com/theechofive/maiak/backend/internal/audit"
 	"github.com/theechofive/maiak/backend/internal/incidents"
 	"github.com/theechofive/maiak/backend/internal/monitors/monitorsdb"
+	"github.com/theechofive/maiak/backend/internal/plans"
 	"github.com/theechofive/maiak/backend/internal/platform/db"
 	"github.com/theechofive/maiak/backend/internal/platform/uuidv7"
 	"github.com/theechofive/maiak/backend/internal/platform/validation"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
-	"github.com/theechofive/maiak/backend/internal/tenants"
 )
 
 // Statuses of a monitor.
@@ -46,13 +46,6 @@ const typeHTTP = "http"
 
 // ErrNotFound means no live monitor with that id exists in the tenant.
 var ErrNotFound = errors.New("monitors: not found")
-
-// LimitError means the tenant already has its maximum number of monitors.
-type LimitError struct{ Limit int }
-
-func (e *LimitError) Error() string {
-	return fmt.Sprintf("monitors: limit of %d monitors reached", e.Limit)
-}
 
 // Actor is who performs a change; it scopes every operation to one tenant.
 type Actor struct {
@@ -122,8 +115,8 @@ func NewService(pool *db.Pool, sched *scheduler.Service, inc *incidents.Service)
 	return &Service{pool: pool, sched: sched, incidents: inc}
 }
 
-// Create validates in, enforces the tenant's monitor limit and creates the monitor with its
-// location, schedule and state rows in one transaction.
+// Create validates in, enforces the tenant's monitor quota (a *plans.LimitError when it is used
+// up) and creates the monitor with its location, schedule and state rows in one transaction.
 func (s *Service) Create(ctx context.Context, a Actor, in CreateInput) (Monitor, error) {
 	var verr validation.Error
 	name, msg := ValidateName(in.Name)
@@ -153,20 +146,12 @@ func (s *Service) Create(ctx context.Context, a Actor, in CreateInput) (Monitor,
 	id := uuidv7.New()
 	var m Monitor
 	err = db.WithTenantTx(ctx, s.pool, a.TenantID, func(tx pgx.Tx) error {
-		// The tenant row lock serialises concurrent creates, so the count below stays true
+		// The tenant row lock taken here serialises concurrent creates, so the count stays true
 		// until this transaction commits.
-		limits, err := tenants.LockLimits(ctx, tx, a.TenantID)
-		if err != nil {
+		if err := plans.CheckCreate(ctx, tx, a.TenantID, plans.ResourceMonitor); err != nil {
 			return err
 		}
 		q := monitorsdb.New(tx)
-		n, err := q.CountLiveMonitors(ctx, a.TenantID)
-		if err != nil {
-			return fmt.Errorf("count monitors: %w", err)
-		}
-		if n >= int64(limits.MaxMonitors) {
-			return &LimitError{Limit: limits.MaxMonitors}
-		}
 		location, err := s.sched.HomeLocation(ctx, tx)
 		if err != nil {
 			return err
@@ -288,7 +273,7 @@ func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateIn
 }
 
 // Delete soft-deletes a monitor. It stops being scheduled (the claim skips deleted monitors)
-// and no longer counts toward the limit; its history stays until retention.
+// and no longer counts toward the quota; its history stays until retention.
 func (s *Service) Delete(ctx context.Context, a Actor, id uuid.UUID) error {
 	err := db.WithTenantTx(ctx, s.pool, a.TenantID, func(tx pgx.Tx) error {
 		q := monitorsdb.New(tx)
@@ -410,7 +395,7 @@ func fromRow(r monitorsdb.GetMonitorRow) (Monitor, error) {
 // wrap adds context to unexpected errors and leaves domain errors recognisable.
 func wrap(op string, err error) error {
 	var verr *validation.Error
-	var lerr *LimitError
+	var lerr *plans.LimitError
 	if err == nil || errors.Is(err, ErrNotFound) || errors.As(err, &verr) || errors.As(err, &lerr) {
 		return err
 	}

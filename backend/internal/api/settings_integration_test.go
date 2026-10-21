@@ -16,6 +16,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/incidents"
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/notify"
+	"github.com/theechofive/maiak/backend/internal/plans"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
@@ -78,7 +79,7 @@ func newSlackServer(t *testing.T, env *pgtest.Env, sender *fakeSlack, logs *lock
 	sched := scheduler.New()
 	h, err := api.NewHandler(api.Config{Version: "test", Commit: "test", CookieSecure: true, TrustedProxyHops: 1}, api.Deps{
 		Auth: svc, Monitors: monitors.NewService(pool, sched, incidents.NewService(sched)),
-		Slack: notify.NewService(pool, keys, sender, "https://maiak.example.com"), Logger: log, Clock: clk,
+		Slack: notify.NewService(pool, keys, sender, "https://maiak.example.com"), Plans: plans.NewService(pool), Logger: log, Clock: clk,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -211,5 +212,49 @@ func TestIntegrationSlackTestRateLimit(t *testing.T) {
 	clk.Advance(3 * time.Second)
 	if r := test(unsafe); r.code != http.StatusNoContent || len(sender.urls) != 2 {
 		t.Fatalf("after 5 s: %d %s, %d sends", r.code, r.raw, len(sender.urls))
+	}
+}
+
+// Creating the Slack channel counts against the channel quota; replacing its webhook does not.
+func TestIntegrationSlackChannelQuota(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("apislackquota"))
+	c := newSlackServer(t, env, &fakeSlack{}, &lockedBuffer{}, nil)
+	cookie, csrf := c.login()
+	unsafe := withCSRF(cookie, csrf)
+	admin := env.AdminConn(t)
+	put := func() response {
+		return c.do(http.MethodPut, "/api/v1/settings/slack", `{"webhookUrl":"`+slackURL+`"}`, unsafe)
+	}
+
+	pgtest.MustExec(t, admin, `UPDATE tenants SET plan_key = 'free', limits = '{"max_channels": 0}' WHERE slug = 'default'`)
+	r := put()
+	if r.code != http.StatusConflict || r.body["type"] != "urn:maiak:problem:plan-limit-reached" ||
+		r.body["limit"] != "channels" || r.body["max"] != float64(0) || r.body["detail"] != "The Free plan allows at most 0 channels." {
+		t.Fatalf("new channel over quota: %d %s", r.code, r.raw)
+	}
+	if g := c.do(http.MethodGet, "/api/v1/settings/slack", "", cookie); g.raw != `{"configured":false}`+"\n" {
+		t.Fatalf("channel created over quota: %s", g.raw)
+	}
+
+	// The free plan allows one channel; a second PUT replaces it, also once the quota shrinks.
+	pgtest.MustExec(t, admin, `UPDATE tenants SET limits = '{}' WHERE slug = 'default'`)
+	if r := put(); r.code != http.StatusOK {
+		t.Fatalf("first put on free: %d %s", r.code, r.raw)
+	}
+	if r := put(); r.code != http.StatusOK {
+		t.Fatalf("replace on free: %d %s", r.code, r.raw)
+	}
+	pgtest.MustExec(t, admin, `UPDATE tenants SET limits = '{"max_channels": 0}' WHERE slug = 'default'`)
+	if r := put(); r.code != http.StatusOK {
+		t.Fatalf("replace over quota: %d %s", r.code, r.raw)
+	}
+	var n int
+	if err := admin.QueryRow(context.Background(), `SELECT count(*) FROM notification_channels`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("channels = %d (%v)", n, err)
+	}
+	u := c.do(http.MethodGet, "/api/v1/usage", "", cookie)
+	if u.code != http.StatusOK || !strings.Contains(u.raw, `"usage":{"channels":1,"heartbeats":0,"monitors":0}`) ||
+		!strings.Contains(u.raw, `"limits":{"channels":0,"heartbeats":1,"monitors":3}`) {
+		t.Fatalf("usage: %d %s", u.code, u.raw)
 	}
 }

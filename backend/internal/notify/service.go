@@ -11,6 +11,7 @@ import (
 
 	"github.com/theechofive/maiak/backend/internal/audit"
 	"github.com/theechofive/maiak/backend/internal/notify/notifydb"
+	"github.com/theechofive/maiak/backend/internal/plans"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
 	"github.com/theechofive/maiak/backend/internal/platform/db"
 	"github.com/theechofive/maiak/backend/internal/platform/uuidv7"
@@ -103,8 +104,10 @@ func (s *Service) Get(ctx context.Context, tenantID uuid.UUID) (Settings, error)
 }
 
 // Put validates webhookURL and stores it encrypted with the active key, creating the tenant's
-// Slack channel or replacing its URL (which makes a failed channel active again). Monitors are
-// routed to it by their notify_slack flag (ADR-0019); monitor_channels is not written.
+// Slack channel or replacing its URL (which makes a failed channel active again). Creating the
+// channel counts against the tenant's channel quota (a *plans.LimitError when it is used up),
+// replacing it does not. Monitors are routed to it by their notify_slack flag (ADR-0019);
+// monitor_channels is not written.
 func (s *Service) Put(ctx context.Context, a Actor, webhookURL string) (Settings, error) {
 	if msg := ValidateWebhookURL(webhookURL); msg != "" {
 		var verr validation.Error
@@ -113,21 +116,41 @@ func (s *Service) Put(ctx context.Context, a Actor, webhookURL string) (Settings
 	}
 	err := db.WithTenantTx(ctx, s.pool, a.TenantID, func(tx pgx.Tx) error {
 		q := notifydb.New(tx)
-		id := uuidv7.New()
-		sealed, err := s.keys.Encrypt([]byte(webhookURL), channelAAD(id))
-		if err != nil {
-			return fmt.Errorf("notify: encrypt: %w", err)
+		// The tenant row lock serialises the PUTs of a tenant, so whether its channel exists (and
+		// the quota check below) stays true until commit.
+		if err := plans.Lock(ctx, tx, a.TenantID); err != nil {
+			return err
 		}
-		n, err := q.InsertSlackChannel(ctx, notifydb.InsertSlackChannelParams{ID: id, TenantID: a.TenantID, ConfigEncrypted: sealed})
-		if err != nil {
-			return fmt.Errorf("notify: insert slack channel: %w", err)
-		}
-		created := n == 1
-		if !created {
-			if id, err = q.LockSlackChannel(ctx, a.TenantID); err != nil {
-				return fmt.Errorf("notify: lock slack channel: %w", err)
+		id, err := q.LockSlackChannel(ctx, a.TenantID)
+		created := false
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			// Only a new channel counts against the quota; replacing the webhook is always allowed.
+			if err := plans.CheckCreate(ctx, tx, a.TenantID, plans.ResourceChannel); err != nil {
+				return err
 			}
-			if sealed, err = s.keys.Encrypt([]byte(webhookURL), channelAAD(id)); err != nil {
+			id = uuidv7.New()
+			sealed, err := s.keys.Encrypt([]byte(webhookURL), channelAAD(id))
+			if err != nil {
+				return fmt.Errorf("notify: encrypt: %w", err)
+			}
+			n, err := q.InsertSlackChannel(ctx, notifydb.InsertSlackChannelParams{ID: id, TenantID: a.TenantID, ConfigEncrypted: sealed})
+			if err != nil {
+				return fmt.Errorf("notify: insert slack channel: %w", err)
+			}
+			created = n == 1
+			if !created {
+				// An api pod of the previous release (which takes no tenant lock) inserted it meanwhile.
+				if id, err = q.LockSlackChannel(ctx, a.TenantID); err != nil {
+					return fmt.Errorf("notify: lock slack channel: %w", err)
+				}
+			}
+		case err != nil:
+			return fmt.Errorf("notify: lock slack channel: %w", err)
+		}
+		if !created {
+			sealed, err := s.keys.Encrypt([]byte(webhookURL), channelAAD(id))
+			if err != nil {
 				return fmt.Errorf("notify: encrypt: %w", err)
 			}
 			if err := q.ReplaceChannelConfig(ctx, notifydb.ReplaceChannelConfigParams{TenantID: a.TenantID, ID: id, ConfigEncrypted: sealed}); err != nil {

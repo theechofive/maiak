@@ -4,7 +4,6 @@ package tenants
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -32,11 +31,11 @@ const StatusActive = "active"
 // ErrNotFound means no live tenant matches.
 var ErrNotFound = errors.New("tenants: not found")
 
-// Ensure returns the tenant with slug, creating it with name if it does not exist. Safe to run
-// concurrently from several replicas.
-func Ensure(ctx context.Context, tx pgx.Tx, slug, name string) (Tenant, error) {
+// Ensure returns the tenant with slug, creating it with name on planKey if it does not exist.
+// An existing tenant keeps its plan. Safe to run concurrently from several replicas.
+func Ensure(ctx context.Context, tx pgx.Tx, slug, name, planKey string) (Tenant, error) {
 	q := tenantsdb.New(tx)
-	if err := q.InsertTenantIfMissing(ctx, tenantsdb.InsertTenantIfMissingParams{ID: uuidv7.New(), Slug: slug, Name: name}); err != nil {
+	if err := q.InsertTenantIfMissing(ctx, tenantsdb.InsertTenantIfMissingParams{ID: uuidv7.New(), Slug: slug, Name: name, PlanKey: planKey}); err != nil {
 		return Tenant{}, fmt.Errorf("tenants: insert %q: %w", slug, err)
 	}
 	row, err := q.GetTenantBySlug(ctx, slug)
@@ -62,31 +61,28 @@ func notFound(err error, key string) error {
 	return fmt.Errorf("tenants: get %s: %w", key, err)
 }
 
-// DefaultMaxMonitors applies when tenants.limits has no max_monitors key (ADR-0016).
-const DefaultMaxMonitors = 50
-
-// Limits are the per-tenant quotas stored in tenants.limits.
-type Limits struct {
-	MaxMonitors int
+// Quota is the plan of a tenant and its per-tenant limit overrides (tenants.limits, raw jsonb);
+// internal/plans resolves them into effective limits.
+type Quota struct {
+	PlanKey   string
+	Overrides []byte
 }
 
-// LockLimits locks the tenant row until the end of tx and returns its limits. Callers that
-// check a quota and then insert hold this lock, so concurrent requests cannot both pass the
-// check.
-func LockLimits(ctx context.Context, tx pgx.Tx, id uuid.UUID) (Limits, error) {
-	raw, err := tenantsdb.New(tx).LockTenantLimits(ctx, id)
+// LockQuota locks the tenant row until the end of tx and returns its quota. Callers that check
+// a quota and then insert hold this lock, so concurrent requests cannot both pass the check.
+func LockQuota(ctx context.Context, tx pgx.Tx, id uuid.UUID) (Quota, error) {
+	row, err := tenantsdb.New(tx).LockTenantQuota(ctx, id)
 	if err != nil {
-		return Limits{}, notFound(err, id.String())
+		return Quota{}, notFound(err, id.String())
 	}
-	var stored struct {
-		MaxMonitors *int `json:"max_monitors"`
+	return Quota{PlanKey: row.PlanKey, Overrides: row.Limits}, nil
+}
+
+// GetQuota returns the quota of a tenant without locking it.
+func GetQuota(ctx context.Context, tx pgx.Tx, id uuid.UUID) (Quota, error) {
+	row, err := tenantsdb.New(tx).GetTenantQuota(ctx, id)
+	if err != nil {
+		return Quota{}, notFound(err, id.String())
 	}
-	if err := json.Unmarshal(raw, &stored); err != nil {
-		return Limits{}, fmt.Errorf("tenants: limits of %s: %w", id, err)
-	}
-	l := Limits{MaxMonitors: DefaultMaxMonitors}
-	if stored.MaxMonitors != nil {
-		l.MaxMonitors = *stored.MaxMonitors
-	}
-	return l, nil
+	return Quota{PlanKey: row.PlanKey, Overrides: row.Limits}, nil
 }

@@ -79,15 +79,29 @@ func TestIntegrationBootstrapAdminIdempotent(t *testing.T) {
 		}
 	}
 	assertCounts(hash1)
+	assertPlan := func(want string) {
+		t.Helper()
+		var plan string
+		if err := admin.QueryRow(ctx, `SELECT plan_key FROM tenants WHERE slug = 'default'`).Scan(&plan); err != nil || plan != want {
+			t.Fatalf("default tenant plan = %q (%v), want %q", plan, err, want)
+		}
+	}
+	// The default tenant is created on the internal plan (ADR-0093).
+	assertPlan("internal")
 
-	// A changed Secret (password reset) replaces the hash; a demoted membership is restored.
+	// A changed Secret (password reset) replaces the hash; a demoted membership is restored. A
+	// plan changed meanwhile is kept: bootstrap never changes the plan of an existing tenant.
 	if _, err := admin.Exec(ctx, `UPDATE memberships SET role = 'viewer'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(ctx, `UPDATE tenants SET plan_key = 'free'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.BootstrapAdmin(ctx, "ADMIN", hash2); err != nil {
 		t.Fatal(err)
 	}
 	assertCounts(hash2)
+	assertPlan("free")
 	var stored string
 	if err := admin.QueryRow(ctx, `SELECT email::text FROM users`).Scan(&stored); err != nil || stored != "admin" {
 		t.Fatalf("stored login = %q (err %v), want it lowercased", stored, err)

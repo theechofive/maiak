@@ -61,33 +61,63 @@ func (q *Queries) GetTenantBySlug(ctx context.Context, slug string) (GetTenantBy
 	return i, err
 }
 
+const getTenantQuota = `-- name: GetTenantQuota :one
+SELECT plan_key, limits
+FROM tenants
+WHERE id = $1 AND deleted_at IS NULL
+`
+
+type GetTenantQuotaRow struct {
+	PlanKey string
+	Limits  []byte
+}
+
+func (q *Queries) GetTenantQuota(ctx context.Context, id uuid.UUID) (GetTenantQuotaRow, error) {
+	row := q.db.QueryRow(ctx, getTenantQuota, id)
+	var i GetTenantQuotaRow
+	err := row.Scan(&i.PlanKey, &i.Limits)
+	return i, err
+}
+
 const insertTenantIfMissing = `-- name: InsertTenantIfMissing :exec
-INSERT INTO tenants (id, slug, name)
-VALUES ($1, $2, $3)
+INSERT INTO tenants (id, slug, name, plan_key)
+VALUES ($1, $2, $3, $4)
 ON CONFLICT (slug) DO NOTHING
 `
 
 type InsertTenantIfMissingParams struct {
-	ID   uuid.UUID
-	Slug string
-	Name string
+	ID      uuid.UUID
+	Slug    string
+	Name    string
+	PlanKey string
 }
 
+// An existing tenant keeps its plan: a restart never changes it.
 func (q *Queries) InsertTenantIfMissing(ctx context.Context, arg InsertTenantIfMissingParams) error {
-	_, err := q.db.Exec(ctx, insertTenantIfMissing, arg.ID, arg.Slug, arg.Name)
+	_, err := q.db.Exec(ctx, insertTenantIfMissing,
+		arg.ID,
+		arg.Slug,
+		arg.Name,
+		arg.PlanKey,
+	)
 	return err
 }
 
-const lockTenantLimits = `-- name: LockTenantLimits :one
-SELECT limits
+const lockTenantQuota = `-- name: LockTenantQuota :one
+SELECT plan_key, limits
 FROM tenants
 WHERE id = $1 AND deleted_at IS NULL
 FOR UPDATE
 `
 
-func (q *Queries) LockTenantLimits(ctx context.Context, id uuid.UUID) ([]byte, error) {
-	row := q.db.QueryRow(ctx, lockTenantLimits, id)
-	var limits []byte
-	err := row.Scan(&limits)
-	return limits, err
+type LockTenantQuotaRow struct {
+	PlanKey string
+	Limits  []byte
+}
+
+func (q *Queries) LockTenantQuota(ctx context.Context, id uuid.UUID) (LockTenantQuotaRow, error) {
+	row := q.db.QueryRow(ctx, lockTenantQuota, id)
+	var i LockTenantQuotaRow
+	err := row.Scan(&i.PlanKey, &i.Limits)
+	return i, err
 }

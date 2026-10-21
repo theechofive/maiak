@@ -35,6 +35,9 @@ type Problem struct {
 	RequestID string `json:"request_id,omitempty"`
 	// FieldErrors lists per-field validation failures (400 and 422 only).
 	FieldErrors []FieldError `json:"fieldErrors,omitempty"`
+	// Limit and Max are the extension members of the plan-limit problem.
+	Limit string `json:"limit,omitempty"`
+	Max   *int   `json:"max,omitempty"`
 }
 
 // FieldError is one entry of Problem.FieldErrors.

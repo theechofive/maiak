@@ -13,6 +13,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/incidents"
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/notify"
+	"github.com/theechofive/maiak/backend/internal/plans"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/config"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
@@ -84,6 +85,7 @@ func run() error {
 		Monitors: monitors.NewService(pool, sched, incidents.NewService(sched)),
 		Queries:  queries.New(pool, nil),
 		Slack:    notify.NewService(pool, keys, slack, cfg.PublicURL),
+		Plans:    plans.NewService(pool),
 		Logger:   log,
 		Metrics:  metrics.NewHTTP(reg),
 	})

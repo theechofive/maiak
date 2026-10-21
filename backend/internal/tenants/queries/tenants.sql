@@ -1,6 +1,7 @@
 -- name: InsertTenantIfMissing :exec
-INSERT INTO tenants (id, slug, name)
-VALUES (@id, @slug, @name)
+-- An existing tenant keeps its plan: a restart never changes it.
+INSERT INTO tenants (id, slug, name, plan_key)
+VALUES (@id, @slug, @name, @plan_key)
 ON CONFLICT (slug) DO NOTHING;
 
 -- name: GetTenantBySlug :one
@@ -13,8 +14,13 @@ SELECT id, slug, name, status
 FROM tenants
 WHERE id = @id AND deleted_at IS NULL;
 
--- name: LockTenantLimits :one
-SELECT limits
+-- name: LockTenantQuota :one
+SELECT plan_key, limits
 FROM tenants
 WHERE id = @id AND deleted_at IS NULL
 FOR UPDATE;
+
+-- name: GetTenantQuota :one
+SELECT plan_key, limits
+FROM tenants
+WHERE id = @id AND deleted_at IS NULL;

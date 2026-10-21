@@ -15,6 +15,7 @@ import (
 
 	"github.com/theechofive/maiak/backend/internal/auth"
 	"github.com/theechofive/maiak/backend/internal/monitors"
+	"github.com/theechofive/maiak/backend/internal/plans"
 	"github.com/theechofive/maiak/backend/internal/platform/validation"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
 )
@@ -42,6 +43,8 @@ type problem struct {
 		Field   string `json:"field"`
 		Message string `json:"message"`
 	} `json:"fieldErrors"`
+	Limit string `json:"limit"`
+	Max   *int   `json:"max"`
 }
 
 func do(t *testing.T, h http.Handler, method, path, body string, hdr map[string]string) (*httptest.ResponseRecorder, problem) {
@@ -179,7 +182,7 @@ func TestWriteErrorMapping(t *testing.T) {
 		{errNotFound, 404, problemNotFound},
 		{errNotImplemented, 501, problemNotImplemented},
 		{fmt.Errorf("x: %w", monitors.ErrNotFound), 404, problemNotFound},
-		{&monitors.LimitError{Limit: 5}, 409, problemLimitReached},
+		{fmt.Errorf("monitors: create: %w", &plans.LimitError{Resource: plans.ResourceMonitor, Max: 3, PlanName: "Free"}), 409, problemPlanLimitReached},
 		{fmt.Errorf("monitors: create: %w", scheduler.ErrNoLocation), 503, problemUnavailable},
 		{&validation.Error{Fields: []validation.FieldError{{Field: "url", Message: "must use https"}}}, 422, problemValidation},
 		{errors.New("database exploded: password=hunter2"), 500, problemInternal},
@@ -203,6 +206,12 @@ func TestWriteErrorMapping(t *testing.T) {
 		}
 		if c.status == 422 && (len(p.FieldErrors) != 1 || p.FieldErrors[0].Field != "url" || p.FieldErrors[0].Message != "must use https") {
 			t.Errorf("422 field errors = %+v", p.FieldErrors)
+		}
+		if c.status == 409 && (p.Limit != "monitors" || p.Max == nil || *p.Max != 3 || p.Detail != "The Free plan allows at most 3 monitors.") {
+			t.Errorf("409 problem = %+v", p)
+		}
+		if c.status != 409 && (p.Limit != "" || p.Max != nil) {
+			t.Errorf("%v: unexpected limit members %+v", c.err, p)
 		}
 		if c.status == 429 && rec.Header().Get("Retry-After") != "2" {
 			t.Errorf("Retry-After = %q, want 2", rec.Header().Get("Retry-After"))

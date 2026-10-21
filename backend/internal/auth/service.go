@@ -17,6 +17,7 @@ import (
 
 	"github.com/theechofive/maiak/backend/internal/audit"
 	"github.com/theechofive/maiak/backend/internal/auth/authdb"
+	"github.com/theechofive/maiak/backend/internal/plans"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
 	"github.com/theechofive/maiak/backend/internal/platform/db"
@@ -130,7 +131,8 @@ func NewService(pool *db.Pool, opts Options) (*Service, error) {
 	return s, nil
 }
 
-// BootstrapAdmin upserts the default tenant, the admin user and its owner membership in one
+// BootstrapAdmin upserts the default tenant (created on the internal plan; an existing tenant
+// keeps its plan), the admin user and its owner membership in one
 // transaction. It is idempotent and safe to run from several replicas at once. When the hash
 // in the Secret changes, the stored hash is replaced (this is how the password is reset) and
 // the admin's sessions are deleted. When the login changes, the previous owners of the default
@@ -155,7 +157,7 @@ func (s *Service) BootstrapAdmin(ctx context.Context, login, passwordHash string
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", bootstrapLockKey); err != nil {
 			return fmt.Errorf("bootstrap lock: %w", err)
 		}
-		t, err := tenants.Ensure(ctx, tx, tenants.DefaultSlug, "Default")
+		t, err := tenants.Ensure(ctx, tx, tenants.DefaultSlug, "Default", plans.KeyInternal)
 		if err != nil {
 			return err
 		}

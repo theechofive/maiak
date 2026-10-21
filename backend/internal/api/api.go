@@ -22,6 +22,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/auth"
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/notify"
+	"github.com/theechofive/maiak/backend/internal/plans"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
@@ -56,6 +57,7 @@ type Deps struct {
 	Monitors *monitors.Service
 	Queries  *queries.Service
 	Slack    *notify.Service
+	Plans    *plans.Service
 	Logger   *slog.Logger
 	Metrics  *metrics.HTTP
 	// Clock drives the in-process rate limits; nil means the system clock.
@@ -68,6 +70,7 @@ type server struct {
 	monitors *monitors.Service
 	queries  *queries.Service
 	slack    *notify.Service
+	plans    *plans.Service
 	log      *slog.Logger
 	// slackTests limits Slack test messages per tenant (per api replica, like the login limit).
 	slackTests *auth.Limiter
@@ -87,7 +90,7 @@ func NewHandler(cfg Config, deps Deps) (http.Handler, error) {
 	if clk == nil {
 		clk = clock.System{}
 	}
-	s := &server{cfg: cfg, auth: deps.Auth, monitors: deps.Monitors, queries: deps.Queries, slack: deps.Slack, log: deps.Logger,
+	s := &server{cfg: cfg, auth: deps.Auth, monitors: deps.Monitors, queries: deps.Queries, slack: deps.Slack, plans: deps.Plans, log: deps.Logger,
 		slackTests: auth.NewLimiter(1, slackTestInterval, 10_000, clk)}
 
 	r := chi.NewRouter()

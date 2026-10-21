@@ -102,3 +102,13 @@ sql:
         emit_pointers_for_null_types: true
         omit_unused_structs: true
         overrides: *overrides
+  - <<: *module
+    queries: backend/internal/plans/queries
+    gen:
+      go:
+        package: plansdb
+        out: backend/internal/plans/plansdb
+        sql_package: pgx/v5
+        emit_pointers_for_null_types: true
+        omit_unused_structs: true
+        overrides: *overrides

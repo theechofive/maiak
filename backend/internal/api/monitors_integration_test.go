@@ -184,11 +184,13 @@ func TestIntegrationMonitorLifecycle(t *testing.T) {
 	}
 }
 
-func TestIntegrationMonitorLimitUnderConcurrency(t *testing.T) {
+func TestIntegrationMonitorPlanLimitUnderConcurrency(t *testing.T) {
 	env := pgtest.New(t, pgtest.DBName("apimonlimit"))
 	c := newServer(t, env, auth.Options{})
 	cookie, csrf := c.login()
-	pgtest.MustExec(t, env.AdminConn(t), `UPDATE tenants SET limits = '{"max_monitors": 5}' WHERE slug = 'default'`)
+	// The free plan allows 3 monitors (the default tenant is on internal).
+	pgtest.MustExec(t, env.AdminConn(t), `UPDATE tenants SET plan_key = 'free' WHERE slug = 'default'`)
+	const limit = 3
 
 	const n = 20
 	codes := make(chan int, n)
@@ -218,17 +220,18 @@ func TestIntegrationMonitorLimitUnderConcurrency(t *testing.T) {
 	for code := range codes {
 		count[code]++
 	}
-	if count[http.StatusCreated] != 5 || count[http.StatusConflict] != n-5 {
-		t.Fatalf("status codes = %v, want 5 created and %d conflicts", count, n-5)
+	if count[http.StatusCreated] != limit || count[http.StatusConflict] != n-limit {
+		t.Fatalf("status codes = %v, want %d created and %d conflicts", count, limit, n-limit)
 	}
 	var live int
-	if err := env.AdminConn(t).QueryRow(context.Background(), `SELECT count(*) FROM monitors WHERE deleted_at IS NULL`).Scan(&live); err != nil || live != 5 {
+	if err := env.AdminConn(t).QueryRow(context.Background(), `SELECT count(*) FROM monitors WHERE deleted_at IS NULL`).Scan(&live); err != nil || live != limit {
 		t.Fatalf("live monitors = %d (%v)", live, err)
 	}
 
-	// The limit problem says why; a deleted monitor frees its slot.
+	// The limit problem says which limit and its value; a deleted monitor frees its slot.
 	r := c.do(http.MethodPost, "/api/v1/monitors", `{"name":"x","url":"https://example.com"}`, withCSRF(cookie, csrf))
-	if r.code != http.StatusConflict || r.body["type"] != "urn:maiak:problem:limit-reached" {
+	if r.code != http.StatusConflict || r.body["type"] != "urn:maiak:problem:plan-limit-reached" || r.body["limit"] != "monitors" ||
+		r.body["max"] != float64(limit) || r.body["title"] != "Plan limit reached" || r.body["detail"] != "The Free plan allows at most 3 monitors." {
 		t.Fatalf("over limit: %d %s", r.code, r.raw)
 	}
 	l := c.do(http.MethodGet, "/api/v1/monitors", "", cookie)

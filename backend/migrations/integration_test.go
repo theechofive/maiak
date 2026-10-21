@@ -30,7 +30,7 @@ func TestIntegrationMigrateFromScratchAndRerun(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "audit_log,auth_identities,check_results,incident_monitors,incidents,memberships,monitor_channels,monitor_location_state," +
-		"monitor_locations,monitor_state,monitors,notification_channels,notification_deliveries,probe_locations,result_rollups_hourly,rollup_state,sessions,tenants,users"
+		"monitor_locations,monitor_state,monitors,notification_channels,notification_deliveries,plans,probe_locations,result_rollups_hourly,rollup_state,sessions,tenants,users"
 	if got := strings.Join(tables, ","); got != want {
 		t.Fatalf("tables = %s, want %s", got, want)
 	}
