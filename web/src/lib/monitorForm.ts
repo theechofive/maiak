@@ -1,21 +1,37 @@
 import { ApiError, errorMessage } from "../api/client";
-import type { MonitorCreate, MonitorDetail } from "../api/endpoints";
+import type { MonitorCreate, MonitorDetail, MonitorUpdate } from "../api/endpoints";
+import {
+  DEFAULT_GRACE,
+  DEFAULT_INTERVAL,
+  GRACE_MAX,
+  INTERVAL_MAX,
+  INTERVAL_MIN,
+} from "./heartbeat";
+
+export type MonitorKind = "http" | "heartbeat";
 
 export interface MonitorFormValues {
+  type: MonitorKind;
   name: string;
   url: string;
   expectedMode: "2xx" | "exact";
   expectedCode: string;
   failureThreshold: number;
   notifySlack: boolean;
+  /** Heartbeat fields, as typed (seconds). */
+  expectedIntervalSeconds: string;
+  graceSeconds: string;
 }
 
 export const formFields = [
+  "type",
   "name",
   "url",
   "expectedStatus",
   "failureThreshold",
   "notifySlack",
+  "expectedIntervalSeconds",
+  "graceSeconds",
 ] as const;
 export type FormField = (typeof formFields)[number];
 export type MonitorFormErrors = Partial<Record<FormField, string>>;
@@ -28,24 +44,38 @@ export const EXPECTED_STATUS_PATTERN = /^(2xx|2[0-9]{2}|[45][0-9]{2})$/;
 export const EXPECTED_STATUS_MESSAGE = "Use 2xx, a code from 200 to 299, or a code from 400 to 599";
 
 export const emptyMonitorForm: MonitorFormValues = {
+  type: "http",
   name: "",
   url: "",
   expectedMode: "2xx",
   expectedCode: "200",
   failureThreshold: 2,
   notifySlack: true,
+  expectedIntervalSeconds: String(DEFAULT_INTERVAL),
+  graceSeconds: String(DEFAULT_GRACE),
 };
 
 export function valuesFromMonitor(m: MonitorDetail): MonitorFormValues {
   const exact = m.expectedStatus !== "2xx";
   return {
+    type: m.type,
     name: m.name,
     url: m.url,
     expectedMode: exact ? "exact" : "2xx",
     expectedCode: exact ? m.expectedStatus : "200",
     failureThreshold: m.failureThreshold,
     notifySlack: m.notifySlack,
+    expectedIntervalSeconds: String(m.expectedIntervalSeconds ?? DEFAULT_INTERVAL),
+    graceSeconds: String(m.graceSeconds ?? DEFAULT_GRACE),
   };
+}
+
+/** A whole number of seconds within [min, max], or undefined. */
+function seconds(raw: string, min: number, max: number): number | undefined {
+  const value = raw.trim();
+  if (!/^[0-9]+$/.test(value)) return undefined;
+  const n = Number(value);
+  return n >= min && n <= max ? n : undefined;
 }
 
 /** Mirrors the server's URL policy that can be checked without DNS: https, no credentials, port 443. */
@@ -72,6 +102,15 @@ export function validateMonitorForm(v: MonitorFormValues): MonitorFormErrors {
   const name = v.name.trim();
   if (!name) errors.name = "Enter a name.";
   else if ([...name].length > NAME_MAX) errors.name = `Use ${NAME_MAX} characters or fewer.`;
+  if (v.type === "heartbeat") {
+    if (seconds(v.expectedIntervalSeconds, INTERVAL_MIN, INTERVAL_MAX) === undefined) {
+      errors.expectedIntervalSeconds = `Enter whole seconds from ${INTERVAL_MIN} to ${INTERVAL_MAX}.`;
+    }
+    if (seconds(v.graceSeconds, 0, GRACE_MAX) === undefined) {
+      errors.graceSeconds = `Enter whole seconds from 0 to ${GRACE_MAX}.`;
+    }
+    return errors;
+  }
   const urlError = validateMonitorUrl(v.url);
   if (urlError) errors.url = urlError;
   if (v.expectedMode === "exact" && !EXPECTED_STATUS_PATTERN.test(v.expectedCode.trim())) {
@@ -83,14 +122,31 @@ export function validateMonitorForm(v: MonitorFormValues): MonitorFormErrors {
   return errors;
 }
 
-export function toMonitorRequest(v: MonitorFormValues) {
+/** The PATCH body (and, for http monitors, the create body). */
+export function toMonitorRequest(v: MonitorFormValues): MonitorUpdate {
+  if (v.type === "heartbeat") {
+    return {
+      name: v.name.trim(),
+      expectedIntervalSeconds: Number(v.expectedIntervalSeconds.trim()),
+      graceSeconds: Number(v.graceSeconds.trim()),
+      notifySlack: v.notifySlack,
+    };
+  }
   return {
     name: v.name.trim(),
     url: v.url.trim(),
     expectedStatus: v.expectedMode === "2xx" ? "2xx" : v.expectedCode.trim(),
     failureThreshold: v.failureThreshold,
     notifySlack: v.notifySlack,
-  } satisfies MonitorCreate;
+  };
+}
+
+/** The create body: a heartbeat names its type, an http monitor keeps the default. */
+export function toCreateRequest(v: MonitorFormValues): MonitorCreate {
+  const body = toMonitorRequest(v);
+  return v.type === "heartbeat"
+    ? { type: "heartbeat", ...body, name: body.name ?? "" }
+    : { ...body, name: body.name ?? "" };
 }
 
 /**

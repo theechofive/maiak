@@ -11,6 +11,11 @@ export function atMonitorLimit(usage: Usage | undefined): boolean {
   return usage !== undefined && usage.usage.monitors >= usage.limits.monitors;
 }
 
+/** True when the tenant cannot create another heartbeat (watchdog). */
+export function atHeartbeatLimit(usage: Usage | undefined): boolean {
+  return usage !== undefined && usage.usage.heartbeats >= usage.limits.heartbeats;
+}
+
 /** "3 monitors", "1 monitor": a count with its noun. */
 export function countOf(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;

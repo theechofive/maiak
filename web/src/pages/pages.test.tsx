@@ -6,6 +6,7 @@ import { json, mockApi, problem, renderApp, signedIn } from "../test/utils";
 const listItem = (over: Partial<MonitorListItem>): MonitorListItem => ({
   id: "m1",
   name: "Website",
+  type: "http",
   url: "https://example.com/",
   intervalSeconds: 60,
   timeoutSeconds: 10,
@@ -20,6 +21,9 @@ const listItem = (over: Partial<MonitorListItem>): MonitorListItem => ({
   tlsExpiresAt: null,
   ongoingIncident: null,
   uptime24h: 99.5,
+  lastPingAt: null,
+  expectedIntervalSeconds: null,
+  graceSeconds: null,
   lastResponseMs: 230,
   ...over,
 });
@@ -38,10 +42,16 @@ const detail = (over: Partial<MonitorDetail> = {}): MonitorDetail => {
   };
 };
 
-const usageOf = (monitors: number, maxMonitors: number, plan = { key: "free", name: "Free" }) => ({
+const usageOf = (
+  monitors: number,
+  maxMonitors: number,
+  plan = { key: "free", name: "Free" },
+  heartbeats = 0,
+  maxHeartbeats = 1,
+) => ({
   plan,
-  limits: { monitors: maxMonitors, heartbeats: 1, channels: 1 },
-  usage: { monitors, heartbeats: 0, channels: 1 },
+  limits: { monitors: maxMonitors, heartbeats: maxHeartbeats, channels: 1 },
+  usage: { monitors, heartbeats, channels: 1 },
 });
 
 describe("monitors list", () => {
@@ -104,15 +114,15 @@ describe("monitors list", () => {
     );
   });
 
-  it("replaces the add button at the plan's monitor limit", async () => {
+  it("replaces the add button when both of the plan's limits are reached", async () => {
     mockApi({
       ...signedIn,
       "GET /api/v1/monitors": () => json(list),
-      "GET /api/v1/usage": () => json(usageOf(3, 3)),
+      "GET /api/v1/usage": () => json(usageOf(3, 3, undefined, 1, 1)),
     });
     renderApp("/");
     const note = await screen.findByText(
-      "The Free plan allows 3 monitors. Delete a monitor to add a new one.",
+      "The Free plan allows 3 monitors and 1 watchdog. Delete one to add a new one.",
     );
     const button = screen.getByRole("button", { name: "Add monitor" });
     expect(button).toHaveAttribute("aria-disabled", "true");
@@ -152,12 +162,12 @@ describe("monitors list", () => {
       ...signedIn,
       "GET /api/v1/monitors": () =>
         json({ summary: { up: 0, down: 0, paused: 0, unknown: 0 }, items: [] }),
-      "GET /api/v1/usage": () => json(usageOf(0, 0, { key: "none", name: "Suspended" })),
+      "GET /api/v1/usage": () => json(usageOf(0, 0, { key: "none", name: "Suspended" }, 0, 0)),
     });
     renderApp("/");
     expect(
       await screen.findByText(
-        "The Suspended plan allows 0 monitors. Delete a monitor to add a new one.",
+        "The Suspended plan allows 0 monitors and 0 watchdogs. Delete one to add a new one.",
       ),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add monitor" })).toHaveAttribute(
@@ -265,8 +275,9 @@ describe("monitor form", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Your plan allows at most 3 monitors, and the limit is reached. Delete a monitor to add a new one.",
     );
-    // The form does not show usage, so the invalidated query is only marked stale.
-    expect(usageCalls).toBe(0);
+    // The form shows which type is full, so the stale usage is fetched again.
+    await waitFor(() => expect(usageCalls).toBeGreaterThanOrEqual(2));
+    expect(screen.getByText("Your plan's HTTP monitor limit is reached.")).toBeInTheDocument();
   });
 
   it("rejects 1xx and 3xx expected status codes before calling the API", async () => {
@@ -601,5 +612,203 @@ describe("settings", () => {
     renderApp("/settings");
     await userEvent.click(await screen.findByRole("button", { name: "Send test message" }));
     expect(await screen.findByText(/Test message failed/)).toBeInTheDocument();
+  });
+});
+
+const heartbeat = (over: Partial<MonitorDetail> = {}): MonitorDetail =>
+  detail({
+    id: "hb1",
+    type: "heartbeat",
+    name: "Alertmanager",
+    url: "",
+    intervalSeconds: 300,
+    expectedIntervalSeconds: 300,
+    graceSeconds: 60,
+    failureThreshold: 1,
+    expectedStatus: "2xx",
+    lastPingAt: new Date(Date.now() - 40_000).toISOString(),
+    tlsExpiresAt: null,
+    uptime: { h24: null, d7: null, d30: null },
+    ...over,
+  });
+
+describe("watchdogs", () => {
+  const url = "https://maiak.example.com/api/v1/heartbeat/s3cr3t-token";
+
+  it("marks watchdogs in the list with their expectation and last ping", async () => {
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/monitors": () =>
+        json({
+          summary: { up: 1, down: 0, paused: 0, unknown: 0 },
+          items: [
+            listItem({
+              id: "hb1",
+              type: "heartbeat",
+              name: "Alertmanager",
+              url: "",
+              expectedIntervalSeconds: 300,
+              graceSeconds: 60,
+              lastCheckedAt: null,
+              lastPingAt: new Date(Date.now() - 125_000).toISOString(),
+              uptime24h: null,
+              lastResponseMs: null,
+            }),
+          ],
+        }),
+    });
+    renderApp("/");
+    const row = (await screen.findByRole("link", { name: "Alertmanager" })).closest("tr")!;
+    expect(within(row).getByText("Watchdog")).toBeInTheDocument();
+    expect(within(row).getByText("Ping every 5 min, grace 1 min")).toBeInTheDocument();
+    expect(within(row).getByText("2 min ago")).toBeInTheDocument();
+  });
+
+  it("creates a watchdog and shows its URL once with the Alertmanager snippet", async () => {
+    let body: unknown;
+    mockApi({
+      ...signedIn,
+      "POST /api/v1/monitors": async (req) => {
+        body = await req.json();
+        return json(
+          heartbeat({
+            id: "hb1",
+            heartbeatUrl: url,
+            expectedIntervalSeconds: 900,
+            intervalSeconds: 900,
+          }),
+          201,
+        );
+      },
+      "GET /api/v1/monitors/hb1": () => json(heartbeat()),
+      "GET /api/v1/monitors/hb1/incidents": () => json({ items: [] }),
+    });
+    renderApp("/monitors/new");
+    await userEvent.click(await screen.findByLabelText("Watchdog (heartbeat)"));
+    expect(screen.queryByLabelText("URL")).not.toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Name"), "Alertmanager");
+    await userEvent.click(screen.getByRole("button", { name: "15 min" }));
+    expect(screen.getByLabelText("Expected interval (seconds)")).toHaveValue(900);
+    await userEvent.clear(screen.getByLabelText("Grace (seconds)"));
+    await userEvent.type(screen.getByLabelText("Grace (seconds)"), "120");
+    await userEvent.click(screen.getByRole("button", { name: "Create monitor" }));
+
+    expect(await screen.findByRole("heading", { name: "Your heartbeat URL" })).toBeInTheDocument();
+    expect(body).toEqual({
+      type: "heartbeat",
+      name: "Alertmanager",
+      expectedIntervalSeconds: 900,
+      graceSeconds: 120,
+      notifySlack: true,
+    });
+    expect(screen.getByLabelText("Heartbeat URL")).toHaveValue(url);
+    expect(screen.getByLabelText("Heartbeat URL")).toHaveAccessibleDescription(/shown only once/);
+    const snippet = screen.getByLabelText("Alertmanager configuration");
+    expect(snippet).toHaveTextContent('alertname = "Watchdog"');
+    expect(snippet).toHaveTextContent("repeat_interval: 450s");
+    expect(snippet).toHaveTextContent("url_file:");
+    expect(snippet).not.toHaveTextContent(url);
+    expect(screen.getByLabelText("Secret with the URL")).toHaveTextContent(url);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "I saved the URL, open the monitor" }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Alertmanager", level: 1 }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Heartbeat URL")).not.toBeInTheDocument();
+  });
+
+  it("validates the interval and grace before calling the API", async () => {
+    const fetchMock = mockApi({ ...signedIn });
+    renderApp("/monitors/new");
+    await userEvent.click(await screen.findByLabelText("Watchdog (heartbeat)"));
+    await userEvent.type(screen.getByLabelText("Name"), "x");
+    await userEvent.clear(screen.getByLabelText("Expected interval (seconds)"));
+    await userEvent.type(screen.getByLabelText("Expected interval (seconds)"), "30");
+    await userEvent.clear(screen.getByLabelText("Grace (seconds)"));
+    await userEvent.type(screen.getByLabelText("Grace (seconds)"), "3601");
+    await userEvent.click(screen.getByRole("button", { name: "Create monitor" }));
+    expect(screen.getByLabelText("Expected interval (seconds)")).toHaveAccessibleDescription(
+      expect.stringContaining("Enter whole seconds from 60 to 86400."),
+    );
+    expect(screen.getByLabelText("Grace (seconds)")).toHaveAccessibleDescription(
+      expect.stringContaining("Enter whole seconds from 0 to 3600."),
+    );
+    expect(fetchMock.mock.calls.some(([r]) => (r as Request).method === "POST")).toBe(false);
+  });
+
+  it("shows the last ping and incidents, no response times, and regenerates after confirmation", async () => {
+    const fetchMock = mockApi({
+      ...signedIn,
+      "GET /api/v1/monitors/hb1": () =>
+        json(
+          heartbeat({
+            status: "down",
+            statusSince: new Date(Date.now() - 10 * 60_000).toISOString(),
+            lastErrorKind: "heartbeat_missed",
+          }),
+        ),
+      "GET /api/v1/monitors/hb1/incidents": () =>
+        json({
+          items: [
+            {
+              id: "i1",
+              startedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+              resolvedAt: null,
+              reason: "heartbeat_missed",
+            },
+          ],
+        }),
+      "POST /api/v1/monitors/hb1/heartbeat-token": () => json({ heartbeatUrl: url }),
+    });
+    renderApp("/monitors/hb1");
+    expect(await screen.findByText(/Down for 10 min · no ping in time/)).toBeInTheDocument();
+    expect(screen.getByText("Watchdog · Ping every 5 min, grace 1 min")).toBeInTheDocument();
+    expect(await screen.findByText("Heartbeat missed")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Response time" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Recent checks" })).not.toBeInTheDocument();
+    const posts = () =>
+      fetchMock.mock.calls.filter(([r]) => (r as Request).url.endsWith("/heartbeat-token")).length;
+
+    await userEvent.click(screen.getByRole("button", { name: "Regenerate URL" }));
+    expect(
+      screen.getByRole("dialog", { name: "Regenerate the URL of Alertmanager?" }),
+    ).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(posts()).toBe(0);
+
+    await userEvent.click(screen.getByRole("button", { name: "Regenerate URL" }));
+    await userEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Regenerate URL" }),
+    );
+    expect(await screen.findByLabelText("Heartbeat URL")).toHaveValue(url);
+    expect(posts()).toBe(1);
+    await userEvent.click(screen.getByRole("button", { name: "I saved the URL, hide it" }));
+    expect(screen.queryByLabelText("Heartbeat URL")).not.toBeInTheDocument();
+  });
+
+  it("edits a watchdog without http fields", async () => {
+    let body: unknown;
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/monitors/hb1": () => json(heartbeat()),
+      "GET /api/v1/monitors/hb1/incidents": () => json({ items: [] }),
+      "PATCH /api/v1/monitors/hb1": async (req) => {
+        body = await req.json();
+        return json(heartbeat({ expectedIntervalSeconds: 60 }));
+      },
+    });
+    renderApp("/monitors/hb1/edit");
+    await userEvent.click(await screen.findByRole("button", { name: "1 min" }));
+    expect(screen.queryByLabelText("Watchdog (heartbeat)")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await screen.findByRole("heading", { name: "Alertmanager", level: 1 });
+    expect(body).toEqual({
+      name: "Alertmanager",
+      expectedIntervalSeconds: 60,
+      graceSeconds: 60,
+      notifySlack: true,
+    });
   });
 });

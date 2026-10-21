@@ -155,3 +155,14 @@ td.url {
 .plan-full {
   color: var(--pico-del-color);
 }
+
+/* Monitor type badge in the list. */
+.badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0 0.4rem;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  color: var(--pico-muted-color);
+  font-size: 0.8em;
+}

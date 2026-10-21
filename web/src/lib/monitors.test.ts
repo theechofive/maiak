@@ -7,6 +7,7 @@ function item(over: Partial<MonitorListItem>): MonitorListItem {
   return {
     id: "m",
     name: "Website",
+    type: "http",
     url: "https://example.com",
     intervalSeconds: 60,
     timeoutSeconds: 10,
@@ -21,6 +22,9 @@ function item(over: Partial<MonitorListItem>): MonitorListItem {
     tlsExpiresAt: null,
     ongoingIncident: null,
     uptime24h: 100,
+    lastPingAt: null,
+    expectedIntervalSeconds: null,
+    graceSeconds: null,
     lastResponseMs: 120,
     ...over,
   };

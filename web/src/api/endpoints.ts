@@ -91,6 +91,10 @@ export const pauseMonitor = (monitorId: string) =>
 export const resumeMonitor = (monitorId: string) =>
   unwrap(client.POST("/api/v1/monitors/{monitorId}/resume", monitorPath(monitorId)));
 
+/** A new secret URL for a heartbeat; the old one stops working. Shown once. */
+export const regenerateHeartbeatToken = (monitorId: string) =>
+  unwrap(client.POST("/api/v1/monitors/{monitorId}/heartbeat-token", monitorPath(monitorId)));
+
 export const getMonitorStats = (monitorId: string, range: StatsRange) =>
   unwrap(
     client.GET("/api/v1/monitors/{monitorId}/stats", {

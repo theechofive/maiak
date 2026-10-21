@@ -158,11 +158,21 @@ export interface paths {
     put?: never;
     /**
      * Create a monitor
-     * @description Creates an HTTPS monitor. It starts with status `unknown` and is first checked within
-     *     about 30 seconds. Fails with 409 `urn:maiak:problem:plan-limit-reached` (`limit` is
-     *     `monitors`) when the tenant already has as many monitors as its plan allows (deleted
-     *     monitors do not count, see `GET /api/v1/usage`), and with 503 when the probe location
-     *     that runs new monitors is unavailable.
+     * @description Creates an HTTPS monitor (`type` `http`, the default) or a heartbeat monitor (`type`
+     *     `heartbeat`). An HTTPS monitor needs `url`; it starts with status `unknown` and is first
+     *     checked within about 30 seconds. A heartbeat takes `expectedIntervalSeconds` and
+     *     `graceSeconds` instead and must not send `url` or `expectedStatus` (422);
+     *     `intervalSeconds`, `timeoutSeconds` and `failureThreshold` are ignored (one missed deadline
+     *     is down). The
+     *     response of a heartbeat carries `heartbeatUrl`, the secret ping URL, which is shown only
+     *     here and by `POST /api/v1/monitors/{monitorId}/heartbeat-token`. A heartbeat stays
+     *     `unknown` until its first ping (then `up`) or until its first deadline passes (then
+     *     `down`).
+     *
+     *     Fails with 409 `urn:maiak:problem:plan-limit-reached` (`limit` is `monitors` or
+     *     `heartbeats`) when the tenant already has as many monitors of that type as its plan allows
+     *     (deleted monitors do not count, see `GET /api/v1/usage`), and with 503 when the probe
+     *     location that runs new monitors is unavailable.
      */
     post: operations["createMonitor"];
     delete?: never;
@@ -200,7 +210,10 @@ export interface paths {
     /**
      * Edit a monitor
      * @description Changes the given fields. `intervalSeconds` and `timeoutSeconds` cannot be changed in the
-     *     MVP: sending them with a different value fails with 422.
+     *     MVP: sending them with a different value fails with 422. A heartbeat may change `name`,
+     *     `expectedIntervalSeconds`, `graceSeconds` and `notifySlack` (its deadline follows the new
+     *     values); `failureThreshold` is ignored and the http fields fail with 422, as do the
+     *     heartbeat fields on an http monitor.
      */
     patch: operations["updateMonitor"];
     trace?: never;
@@ -245,6 +258,64 @@ export interface paths {
      * @description Starts checking again within about 30 seconds; the status is `unknown` until the first check. Idempotent.
      */
     post: operations["resumeMonitor"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/monitors/{monitorId}/heartbeat-token": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Monitor id; a value that is not a UUID is answered with 400 */
+        monitorId: components["parameters"]["MonitorId"];
+      };
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Give a heartbeat a new ping URL
+     * @description Replaces the token of a heartbeat monitor. The old URL stops working immediately (it is
+     *     answered like any unknown token) and the new one is returned once: only a hash is stored,
+     *     so the server cannot show it again. Fails with 409 `urn:maiak:problem:not-a-heartbeat`
+     *     for an HTTPS monitor.
+     */
+    post: operations["regenerateHeartbeatToken"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/heartbeat/{token}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The secret token of the heartbeat's URL. Any value is accepted here; an unknown one gets 404. */
+        token: string;
+      };
+      cookie?: never;
+    };
+    /**
+     * Ping a heartbeat monitor
+     * @description Public on purpose (ADR-0094): Alertmanager's webhook receiver and cron jobs call it without
+     *     a session and without a CSRF token; the token in the URL is the credential. Records a ping
+     *     and answers 204. A paused or deleted heartbeat also gets 204 but nothing is recorded. Any
+     *     unknown token gets the same 404 problem. At most one ping per second per token is
+     *     accepted, and unknown tokens are rate limited per client IP; excess requests get 429.
+     */
+    get: operations["pingHeartbeat"];
+    put?: never;
+    /**
+     * Ping a heartbeat monitor (POST)
+     * @description The same as the GET, for senders that can only POST (Alertmanager's webhook receiver). The
+     *     body is ignored (at most 64 KiB is read).
+     */
+    post: operations["pingHeartbeatPost"];
     delete?: never;
     options?: never;
     head?: never;
@@ -459,10 +530,22 @@ export interface components {
     /** @enum {string} */
     MembershipRole: "owner" | "admin" | "member" | "viewer";
     /**
-     * @description Aggregated status. `unknown` until the first check after creation, resume or a URL change, and while the monitor is paused (`paused` is then true).
+     * @description Aggregated status. `unknown` until the first check after creation, resume or a URL change (for a heartbeat, until the first ping or the first missed deadline), and while the monitor is paused (`paused` is then true).
      * @enum {string}
      */
     MonitorStatus: "unknown" | "up" | "down";
+    /**
+     * @description `http`: an HTTPS check every minute. `heartbeat`: a watchdog that expects pings on its secret URL.
+     * @enum {string}
+     */
+    MonitorType: "http" | "heartbeat";
+    HeartbeatToken: {
+      /**
+       * @description The secret ping URL; shown once, store it like a password
+       * @example https://maiak.klr-ops.net/api/v1/heartbeat/3q2-7wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+       */
+      heartbeatUrl: string;
+    };
     /**
      * @description `2xx` (any 200-299), or one exact HTTP status code from 200 to 299 or from 400 to 599, as a
      *     string. 1xx and 3xx cannot be observed (the client consumes 1xx and follows redirects) and
@@ -471,13 +554,18 @@ export interface components {
      */
     ExpectedStatus: string;
     MonitorCreate: {
+      type?: components["schemas"]["MonitorType"];
       /** @example Website */
       name: string;
       /**
-       * @description HTTPS URL on port 443, without credentials; hosts that are private IP literals or internal names are rejected
+       * @description Required for `http`. HTTPS URL on port 443, without credentials; hosts that are private IP literals or internal names are rejected
        * @example https://example.com/health
        */
-      url: string;
+      url?: string;
+      /** @description Heartbeat only. How often a ping is expected; 300 when omitted (no schema default, so http requests stay free of it) */
+      expectedIntervalSeconds?: number;
+      /** @description Heartbeat only. Extra time after the expected interval before the heartbeat is down; 60 when omitted */
+      graceSeconds?: number;
       /**
        * @description Check interval; only 60 is accepted in the MVP
        * @default 60
@@ -506,6 +594,8 @@ export interface components {
       expectedStatus?: components["schemas"]["ExpectedStatus"];
       failureThreshold?: number;
       notifySlack?: boolean;
+      expectedIntervalSeconds?: number;
+      graceSeconds?: number;
     };
     Incident: {
       /** Format: uuid */
@@ -514,7 +604,7 @@ export interface components {
       startedAt: string;
       /** Format: date-time */
       resolvedAt: string | null;
-      /** @description Why the monitor went down (the error kind of the failing checks, for example `timeout` or `http_status`) */
+      /** @description Why the monitor went down (the error kind of the failing checks, for example `timeout`, `unexpected_status` or `heartbeat_missed`) */
       reason: string;
     };
     /** @description The open incident of a monitor; null when there is none */
@@ -528,7 +618,9 @@ export interface components {
     MonitorListItem: {
       /** Format: uuid */
       id: string;
+      type: components["schemas"]["MonitorType"];
       name: string;
+      /** @description The checked URL; empty for a heartbeat */
       url: string;
       intervalSeconds: number;
       timeoutSeconds: number;
@@ -552,6 +644,15 @@ export interface components {
        */
       tlsExpiresAt: string | null;
       ongoingIncident: components["schemas"]["OngoingIncident"];
+      /**
+       * Format: date-time
+       * @description Heartbeat only. Time of the newest accepted ping; null before the first and for http monitors
+       */
+      lastPingAt: string | null;
+      /** @description Heartbeat only (null for http monitors) */
+      expectedIntervalSeconds: number | null;
+      /** @description Heartbeat only (null for http monitors) */
+      graceSeconds: number | null;
       /**
        * Format: double
        * @description Percentage of successful checks in the last 24 h; null when no check ran
@@ -583,7 +684,9 @@ export interface components {
     MonitorDetail: {
       /** Format: uuid */
       id: string;
+      type: components["schemas"]["MonitorType"];
       name: string;
+      /** @description The checked URL; empty for a heartbeat */
       url: string;
       intervalSeconds: number;
       timeoutSeconds: number;
@@ -600,11 +703,22 @@ export interface components {
       /** Format: date-time */
       tlsExpiresAt: string | null;
       ongoingIncident: components["schemas"]["OngoingIncident"];
+      /**
+       * Format: date-time
+       * @description Heartbeat only. Time of the newest accepted ping; null before the first and for http monitors
+       */
+      lastPingAt: string | null;
+      /** @description Heartbeat only (null for http monitors) */
+      expectedIntervalSeconds: number | null;
+      /** @description Heartbeat only (null for http monitors) */
+      graceSeconds: number | null;
       uptime: components["schemas"]["Uptime"];
       /** Format: date-time */
       createdAt: string;
       /** Format: date-time */
       updatedAt: string;
+      /** @description Only in the response that creates a heartbeat. The secret ping URL; it is not stored and cannot be shown again */
+      heartbeatUrl?: string;
     };
     /**
      * @default 24h
@@ -686,8 +800,9 @@ export interface components {
       name: string;
     };
     ResourceCounts: {
+      /** @description HTTPS monitors */
       monitors: number;
-      /** @description Heartbeat (watchdog) monitors; usage is always 0 until that monitor type exists */
+      /** @description Heartbeat (watchdog) monitors */
       heartbeats: number;
       /** @description Notification channels (the Slack webhook) */
       channels: number;
@@ -1218,6 +1333,86 @@ export interface operations {
       401: components["responses"]["Unauthorized"];
       403: components["responses"]["Forbidden"];
       404: components["responses"]["NotFound"];
+      default: components["responses"]["Error"];
+    };
+  };
+  regenerateHeartbeatToken: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description Monitor id; a value that is not a UUID is answered with 400 */
+        monitorId: components["parameters"]["MonitorId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The new ping URL */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeartbeatToken"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      default: components["responses"]["Error"];
+    };
+  };
+  pingHeartbeat: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The secret token of the heartbeat's URL. Any value is accepted here; an unknown one gets 404. */
+        token: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The ping was accepted */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      404: components["responses"]["NotFound"];
+      429: components["responses"]["TooManyRequests"];
+      default: components["responses"]["Error"];
+    };
+  };
+  pingHeartbeatPost: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The secret token of the heartbeat's URL. Any value is accepted here; an unknown one gets 404. */
+        token: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The ping was accepted */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      404: components["responses"]["NotFound"];
+      429: components["responses"]["TooManyRequests"];
       default: components["responses"]["Error"];
     };
   };

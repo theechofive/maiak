@@ -5,7 +5,8 @@ import { listMonitors, POLL_MS, queryKeys, type Usage } from "../api/endpoints";
 import { ErrorState, Loading } from "../components/QueryState";
 import { formatAgo, formatClock, formatMs, formatPercent } from "../lib/format";
 import { filterMonitors, statusText, summaryLine } from "../lib/monitors";
-import { atMonitorLimit, countOf, useUsage } from "../lib/usage";
+import { expectationText, isHeartbeat } from "../lib/heartbeat";
+import { atHeartbeatLimit, atMonitorLimit, countOf, useUsage } from "../lib/usage";
 import { useNow } from "../lib/useNow";
 
 export default function Monitors() {
@@ -57,10 +58,17 @@ export default function Monitors() {
           <p>
             Maiak checks your HTTPS endpoint every minute and alerts you in Slack when it fails.
           </p>
-          {usage.data && !atMonitorLimit(usage.data) && (
+          {usage.data && !atAllLimits(usage.data) && (
             <p>
               Your {usage.data.plan.name} plan includes{" "}
               {countOf(usage.data.limits.monitors, "monitor", "monitors")}.
+            </p>
+          )}
+          {usage.data && usage.data.limits.heartbeats > 0 && (
+            <p>
+              Watchdogs alert you when pings from your systems stop, for example Alertmanager&apos;s
+              Watchdog alert; your plan includes{" "}
+              {countOf(usage.data.limits.heartbeats, "watchdog", "watchdogs")}.
             </p>
           )}
           <AddMonitor usage={usage.data} />
@@ -91,7 +99,7 @@ export default function Monitors() {
               <th scope="col">URL</th>
               <th scope="col">Uptime 24h</th>
               <th scope="col">Response</th>
-              <th scope="col">Checked</th>
+              <th scope="col">Checked or pinged</th>
             </tr>
           </thead>
           <tbody>
@@ -106,11 +114,12 @@ export default function Monitors() {
                   <Link to={`/monitors/${m.id}`} onClick={(e) => e.stopPropagation()}>
                     {m.name}
                   </Link>
+                  {isHeartbeat(m) && <span className="badge">Watchdog</span>}
                 </td>
-                <td className="url">{m.url}</td>
+                <td className="url">{isHeartbeat(m) ? expectationText(m) : m.url}</td>
                 <td>{formatPercent(m.uptime24h)}</td>
                 <td>{formatMs(m.lastResponseMs)}</td>
-                <td>{formatAgo(m.lastCheckedAt, now)}</td>
+                <td>{formatAgo(isHeartbeat(m) ? m.lastPingAt : m.lastCheckedAt, now)}</td>
               </tr>
             ))}
           </tbody>
@@ -127,12 +136,17 @@ export default function Monitors() {
   );
 }
 
+/** True when neither another HTTP monitor nor another watchdog fits the plan. */
+function atAllLimits(usage: Usage | undefined): boolean {
+  return atMonitorLimit(usage) && atHeartbeatLimit(usage);
+}
+
 /**
- * The add button, or at the plan's monitor limit a button marked aria-disabled with the reason
- * next to it (the server enforces the limit either way).
+ * The add button, or when both of the plan's limits (HTTP monitors and watchdogs) are reached a
+ * button marked aria-disabled with the reason next to it (the server enforces the limits anyway).
  */
 function AddMonitor({ usage }: { usage: Usage | undefined }) {
-  if (!usage || !atMonitorLimit(usage)) {
+  if (!usage || !atAllLimits(usage)) {
     return (
       <Link to="/monitors/new" role="button">
         Add monitor
@@ -150,8 +164,9 @@ function AddMonitor({ usage }: { usage: Usage | undefined }) {
         Add monitor
       </button>
       <small id="monitor-limit">
-        The {usage.plan.name} plan allows {countOf(usage.limits.monitors, "monitor", "monitors")}.
-        Delete a monitor to add a new one.
+        The {usage.plan.name} plan allows {countOf(usage.limits.monitors, "monitor", "monitors")}{" "}
+        and {countOf(usage.limits.heartbeats, "watchdog", "watchdogs")}. Delete one to add a new
+        one.
       </small>
     </div>
   );

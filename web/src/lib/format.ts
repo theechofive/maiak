@@ -113,6 +113,7 @@ const errorKinds: Record<string, string> = {
   redirect: "Redirect error",
   unexpected_status: "Unexpected status",
   other: "Other error",
+  heartbeat_missed: "Heartbeat missed",
   recovered: "Recovered",
   url_changed: "URL changed",
   paused: "Paused",
