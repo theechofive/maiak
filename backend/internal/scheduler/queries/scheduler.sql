@@ -7,6 +7,12 @@ WHERE code = @code AND status = 'active';
 INSERT INTO monitor_location_state (tenant_id, monitor_id, location_id, next_run_at)
 VALUES (@tenant_id, @monitor_id, @location_id, now() + make_interval(secs => @jitter_seconds::float8));
 
+-- name: InsertParkedLocationState :exec
+-- A heartbeat's location state is never claimed; it only carries the incident machine's
+-- per-location status (ADR-0094).
+INSERT INTO monitor_location_state (tenant_id, monitor_id, location_id, next_run_at)
+VALUES (@tenant_id, @monitor_id, @location_id, 'infinity');
+
 -- name: ResetMonitorRuntime :one
 -- Pause, resume and URL change: maiak_api may not write the schedule directly (ADR-0018), the
 -- SECURITY DEFINER function resets it within the caller's tenant.

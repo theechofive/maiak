@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/theechofive/maiak/backend/internal/monitors"
+
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/db"
 )
@@ -34,7 +36,12 @@ const (
 	lockComputeRollups   int64 = 0x6d6a_0002
 	lockDropPartitions   int64 = 0x6d6a_0003
 	lockPurgeSessions    int64 = 0x6d6a_0004
+	lockHeartbeats       int64 = 0x6d6a_0005
 )
+
+// HeartbeatEvery is how often heartbeats are evaluated (ADR-0094): a missed deadline opens its
+// incident, and a ping resolves it, at most this long after it happened.
+const HeartbeatEvery = 30 * time.Second
 
 // RollupLookback is how many closed hours compute_rollups recomputes on every run besides the
 // catch-up from its watermark, so late results are absorbed (the function is an idempotent
@@ -46,15 +53,27 @@ const RollupLookback = 3 * time.Hour
 // transaction.
 const RollupMaxHoursPerRun = 48
 
-// DefaultTasks are the housekeeping tasks of ADR-0016/ADR-0021. Partitions that retention keeps
+// DefaultTasks are the housekeeping tasks of ADR-0016/ADR-0021 and the heartbeat evaluation of
+// ADR-0094 (through mon, a monitors service on the jobs pool). Partitions that retention keeps
 // back are counted in m and logged to log.
-func DefaultTasks(m *Metrics, log *slog.Logger) []Task {
+func DefaultTasks(m *Metrics, log *slog.Logger, mon *monitors.Service) []Task {
 	r := retention{metrics: m, log: log}
 	return []Task{
+		{Name: "evaluate_heartbeats", Every: HeartbeatEvery, LockKey: lockHeartbeats, RunOutsideTx: evaluateHeartbeats(mon, m)},
 		{Name: "ensure_partitions", Every: 24 * time.Hour, LockKey: lockEnsurePartitions, Run: scalar(`SELECT ensure_partitions()`)},
 		{Name: "compute_rollups", Every: 5 * time.Minute, LockKey: lockComputeRollups, Run: computeRollups},
 		{Name: "drop_expired_partitions", Every: 24 * time.Hour, LockKey: lockDropPartitions, RunOutsideTx: r.dropExpiredPartitions},
 		{Name: "purge_expired_sessions", Every: time.Hour, LockKey: lockPurgeSessions, Run: scalar(`SELECT purge_expired_sessions()`)},
+	}
+}
+
+// evaluateHeartbeats applies pings and missed deadlines in tenant transactions of their own while
+// the task's advisory lock keeps it a singleton; the result is the number of missed deadlines.
+func evaluateHeartbeats(mon *monitors.Service, m *Metrics) func(context.Context, *db.Pool, time.Time) (int, error) {
+	return func(ctx context.Context, _ *db.Pool, _ time.Time) (int, error) {
+		n, err := mon.EvaluateHeartbeats(ctx)
+		m.heartbeatsMissed.Add(float64(n))
+		return n, err
 	}
 }
 

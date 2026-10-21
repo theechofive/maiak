@@ -10,7 +10,7 @@ Rules are in [ADR-0013](../adr/0013-migrations.md). This page is the practical s
 5. Large indexes: a separate migration with `-- +goose NO TRANSACTION` and `CREATE INDEX CONCURRENTLY`.
 6. Update the queries in the owning module and run `make generate`. Commit the generated code.
 7. A new `SECURITY DEFINER` function also needs an entry in `definerAllowList` (`backend/migrations/integration_test.go`) with the one runtime role allowed to execute it, `SET search_path = public, pg_temp`, `REVOKE ALL ... FROM PUBLIC` and a `GRANT EXECUTE` to that role only. A new non-isolation policy needs an entry in `extraPolicies`. Both are reviewed changes.
-8. Changing the signature of a definer function the previous release calls breaks that release during the rollout (L-090): add the new function next to the old one and drop the old one a release later.
+8. Changing the signature of a definer function the previous release calls breaks that release during the rollout (L-090): add the new function next to the old one and drop the old one a release later. Changing only its body with `CREATE OR REPLACE` (same arguments and result) keeps the owner and the grants and is rollout-safe, as the heartbeat migration does for `claim_due_monitors`.
 9. CI applies all migrations from scratch on Postgres 15, runs the schema-lint test and checks that generated code did not drift.
 
 ## Current migrations
@@ -26,6 +26,7 @@ Rules are in [ADR-0013](../adr/0013-migrations.md). This page is the practical s
 | `20261020190000_rollup_watermark_review_fixes_b21.sql` | B-21: `rollup_state` and `compute_rollups_catch_up` (ADR-0090; `compute_rollups(from, to)` kept), `reset_monitor_runtime` skips soft-deleted monitors |
 | `20261021090000_plans.sql` | P-01: `plans` (global, read-only for runtime roles; seeds `free` and `internal`), `tenants.plan_key` (default `free`, FK to `plans`), the `default` tenant moved to `internal` (ADR-0093) |
 | `20261021120000_registration_login_tenant.sql` | P-02: `auth_login_tenant(user_id)` and the `owner_membership_lookup` policy (SELECT, `maiak_owner` only) on `memberships`, so a login binds to the user's own tenant (ADR-0009 amendment 2026-10-21) |
+| `20261021150000_heartbeat_monitors.sql` | P-03: monitor type `heartbeat` (the MVP interval and timeout constraints now bind `http` only, `monitors_heartbeat_check`), `heartbeat_tokens` (token hash, ping and evaluation times) with the `owner_heartbeat_read` / `owner_heartbeat_ping` policies, `heartbeat_ping(hash)` (`maiak_api`), `list_due_heartbeats(n)` (`maiak_worker`); new bodies, same signatures, for `claim_due_monitors` (http only) and `reset_monitor_runtime` (heartbeats stay parked at `next_run_at = infinity`) (ADR-0094) |
 
 `claim_due_monitors(n)`, `finish_delivery(id, status, error, retry_at)` and `drop_expired_partitions()` no longer exist; the [data model](../architecture/data-model.md) lists the current functions.
 
@@ -38,7 +39,7 @@ Rules are in [ADR-0013](../adr/0013-migrations.md). This page is the practical s
   - runtime roles own nothing, are not superusers, do not bypass RLS and are not members of `maiak_owner`;
   - every `SECURITY DEFINER` function is in `definerAllowList`, owned by `maiak_owner`, has a pinned `search_path`, is not executable by PUBLIC and is executable only by its allow-listed role (directly or through a group).
   The test also proves each rule fails on a deliberately broken object.
-- Further integration tests in `backend/migrations` cover the results, outbox, runtime grants, monitors, review-fix and plans migrations (partitions, rollups, retention, claims, fencing, grants of `maiak_api`, plans read-only for runtime roles and the `default` tenant moved to `internal` when the plans migration runs over existing data, `auth_login_tenant` choosing the oldest live membership). A test that replays an older migration must roll back the later ones too: goose refuses to apply a missing older version (see `plans_integration_test.go`).
+- Further integration tests in `backend/migrations` cover the results, outbox, runtime grants, monitors, review-fix, plans and heartbeat migrations (heartbeat constraints and grants, `heartbeat_ping` and `list_due_heartbeats`, workers never claiming a heartbeat, partitions, rollups, retention, claims, fencing, grants of `maiak_api`, plans read-only for runtime roles and the `default` tenant moved to `internal` when the plans migration runs over existing data, `auth_login_tenant` choosing the oldest live membership). A test that replays an older migration must roll back the later ones too: goose refuses to apply a missing older version (see `plans_integration_test.go`).
 
 ## How it runs in the cluster
 ArgoCD sync order: bootstrap hook (wave -3, when enabled), migrate Job (wave -1), workloads (wave 0). A failed migration stops the sync; old pods keep running. Look at the Job logs: `kubectl --context <klr-platform context> -n maiak logs job/maiak-migrate`.

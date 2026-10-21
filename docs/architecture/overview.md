@@ -6,9 +6,9 @@ Maiak is a **modular monolith deployed as several processes** from one Go module
 
 | Process | Responsibility | DB role | Scaling |
 |---|---|---|---|
-| `api` (`cmd/api`) | REST for the web app: auth, monitors, Slack settings and test message, dashboard read models. Upserts the admin from `MAIAK_ADMIN_*` at start | `maiak_api` | stateless, replicas by load |
+| `api` (`cmd/api`) | REST for the web app: auth, monitors, Slack settings and test message, dashboard read models, and the public heartbeat ping (`/api/v1/heartbeat/{token}`, no session, ADR-0094). Upserts the admin from `MAIAK_ADMIN_*` at start | `maiak_api` | stateless, replicas by load (the ping rate limits are per replica, L-200) |
 | `worker` (`cmd/worker`) | Claims due (monitor, location) jobs every second, runs HTTPS checks through the SSRF guard, writes result, schedule, incident state and outbox in one transaction per tenant batch. Calls `ensure_partitions()` at start and hourly | `maiak_worker` | replicas (limits are per process, R-030) |
-| `jobs` (`cmd/jobs`) | Outbox delivery to Slack (retries, per-channel rate limit) and singleton housekeeping under advisory locks: partitions (daily), rollups (5 min), retention (daily), expired-session purge (hourly) | `maiak_worker` | 1+ replicas (R-060, L-082) |
+| `jobs` (`cmd/jobs`) | Outbox delivery to Slack (retries, per-channel rate limit) and singleton housekeeping under advisory locks: heartbeat evaluation (30 s), partitions (daily), rollups (5 min), retention (daily), expired-session purge (hourly) | `maiak_worker` | 1+ replicas (R-060, L-082) |
 | `migrate` (`cmd/migrate`) | Applies migrations (ArgoCD Sync hook Job, wave -1, ADR-0013) | `maiak_owner` | one-shot Job |
 | `maiakctl` (`cmd/maiakctl`) | Admin CLI: `hashpw`, `db bootstrap` (also the hook Job `maiak-db-bootstrap`, wave -3, ADR-0014), `secrets bootstrap` (hook Job `maiak-secrets-bootstrap`, wave -3, generates the admin and encryption Secrets when absent, ADR-0091) | RDS admin login (db bootstrap only) | local / one-shot Job |
 | `web` | Static React SPA served by nginx | none | 1-2 replicas |
@@ -21,6 +21,7 @@ Later: `probe` (remote executor, no DB access, pull/push over HTTPS), `agent` (i
 ```mermaid
 flowchart LR
   user[Browser] -->|https maiak.klr-ops.net| gw[Envoy Gateway internal]
+  am[Client Alertmanager] -->|heartbeat ping| gw
   gw -->|/api| api
   gw -->|/| web
   api --> pg[(Postgres)]
@@ -37,7 +38,7 @@ flowchart LR
 |---|---|---|
 | `tenants` | tenant rows and limits | `tenants` |
 | `auth` | admin bootstrap, self-service registration (creates the tenant through `tenants`), login/logout, sessions, CSRF, login rate limit | `users`, `memberships`, `auth_identities`, `sessions` |
-| `monitors` | monitor definition and validation, lifecycle (pause, resume, URL change, soft delete), location assignment | `monitors`, `monitor_locations`, `monitor_state` (the incident state machine updates it inside the result transaction) |
+| `monitors` | monitor definition and validation (http and heartbeat), lifecycle (pause, resume, URL change, soft delete), location assignment, heartbeat tokens, pings and their evaluation for jobs | `monitors`, `monitor_locations`, `monitor_state` (the incident state machine updates it inside the result transaction), `heartbeat_tokens` |
 | `scheduler` | claims and leases, schedule resets, home location | `monitor_location_state`, `probe_locations` |
 | `safehttp` | SSRF guard: guarded `http.Client` for the prober and the Slack notifier | none |
 | `checks` | HTTPS check (`Prober` seam) | none |
@@ -72,15 +73,26 @@ jobs    -> claim_deliveries(n)               oldest first per monitor, claim tok
 web     -> GET /api/v1/...                   api reads through internal/queries (monitor_state, results, rollups, incidents)
 ```
 
+### Life of a heartbeat (ADR-0094)
+```
+sender  -> GET|POST /api/v1/heartbeat/{token}   no session; api hashes the token, per-token and per-IP limits
+api     -> heartbeat_ping(sha256(token))        records last_ping_at for a live heartbeat; 404 for unknown tokens
+jobs    -> list_due_heartbeats(n)               every 30 s, singleton: unapplied pings and passed deadlines
+        -> one tenant transaction per heartbeat (row lock on heartbeat_tokens first):
+             incidents.ApplyResult              OK at the ping time; or failure heartbeat_missed at the deadline
+                                                (threshold 1: down, incident, outbox row when Slack is active)
+```
+The deadline is the newer of the last ping and the start of the wait (creation, resume) plus the expected interval and the grace. Heartbeats have no check results; workers never claim them.
+
 ### Monitor lifecycle (api)
 Create inserts the monitor, its home location and the initial state rows in one transaction (limit checked under a tenant row lock). Pause, resume and a URL change call `reset_monitor_runtime(monitor_id)` (schedule back to unknown, lease dropped, next run within 30 s) and reset `monitor_state`; pause, delete and a URL change resolve an open incident without a notification (ADR-0016, ADR-0018).
 
 ### Who calls which database function
 | Caller | Functions |
 |---|---|
-| api | `auth_lookup_session`, `auth_login_tenant`, `reset_monitor_runtime` |
+| api | `auth_lookup_session`, `auth_login_tenant`, `reset_monitor_runtime`, `heartbeat_ping` |
 | worker | `claim_due_monitors`, `ensure_partitions` |
-| jobs | `claim_deliveries`, `finish_delivery`, `outbox_pending`, `ensure_partitions`, `compute_rollups_catch_up`, `list_droppable_partitions`, `detach_expired_partition`, `drop_detached_partition`, `purge_expired_sessions` |
+| jobs | `claim_deliveries`, `finish_delivery`, `outbox_pending`, `ensure_partitions`, `compute_rollups_catch_up`, `list_droppable_partitions`, `detach_expired_partition`, `drop_detached_partition`, `purge_expired_sessions`, `list_due_heartbeats` |
 
 Grantees and purposes are in the [data model](data-model.md#security-definer-functions).
 
@@ -97,4 +109,5 @@ Everything above is implemented and covered by unit and integration tests run lo
 - API contract and same-origin routing: [ADR-0008](../adr/0008-api-contract.md), [ADR-0017](../adr/0017-api-contract-conventions.md).
 - SSRF defence: [ADR-0011](../adr/0011-ssrf-defence.md), amended by [ADR-0016](../adr/0016-mvp-semantics.md) and [ADR-0018](../adr/0018-review-fixes-b05-b09.md); test route [ADR-0080](../adr/0080-e2e-test-through-the-guard.md).
 - Worker and jobs: [ADR-0020](../adr/0020-worker-scheduling-and-limits.md), [ADR-0051](../adr/0051-jobs-delivery-and-housekeeping.md), [ADR-0060](../adr/0060-review-fixes-b10-b12-implementation.md).
+- Heartbeat monitors: [ADR-0094](../adr/0094-heartbeat-monitors.md), [Alertmanager runbook](../runbooks/heartbeat-alertmanager.md).
 - Deployment: [ADR-0010](../adr/0010-deployment.md). Scale path: [ADR-0012](../adr/0012-scale-path.md).

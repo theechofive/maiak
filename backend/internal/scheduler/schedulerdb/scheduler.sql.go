@@ -79,6 +79,24 @@ func (q *Queries) InsertLocationState(ctx context.Context, arg InsertLocationSta
 	return err
 }
 
+const insertParkedLocationState = `-- name: InsertParkedLocationState :exec
+INSERT INTO monitor_location_state (tenant_id, monitor_id, location_id, next_run_at)
+VALUES ($1, $2, $3, 'infinity')
+`
+
+type InsertParkedLocationStateParams struct {
+	TenantID   uuid.UUID
+	MonitorID  uuid.UUID
+	LocationID uuid.UUID
+}
+
+// A heartbeat's location state is never claimed; it only carries the incident machine's
+// per-location status (ADR-0094).
+func (q *Queries) InsertParkedLocationState(ctx context.Context, arg InsertParkedLocationStateParams) error {
+	_, err := q.db.Exec(ctx, insertParkedLocationState, arg.TenantID, arg.MonitorID, arg.LocationID)
+	return err
+}
+
 const listLocationStates = `-- name: ListLocationStates :many
 SELECT location_id, status, consecutive_failures, last_checked_at
 FROM monitor_location_state

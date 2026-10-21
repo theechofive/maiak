@@ -1,5 +1,6 @@
-// Package monitors owns monitors, monitor_locations and monitor_state: creating, editing,
-// pausing, resuming and (soft) deleting HTTPS monitors under the tenant's plan quota. Schedules
+// Package monitors owns monitors, monitor_locations, monitor_state and heartbeat_tokens:
+// creating, editing, pausing, resuming and (soft) deleting HTTPS and heartbeat monitors under the
+// tenant's plan quotas, heartbeat pings and their evaluation (ADR-0094). Schedules
 // (monitor_location_state) belong to internal/scheduler and are written through its service in
 // the same transaction (ADR-0016 lifecycle).
 package monitors
@@ -40,12 +41,22 @@ const (
 	ActionDeleted = "monitor.deleted"
 	ActionPaused  = "monitor.paused"
 	ActionResumed = "monitor.resumed"
+	// ActionTokenRegenerated: a heartbeat got a new URL (the token is never recorded).
+	ActionTokenRegenerated = "monitor.heartbeat_token_regenerated"
 )
 
-const typeHTTP = "http"
+// Monitor types (monitors.type).
+const (
+	TypeHTTP      = "http"
+	TypeHeartbeat = "heartbeat"
+)
 
-// ErrNotFound means no live monitor with that id exists in the tenant.
-var ErrNotFound = errors.New("monitors: not found")
+var (
+	// ErrNotFound means no live monitor with that id exists in the tenant.
+	ErrNotFound = errors.New("monitors: not found")
+	// ErrNotHeartbeat means the operation exists only for heartbeat monitors.
+	ErrNotHeartbeat = errors.New("monitors: not a heartbeat monitor")
+)
 
 // Actor is who performs a change; it scopes every operation to one tenant.
 type Actor struct {
@@ -56,12 +67,16 @@ type Actor struct {
 
 // Monitor is a monitor with its aggregated state.
 type Monitor struct {
-	ID                uuid.UUID
-	Name              string
-	URL               string
-	ExpectedStatus    string
+	ID   uuid.UUID
+	Type string
+	Name string
+	// URL and ExpectedStatus are empty for a heartbeat.
+	URL            string
+	ExpectedStatus string
+	// IntervalSeconds is the check interval, or a heartbeat's expected ping interval.
 	IntervalSeconds   int
 	TimeoutSeconds    int
+	GraceSeconds      int // heartbeats only
 	FailureThreshold  int
 	NotifySlack       bool
 	Paused            bool
@@ -73,28 +88,39 @@ type Monitor struct {
 	CurrentIncidentID *uuid.UUID
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+	// HeartbeatToken is the secret of a new heartbeat's URL, set only in the result of Create. It
+	// is never stored (only its hash is) and cannot be read again.
+	HeartbeatToken string
 }
 
-// CreateInput is a new monitor. Nil fields take their defaults.
+// CreateInput is a new monitor. Nil fields take their defaults. Type is TypeHTTP when empty;
+// URL and ExpectedStatus belong to http monitors, ExpectedIntervalSeconds and GraceSeconds to
+// heartbeats. A heartbeat ignores IntervalSeconds, TimeoutSeconds and FailureThreshold (its
+// failure threshold is always 1).
 type CreateInput struct {
-	Name             string
-	URL              string
-	IntervalSeconds  *int
-	TimeoutSeconds   *int
-	ExpectedStatus   *string
-	FailureThreshold *int
-	NotifySlack      *bool
+	Type                    string
+	Name                    string
+	URL                     *string
+	IntervalSeconds         *int
+	TimeoutSeconds          *int
+	ExpectedStatus          *string
+	FailureThreshold        *int
+	NotifySlack             *bool
+	ExpectedIntervalSeconds *int
+	GraceSeconds            *int
 }
 
-// UpdateInput changes the non-nil fields.
+// UpdateInput changes the non-nil fields (the same per-type rules as CreateInput).
 type UpdateInput struct {
-	Name             *string
-	URL              *string
-	IntervalSeconds  *int
-	TimeoutSeconds   *int
-	ExpectedStatus   *string
-	FailureThreshold *int
-	NotifySlack      *bool
+	Name                    *string
+	URL                     *string
+	IntervalSeconds         *int
+	TimeoutSeconds          *int
+	ExpectedStatus          *string
+	FailureThreshold        *int
+	NotifySlack             *bool
+	ExpectedIntervalSeconds *int
+	GraceSeconds            *int
 }
 
 // httpConfig is monitors.config for type http.
@@ -102,6 +128,16 @@ type httpConfig struct {
 	URL            string `json:"url"`
 	ExpectedStatus string `json:"expectedStatus"`
 }
+
+// heartbeatConfig is monitors.config for type heartbeat.
+type heartbeatConfig struct {
+	GraceSeconds int `json:"graceSeconds"`
+}
+
+const (
+	msgHTTPOnly      = "is only for http monitors"
+	msgHeartbeatOnly = "is only for heartbeat monitors"
+)
 
 // Service implements the monitor lifecycle.
 type Service struct {
@@ -115,40 +151,79 @@ func NewService(pool *db.Pool, sched *scheduler.Service, inc *incidents.Service)
 	return &Service{pool: pool, sched: sched, incidents: inc}
 }
 
-// Create validates in, enforces the tenant's monitor quota (a *plans.LimitError when it is used
-// up) and creates the monitor with its location, schedule and state rows in one transaction.
+// Create validates in, enforces the tenant's quota for the type (a *plans.LimitError when it is
+// used up) and creates the monitor with its location, schedule and state rows (and, for a
+// heartbeat, its token) in one transaction.
 func (s *Service) Create(ctx context.Context, a Actor, in CreateInput) (Monitor, error) {
 	var verr validation.Error
 	name, msg := ValidateName(in.Name)
 	if msg != "" {
 		verr.Add("name", msg)
 	}
-	target, msg := ValidateURL(in.URL)
-	if msg != "" {
-		verr.Add("url", msg)
+	var row monitorsdb.InsertMonitorParams
+	var config any
+	resource := plans.ResourceMonitor
+	switch in.Type {
+	case "", TypeHTTP:
+		row.Type = TypeHTTP
+		var target string
+		if in.URL == nil {
+			verr.Add("url", "is required")
+		} else if target, msg = ValidateURL(*in.URL); msg != "" {
+			verr.Add("url", msg)
+		}
+		checkFixed(&verr, "intervalSeconds", in.IntervalSeconds, IntervalSeconds)
+		checkFixed(&verr, "timeoutSeconds", in.TimeoutSeconds, TimeoutSeconds)
+		expected := orDefault(in.ExpectedStatus, DefaultExpectedStatus)
+		if msg := ValidateExpectedStatus(expected); msg != "" {
+			verr.Add("expectedStatus", msg)
+		}
+		threshold := orDefault(in.FailureThreshold, DefaultFailureThreshold)
+		checkThreshold(&verr, threshold)
+		rejectSet(&verr, msgHeartbeatOnly, field{"expectedIntervalSeconds", in.ExpectedIntervalSeconds != nil}, field{"graceSeconds", in.GraceSeconds != nil})
+		config = httpConfig{URL: target, ExpectedStatus: expected}
+		row.IntervalSeconds, row.FailureThreshold = IntervalSeconds, int32(threshold) //nolint:gosec // validated 1..3
+	case TypeHeartbeat:
+		row.Type, resource = TypeHeartbeat, plans.ResourceHeartbeat
+		interval := orDefault(in.ExpectedIntervalSeconds, DefaultExpectedIntervalSeconds)
+		if msg := ValidateExpectedInterval(interval); msg != "" {
+			verr.Add("expectedIntervalSeconds", msg)
+		}
+		grace := orDefault(in.GraceSeconds, DefaultGraceSeconds)
+		if msg := ValidateGrace(grace); msg != "" {
+			verr.Add("graceSeconds", msg)
+		}
+		// intervalSeconds and timeoutSeconds are ignored like failureThreshold: the contract's
+		// defaults fill them into every create request.
+		rejectSet(&verr, msgHTTPOnly, field{"url", in.URL != nil}, field{"expectedStatus", in.ExpectedStatus != nil})
+		config = heartbeatConfig{GraceSeconds: grace}
+		row.IntervalSeconds, row.FailureThreshold = int32(interval), 1 //nolint:gosec // validated 60..86400
+	default:
+		verr.Add("type", `must be "http" or "heartbeat"`)
 	}
-	checkFixed(&verr, "intervalSeconds", in.IntervalSeconds, IntervalSeconds)
-	checkFixed(&verr, "timeoutSeconds", in.TimeoutSeconds, TimeoutSeconds)
-	expected := orDefault(in.ExpectedStatus, DefaultExpectedStatus)
-	if msg := ValidateExpectedStatus(expected); msg != "" {
-		verr.Add("expectedStatus", msg)
-	}
-	threshold := orDefault(in.FailureThreshold, DefaultFailureThreshold)
-	checkThreshold(&verr, threshold)
 	if err := verr.Err(); err != nil {
 		return Monitor{}, err
 	}
-	config, err := json.Marshal(httpConfig{URL: target, ExpectedStatus: expected})
+	raw, err := json.Marshal(config)
 	if err != nil {
 		return Monitor{}, fmt.Errorf("monitors: config: %w", err)
 	}
+	var token string
+	var hash []byte
+	if row.Type == TypeHeartbeat {
+		if token, hash, err = NewHeartbeatToken(); err != nil {
+			return Monitor{}, err
+		}
+	}
 
 	id := uuidv7.New()
+	row.ID, row.TenantID, row.Name, row.Config = id, a.TenantID, name, raw
+	row.TimeoutSeconds, row.NotifySlack = TimeoutSeconds, orDefault(in.NotifySlack, true)
 	var m Monitor
 	err = db.WithTenantTx(ctx, s.pool, a.TenantID, func(tx pgx.Tx) error {
 		// The tenant row lock taken here serialises concurrent creates, so the count stays true
 		// until this transaction commits.
-		if err := plans.CheckCreate(ctx, tx, a.TenantID, plans.ResourceMonitor); err != nil {
+		if err := plans.CheckCreate(ctx, tx, a.TenantID, resource); err != nil {
 			return err
 		}
 		q := monitorsdb.New(tx)
@@ -156,23 +231,27 @@ func (s *Service) Create(ctx context.Context, a Actor, in CreateInput) (Monitor,
 		if err != nil {
 			return err
 		}
-		if err := q.InsertMonitor(ctx, monitorsdb.InsertMonitorParams{
-			ID: id, TenantID: a.TenantID, Name: name, Type: typeHTTP, Config: config,
-			IntervalSeconds: IntervalSeconds, TimeoutSeconds: TimeoutSeconds,
-			FailureThreshold: int32(threshold), NotifySlack: orDefault(in.NotifySlack, true), //nolint:gosec // 1..3
-		}); err != nil {
+		if err := q.InsertMonitor(ctx, row); err != nil {
 			return fmt.Errorf("insert monitor: %w", err)
 		}
 		if err := q.InsertMonitorLocation(ctx, monitorsdb.InsertMonitorLocationParams{TenantID: a.TenantID, MonitorID: id, LocationID: location}); err != nil {
 			return fmt.Errorf("insert monitor location: %w", err)
 		}
-		if err := s.sched.InitMonitorLocation(ctx, tx, a.TenantID, id, location); err != nil {
+		if row.Type == TypeHeartbeat {
+			// The location state only carries the incident machine's state; nothing claims it.
+			if err := s.sched.InitParkedMonitorLocation(ctx, tx, a.TenantID, id, location); err != nil {
+				return err
+			}
+			if err := q.InsertHeartbeatToken(ctx, monitorsdb.InsertHeartbeatTokenParams{TenantID: a.TenantID, MonitorID: id, TokenHash: hash}); err != nil {
+				return fmt.Errorf("insert heartbeat token: %w", err)
+			}
+		} else if err := s.sched.InitMonitorLocation(ctx, tx, a.TenantID, id, location); err != nil {
 			return err
 		}
 		if err := q.InsertMonitorState(ctx, monitorsdb.InsertMonitorStateParams{TenantID: a.TenantID, MonitorID: id}); err != nil {
 			return fmt.Errorf("insert monitor state: %w", err)
 		}
-		if err := s.audit(ctx, tx, a, ActionCreated, id, nil); err != nil {
+		if err := s.audit(ctx, tx, a, ActionCreated, id, map[string]any{"type": row.Type}); err != nil {
 			return err
 		}
 		m, err = get(ctx, q, a.TenantID, id)
@@ -181,11 +260,13 @@ func (s *Service) Create(ctx context.Context, a Actor, in CreateInput) (Monitor,
 	if err != nil {
 		return Monitor{}, wrap("create", err)
 	}
+	m.HeartbeatToken = token
 	return m, nil
 }
 
-// Update changes the given fields. Interval and timeout are fixed in the MVP: they may be sent
-// only with their current value.
+// Update changes the given fields. The interval and timeout of an http monitor are fixed in the
+// MVP: they may be sent only with their current value. A heartbeat's interval and grace may
+// change; its deadline then follows the new values, and FailureThreshold is ignored.
 func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateInput) (Monitor, error) {
 	var m Monitor
 	err := db.WithTenantTx(ctx, s.pool, a.TenantID, func(tx pgx.Tx) error {
@@ -197,11 +278,7 @@ func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateIn
 		if err != nil {
 			return fmt.Errorf("lock monitor: %w", err)
 		}
-		var cfg httpConfig
-		if err := json.Unmarshal(cur.Config, &cfg); err != nil {
-			return fmt.Errorf("monitor config: %w", err)
-		}
-		name, threshold, notify := cur.Name, int(cur.FailureThreshold), cur.NotifySlack
+		name, interval, threshold, notify := cur.Name, int(cur.IntervalSeconds), int(cur.FailureThreshold), cur.NotifySlack
 
 		var verr validation.Error
 		var changed []string
@@ -212,27 +289,56 @@ func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateIn
 			}
 			changed, name = appendIf(changed, "name", v != name), v
 		}
-		if in.URL != nil {
-			v, msg := ValidateURL(*in.URL)
-			if msg != "" {
-				verr.Add("url", msg)
-			}
-			changed, cfg.URL = appendIf(changed, "url", v != cfg.URL), v
+		if in.NotifySlack != nil {
+			changed, notify = appendIf(changed, "notifySlack", *in.NotifySlack != notify), *in.NotifySlack
 		}
 		checkFixed(&verr, "intervalSeconds", in.IntervalSeconds, int(cur.IntervalSeconds))
 		checkFixed(&verr, "timeoutSeconds", in.TimeoutSeconds, int(cur.TimeoutSeconds))
-		if in.ExpectedStatus != nil {
-			if msg := ValidateExpectedStatus(*in.ExpectedStatus); msg != "" {
-				verr.Add("expectedStatus", msg)
+
+		var config any
+		if cur.Type == TypeHeartbeat {
+			var cfg heartbeatConfig
+			if err := json.Unmarshal(cur.Config, &cfg); err != nil {
+				return fmt.Errorf("monitor config: %w", err)
 			}
-			changed, cfg.ExpectedStatus = appendIf(changed, "expectedStatus", *in.ExpectedStatus != cfg.ExpectedStatus), *in.ExpectedStatus
-		}
-		if in.FailureThreshold != nil {
-			checkThreshold(&verr, *in.FailureThreshold)
-			changed, threshold = appendIf(changed, "failureThreshold", *in.FailureThreshold != threshold), *in.FailureThreshold
-		}
-		if in.NotifySlack != nil {
-			changed, notify = appendIf(changed, "notifySlack", *in.NotifySlack != notify), *in.NotifySlack
+			rejectSet(&verr, msgHTTPOnly, field{"url", in.URL != nil}, field{"expectedStatus", in.ExpectedStatus != nil})
+			if in.ExpectedIntervalSeconds != nil {
+				if msg := ValidateExpectedInterval(*in.ExpectedIntervalSeconds); msg != "" {
+					verr.Add("expectedIntervalSeconds", msg)
+				}
+				changed, interval = appendIf(changed, "expectedIntervalSeconds", *in.ExpectedIntervalSeconds != interval), *in.ExpectedIntervalSeconds
+			}
+			if in.GraceSeconds != nil {
+				if msg := ValidateGrace(*in.GraceSeconds); msg != "" {
+					verr.Add("graceSeconds", msg)
+				}
+				changed, cfg.GraceSeconds = appendIf(changed, "graceSeconds", *in.GraceSeconds != cfg.GraceSeconds), *in.GraceSeconds
+			}
+			config = cfg
+		} else {
+			var cfg httpConfig
+			if err := json.Unmarshal(cur.Config, &cfg); err != nil {
+				return fmt.Errorf("monitor config: %w", err)
+			}
+			rejectSet(&verr, msgHeartbeatOnly, field{"expectedIntervalSeconds", in.ExpectedIntervalSeconds != nil}, field{"graceSeconds", in.GraceSeconds != nil})
+			if in.URL != nil {
+				v, msg := ValidateURL(*in.URL)
+				if msg != "" {
+					verr.Add("url", msg)
+				}
+				changed, cfg.URL = appendIf(changed, "url", v != cfg.URL), v
+			}
+			if in.ExpectedStatus != nil {
+				if msg := ValidateExpectedStatus(*in.ExpectedStatus); msg != "" {
+					verr.Add("expectedStatus", msg)
+				}
+				changed, cfg.ExpectedStatus = appendIf(changed, "expectedStatus", *in.ExpectedStatus != cfg.ExpectedStatus), *in.ExpectedStatus
+			}
+			if in.FailureThreshold != nil {
+				checkThreshold(&verr, *in.FailureThreshold)
+				changed, threshold = appendIf(changed, "failureThreshold", *in.FailureThreshold != threshold), *in.FailureThreshold
+			}
+			config = cfg
 		}
 		if err := verr.Err(); err != nil {
 			return err
@@ -248,12 +354,12 @@ func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateIn
 			}
 		}
 		if len(changed) > 0 {
-			config, err := json.Marshal(cfg)
+			raw, err := json.Marshal(config)
 			if err != nil {
 				return fmt.Errorf("monitor config: %w", err)
 			}
 			if err := q.UpdateMonitor(ctx, monitorsdb.UpdateMonitorParams{
-				TenantID: a.TenantID, ID: id, Name: name, Config: config,
+				TenantID: a.TenantID, ID: id, Name: name, Config: raw, IntervalSeconds: int32(interval), //nolint:gosec // validated
 				FailureThreshold: int32(threshold), NotifySlack: notify, //nolint:gosec // validated 1..3
 			}); err != nil {
 				return fmt.Errorf("update monitor: %w", err)
@@ -277,10 +383,16 @@ func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateIn
 func (s *Service) Delete(ctx context.Context, a Actor, id uuid.UUID) error {
 	err := db.WithTenantTx(ctx, s.pool, a.TenantID, func(tx pgx.Tx) error {
 		q := monitorsdb.New(tx)
-		if _, err := q.LockMonitor(ctx, monitorsdb.LockMonitorParams{TenantID: a.TenantID, ID: id}); errors.Is(err, pgx.ErrNoRows) {
+		cur, err := q.LockMonitor(ctx, monitorsdb.LockMonitorParams{TenantID: a.TenantID, ID: id})
+		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		} else if err != nil {
 			return fmt.Errorf("lock monitor: %w", err)
+		}
+		if cur.Type == TypeHeartbeat {
+			if err := lockHeartbeat(ctx, q, a.TenantID, id); err != nil {
+				return err
+			}
 		}
 		if err := s.incidents.ResolveOpen(ctx, tx, a.TenantID, id, incidents.ReasonDeleted); err != nil {
 			return err
@@ -317,6 +429,18 @@ func (s *Service) setPaused(ctx context.Context, a Actor, id uuid.UUID, paused b
 			return fmt.Errorf("lock monitor: %w", err)
 		}
 		if cur.Paused != paused {
+			if cur.Type == TypeHeartbeat {
+				// Taken before the state rows, like the evaluation in jobs (ADR-0094).
+				if err := lockHeartbeat(ctx, q, a.TenantID, id); err != nil {
+					return err
+				}
+				// Resume: the deadline counts from now; pings from before the pause are ignored.
+				if !paused {
+					if err := q.RestartHeartbeatWait(ctx, monitorsdb.RestartHeartbeatWaitParams{TenantID: a.TenantID, MonitorID: id}); err != nil {
+						return fmt.Errorf("restart heartbeat wait: %w", err)
+					}
+				}
+			}
 			if err := q.SetMonitorPaused(ctx, monitorsdb.SetMonitorPausedParams{TenantID: a.TenantID, ID: id, Paused: paused}); err != nil {
 				return fmt.Errorf("set paused: %w", err)
 			}
@@ -378,13 +502,16 @@ func get(ctx context.Context, q *monitorsdb.Queries, tenantID, id uuid.UUID) (Mo
 }
 
 func fromRow(r monitorsdb.GetMonitorRow) (Monitor, error) {
-	var cfg httpConfig
+	var cfg struct {
+		httpConfig
+		heartbeatConfig
+	}
 	if err := json.Unmarshal(r.Config, &cfg); err != nil {
 		return Monitor{}, fmt.Errorf("monitor %s config: %w", r.ID, err)
 	}
 	return Monitor{
-		ID: r.ID, Name: r.Name, URL: cfg.URL, ExpectedStatus: cfg.ExpectedStatus,
-		IntervalSeconds: int(r.IntervalSeconds), TimeoutSeconds: int(r.TimeoutSeconds),
+		ID: r.ID, Type: r.Type, Name: r.Name, URL: cfg.URL, ExpectedStatus: cfg.ExpectedStatus,
+		IntervalSeconds: int(r.IntervalSeconds), TimeoutSeconds: int(r.TimeoutSeconds), GraceSeconds: cfg.GraceSeconds,
 		FailureThreshold: int(r.FailureThreshold), NotifySlack: r.NotifySlack, Paused: r.Paused,
 		Status: r.Status, StatusSince: r.StatusChangedAt, LastErrorKind: r.LastErrorKind,
 		LastCheckedAt: r.LastCheckedAt, TLSExpiresAt: r.TlsExpiresAt, CurrentIncidentID: r.CurrentIncidentID,
@@ -396,7 +523,7 @@ func fromRow(r monitorsdb.GetMonitorRow) (Monitor, error) {
 func wrap(op string, err error) error {
 	var verr *validation.Error
 	var lerr *plans.LimitError
-	if err == nil || errors.Is(err, ErrNotFound) || errors.As(err, &verr) || errors.As(err, &lerr) {
+	if err == nil || errors.Is(err, ErrNotFound) || errors.Is(err, ErrNotHeartbeat) || errors.As(err, &verr) || errors.As(err, &lerr) {
 		return err
 	}
 	return fmt.Errorf("monitors: %s: %w", op, err)
@@ -405,6 +532,21 @@ func wrap(op string, err error) error {
 func checkFixed(verr *validation.Error, field string, got *int, want int) {
 	if got != nil && *got != want {
 		verr.Add(field, fmt.Sprintf("only %d is supported", want))
+	}
+}
+
+// field is a request field and whether it was sent.
+type field struct {
+	name string
+	set  bool
+}
+
+// rejectSet reports every sent field that the monitor's type does not have.
+func rejectSet(verr *validation.Error, msg string, fields ...field) {
+	for _, f := range fields {
+		if f.set {
+			verr.Add(f.name, msg)
+		}
 	}
 }
 

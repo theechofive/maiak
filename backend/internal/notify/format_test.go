@@ -30,6 +30,23 @@ func TestFormatOpened(t *testing.T) {
 	}
 }
 
+// A heartbeat has no URL; its reason is explained (ADR-0094).
+func TestFormatOpenedHeartbeatMissed(t *testing.T) {
+	started := time.Date(2026, 10, 21, 8, 0, 0, 0, time.UTC)
+	got, err := Format(DeliveryOpened, mustJSON(t, map[string]any{
+		"monitorId": monitorID, "monitorName": "Alertmanager", "url": "",
+		"incidentId": uuid.New(), "reason": "heartbeat_missed", "startedAt": started,
+	}), publicURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := ":red_circle: *Alertmanager* is down\nReason: heartbeat_missed (no ping within the expected interval and grace)\n" +
+		"Since: 2026-10-21 08:00:00 UTC\n<https://maiak.example.com/monitors/01920000-0000-7000-8000-0000000000aa|Open in Maiak>"
+	if got != want {
+		t.Fatalf("got\n%s\nwant\n%s", got, want)
+	}
+}
+
 func TestFormatResolved(t *testing.T) {
 	got, err := Format(DeliveryResolved, mustJSON(t, map[string]any{
 		"monitorId": monitorID, "monitorName": "API", "durationSeconds": 3725,

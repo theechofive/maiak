@@ -83,6 +83,24 @@ func (e MonitorStatus) Valid() bool {
 	}
 }
 
+// Defines values for MonitorType.
+const (
+	Heartbeat MonitorType = "heartbeat"
+	Http      MonitorType = "http"
+)
+
+// Valid indicates whether the value is a known member of the MonitorType enum.
+func (e MonitorType) Valid() bool {
+	switch e {
+	case Heartbeat:
+		return true
+	case Http:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ProblemLimit.
 const (
 	Channels   ProblemLimit = "channels"
@@ -193,11 +211,19 @@ type Health struct {
 // HealthStatus defines model for Health.Status.
 type HealthStatus string
 
+// HeartbeatToken defines model for HeartbeatToken.
+type HeartbeatToken struct {
+	// HeartbeatUrl The secret ping URL; shown once, store it like a password
+	//
+	// Example: https://maiak.klr-ops.net/api/v1/heartbeat/3q2-7wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+	HeartbeatUrl string `json:"heartbeatUrl"`
+}
+
 // Incident defines model for Incident.
 type Incident struct {
 	Id openapi_types.UUID `json:"id"`
 
-	// Reason Why the monitor went down (the error kind of the failing checks, for example `timeout` or `http_status`)
+	// Reason Why the monitor went down (the error kind of the failing checks, for example `timeout`, `unexpected_status` or `heartbeat_missed`)
 	Reason     string     `json:"reason"`
 	ResolvedAt *time.Time `json:"resolvedAt"`
 	StartedAt  time.Time  `json:"startedAt"`
@@ -234,6 +260,9 @@ type MembershipRole string
 
 // MonitorCreate defines model for MonitorCreate.
 type MonitorCreate struct {
+	// ExpectedIntervalSeconds Heartbeat only. How often a ping is expected; 300 when omitted (no schema default, so http requests stay free of it)
+	ExpectedIntervalSeconds *int `json:"expectedIntervalSeconds,omitempty"`
+
 	// ExpectedStatus `2xx` (any 200-299), or one exact HTTP status code from 200 to 299 or from 400 to 599, as a
 	// string. 1xx and 3xx cannot be observed (the client consumes 1xx and follows redirects) and
 	// are rejected.
@@ -245,6 +274,9 @@ type MonitorCreate struct {
 	// FailureThreshold Consecutive failures before the monitor is down
 	FailureThreshold *int `json:"failureThreshold,omitempty"`
 
+	// GraceSeconds Heartbeat only. Extra time after the expected interval before the heartbeat is down; 60 when omitted
+	GraceSeconds *int `json:"graceSeconds,omitempty"`
+
 	// IntervalSeconds Check interval; only 60 is accepted in the MVP
 	IntervalSeconds *int `json:"intervalSeconds,omitempty"`
 
@@ -255,15 +287,21 @@ type MonitorCreate struct {
 	// TimeoutSeconds Request deadline including redirects; only 10 is accepted in the MVP
 	TimeoutSeconds *int `json:"timeoutSeconds,omitempty"`
 
-	// Url HTTPS URL on port 443, without credentials; hosts that are private IP literals or internal names are rejected
+	// Type `http`: an HTTPS check every minute. `heartbeat`: a watchdog that expects pings on its secret URL.
+	Type *MonitorType `json:"type,omitempty"`
+
+	// Url Required for `http`. HTTPS URL on port 443, without credentials; hosts that are private IP literals or internal names are rejected
 	//
 	// Example: https://example.com/health
-	Url string `json:"url"`
+	Url *string `json:"url,omitempty"`
 }
 
 // MonitorDetail defines model for MonitorDetail.
 type MonitorDetail struct {
 	CreatedAt time.Time `json:"createdAt"`
+
+	// ExpectedIntervalSeconds Heartbeat only (null for http monitors)
+	ExpectedIntervalSeconds *int `json:"expectedIntervalSeconds"`
 
 	// ExpectedStatus `2xx` (any 200-299), or one exact HTTP status code from 200 to 299 or from 400 to 599, as a
 	// string. 1xx and 3xx cannot be observed (the client consumes 1xx and follows redirects) and
@@ -271,29 +309,43 @@ type MonitorDetail struct {
 	//
 	//
 	// Example: 2xx
-	ExpectedStatus   ExpectedStatus     `json:"expectedStatus"`
-	FailureThreshold int                `json:"failureThreshold"`
-	Id               openapi_types.UUID `json:"id"`
-	IntervalSeconds  int                `json:"intervalSeconds"`
-	LastCheckedAt    *time.Time         `json:"lastCheckedAt"`
-	LastErrorKind    *string            `json:"lastErrorKind"`
-	Name             string             `json:"name"`
-	NotifySlack      bool               `json:"notifySlack"`
+	ExpectedStatus   ExpectedStatus `json:"expectedStatus"`
+	FailureThreshold int            `json:"failureThreshold"`
+
+	// GraceSeconds Heartbeat only (null for http monitors)
+	GraceSeconds *int `json:"graceSeconds"`
+
+	// HeartbeatUrl Only in the response that creates a heartbeat. The secret ping URL; it is not stored and cannot be shown again
+	HeartbeatUrl    *string            `json:"heartbeatUrl,omitempty"`
+	Id              openapi_types.UUID `json:"id"`
+	IntervalSeconds int                `json:"intervalSeconds"`
+	LastCheckedAt   *time.Time         `json:"lastCheckedAt"`
+	LastErrorKind   *string            `json:"lastErrorKind"`
+
+	// LastPingAt Heartbeat only. Time of the newest accepted ping; null before the first and for http monitors
+	LastPingAt  *time.Time `json:"lastPingAt"`
+	Name        string     `json:"name"`
+	NotifySlack bool       `json:"notifySlack"`
 
 	// OngoingIncident The open incident of a monitor; null when there is none
 	OngoingIncident *OngoingIncident `json:"ongoingIncident"`
 	Paused          bool             `json:"paused"`
 
-	// Status Aggregated status. `unknown` until the first check after creation, resume or a URL change, and while the monitor is paused (`paused` is then true).
+	// Status Aggregated status. `unknown` until the first check after creation, resume or a URL change (for a heartbeat, until the first ping or the first missed deadline), and while the monitor is paused (`paused` is then true).
 	Status         MonitorStatus `json:"status"`
 	StatusSince    time.Time     `json:"statusSince"`
 	TimeoutSeconds int           `json:"timeoutSeconds"`
 	TlsExpiresAt   *time.Time    `json:"tlsExpiresAt"`
-	UpdatedAt      time.Time     `json:"updatedAt"`
+
+	// Type `http`: an HTTPS check every minute. `heartbeat`: a watchdog that expects pings on its secret URL.
+	Type      MonitorType `json:"type"`
+	UpdatedAt time.Time   `json:"updatedAt"`
 
 	// Uptime Percentage of successful checks per window; null when no check ran in it
 	Uptime Uptime `json:"uptime"`
-	Url    string `json:"url"`
+
+	// Url The checked URL; empty for a heartbeat
+	Url string `json:"url"`
 }
 
 // MonitorList defines model for MonitorList.
@@ -306,20 +358,29 @@ type MonitorList struct {
 
 // MonitorListItem defines model for MonitorListItem.
 type MonitorListItem struct {
+	// ExpectedIntervalSeconds Heartbeat only (null for http monitors)
+	ExpectedIntervalSeconds *int `json:"expectedIntervalSeconds"`
+
 	// ExpectedStatus `2xx` (any 200-299), or one exact HTTP status code from 200 to 299 or from 400 to 599, as a
 	// string. 1xx and 3xx cannot be observed (the client consumes 1xx and follows redirects) and
 	// are rejected.
 	//
 	//
 	// Example: 2xx
-	ExpectedStatus   ExpectedStatus     `json:"expectedStatus"`
-	FailureThreshold int                `json:"failureThreshold"`
-	Id               openapi_types.UUID `json:"id"`
-	IntervalSeconds  int                `json:"intervalSeconds"`
-	LastCheckedAt    *time.Time         `json:"lastCheckedAt"`
+	ExpectedStatus   ExpectedStatus `json:"expectedStatus"`
+	FailureThreshold int            `json:"failureThreshold"`
+
+	// GraceSeconds Heartbeat only (null for http monitors)
+	GraceSeconds    *int               `json:"graceSeconds"`
+	Id              openapi_types.UUID `json:"id"`
+	IntervalSeconds int                `json:"intervalSeconds"`
+	LastCheckedAt   *time.Time         `json:"lastCheckedAt"`
 
 	// LastErrorKind Error kind of the last failed check, null after a success
 	LastErrorKind *string `json:"lastErrorKind"`
+
+	// LastPingAt Heartbeat only. Time of the newest accepted ping; null before the first and for http monitors
+	LastPingAt *time.Time `json:"lastPingAt"`
 
 	// LastResponseMs Response time of the last check in milliseconds; null when no check ran
 	LastResponseMs *int   `json:"lastResponseMs"`
@@ -330,7 +391,7 @@ type MonitorListItem struct {
 	OngoingIncident *OngoingIncident `json:"ongoingIncident"`
 	Paused          bool             `json:"paused"`
 
-	// Status Aggregated status. `unknown` until the first check after creation, resume or a URL change, and while the monitor is paused (`paused` is then true).
+	// Status Aggregated status. `unknown` until the first check after creation, resume or a URL change (for a heartbeat, until the first ping or the first missed deadline), and while the monitor is paused (`paused` is then true).
 	Status MonitorStatus `json:"status"`
 
 	// StatusSince When the status last changed
@@ -340,9 +401,14 @@ type MonitorListItem struct {
 	// TlsExpiresAt Expiry of the certificate seen by the last successful check
 	TlsExpiresAt *time.Time `json:"tlsExpiresAt"`
 
+	// Type `http`: an HTTPS check every minute. `heartbeat`: a watchdog that expects pings on its secret URL.
+	Type MonitorType `json:"type"`
+
 	// Uptime24h Percentage of successful checks in the last 24 h; null when no check ran
 	Uptime24h *float64 `json:"uptime24h"`
-	Url       string   `json:"url"`
+
+	// Url The checked URL; empty for a heartbeat
+	Url string `json:"url"`
 }
 
 // MonitorStats defines model for MonitorStats.
@@ -354,7 +420,7 @@ type MonitorStats struct {
 	Series []LatencyPoint `json:"series"`
 }
 
-// MonitorStatus Aggregated status. `unknown` until the first check after creation, resume or a URL change, and while the monitor is paused (`paused` is then true).
+// MonitorStatus Aggregated status. `unknown` until the first check after creation, resume or a URL change (for a heartbeat, until the first ping or the first missed deadline), and while the monitor is paused (`paused` is then true).
 type MonitorStatus string
 
 // MonitorSummary Counts over all non-deleted monitors. A paused monitor counts only as paused.
@@ -365,8 +431,13 @@ type MonitorSummary struct {
 	Up      int `json:"up"`
 }
 
+// MonitorType `http`: an HTTPS check every minute. `heartbeat`: a watchdog that expects pings on its secret URL.
+type MonitorType string
+
 // MonitorUpdate Only the given fields change. `intervalSeconds` and `timeoutSeconds` are accepted only with their current value.
 type MonitorUpdate struct {
+	ExpectedIntervalSeconds *int `json:"expectedIntervalSeconds,omitempty"`
+
 	// ExpectedStatus `2xx` (any 200-299), or one exact HTTP status code from 200 to 299 or from 400 to 599, as a
 	// string. 1xx and 3xx cannot be observed (the client consumes 1xx and follows redirects) and
 	// are rejected.
@@ -375,6 +446,7 @@ type MonitorUpdate struct {
 	// Example: 2xx
 	ExpectedStatus   *ExpectedStatus `json:"expectedStatus,omitempty"`
 	FailureThreshold *int            `json:"failureThreshold,omitempty"`
+	GraceSeconds     *int            `json:"graceSeconds,omitempty"`
 	IntervalSeconds  *int            `json:"intervalSeconds,omitempty"`
 	Name             *string         `json:"name,omitempty"`
 	NotifySlack      *bool           `json:"notifySlack,omitempty"`
@@ -446,9 +518,11 @@ type ResourceCounts struct {
 	// Channels Notification channels (the Slack webhook)
 	Channels int `json:"channels"`
 
-	// Heartbeats Heartbeat (watchdog) monitors; usage is always 0 until that monitor type exists
+	// Heartbeats Heartbeat (watchdog) monitors
 	Heartbeats int `json:"heartbeats"`
-	Monitors   int `json:"monitors"`
+
+	// Monitors HTTPS monitors
+	Monitors int `json:"monitors"`
 }
 
 // SessionInfo defines model for SessionInfo.
@@ -580,6 +654,12 @@ type ListMonitorChecksParams struct {
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// RegenerateHeartbeatTokenParams defines parameters for RegenerateHeartbeatToken.
+type RegenerateHeartbeatTokenParams struct {
+	// XCSRFToken The `csrf_token` of the session (from login or `GET /api/v1/auth/me`)
+	XCSRFToken CsrfToken `json:"X-CSRF-Token"`
+}
+
 // PauseMonitorParams defines parameters for PauseMonitor.
 type PauseMonitorParams struct {
 	// XCSRFToken The `csrf_token` of the session (from login or `GET /api/v1/auth/me`)
@@ -642,6 +722,12 @@ type ServerInterface interface {
 	// GetHealth Service health and build info
 	// (GET /api/v1/health)
 	GetHealth(w http.ResponseWriter, r *http.Request)
+	// PingHeartbeat Ping a heartbeat monitor
+	// (GET /api/v1/heartbeat/{token})
+	PingHeartbeat(w http.ResponseWriter, r *http.Request, token string)
+	// PingHeartbeatPost Ping a heartbeat monitor (POST)
+	// (POST /api/v1/heartbeat/{token})
+	PingHeartbeatPost(w http.ResponseWriter, r *http.Request, token string)
 	// ListMonitors List monitors with their current status
 	// (GET /api/v1/monitors)
 	ListMonitors(w http.ResponseWriter, r *http.Request)
@@ -660,6 +746,9 @@ type ServerInterface interface {
 	// ListMonitorChecks Recent checks
 	// (GET /api/v1/monitors/{monitorId}/checks)
 	ListMonitorChecks(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params ListMonitorChecksParams)
+	// RegenerateHeartbeatToken Give a heartbeat a new ping URL
+	// (POST /api/v1/monitors/{monitorId}/heartbeat-token)
+	RegenerateHeartbeatToken(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params RegenerateHeartbeatTokenParams)
 	// ListMonitorIncidents Incidents of a monitor
 	// (GET /api/v1/monitors/{monitorId}/incidents)
 	ListMonitorIncidents(w http.ResponseWriter, r *http.Request, monitorId MonitorId)
@@ -723,6 +812,18 @@ func (_ Unimplemented) GetHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// PingHeartbeat Ping a heartbeat monitor
+// (GET /api/v1/heartbeat/{token})
+func (_ Unimplemented) PingHeartbeat(w http.ResponseWriter, r *http.Request, token string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// PingHeartbeatPost Ping a heartbeat monitor (POST)
+// (POST /api/v1/heartbeat/{token})
+func (_ Unimplemented) PingHeartbeatPost(w http.ResponseWriter, r *http.Request, token string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // ListMonitors List monitors with their current status
 // (GET /api/v1/monitors)
 func (_ Unimplemented) ListMonitors(w http.ResponseWriter, r *http.Request) {
@@ -756,6 +857,12 @@ func (_ Unimplemented) UpdateMonitor(w http.ResponseWriter, r *http.Request, mon
 // ListMonitorChecks Recent checks
 // (GET /api/v1/monitors/{monitorId}/checks)
 func (_ Unimplemented) ListMonitorChecks(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params ListMonitorChecksParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// RegenerateHeartbeatToken Give a heartbeat a new ping URL
+// (POST /api/v1/monitors/{monitorId}/heartbeat-token)
+func (_ Unimplemented) RegenerateHeartbeatToken(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params RegenerateHeartbeatTokenParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -914,6 +1021,58 @@ func (siw *ServerInterfaceWrapper) GetHealth(w http.ResponseWriter, r *http.Requ
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetHealth(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PingHeartbeat operation middleware
+func (siw *ServerInterfaceWrapper) PingHeartbeat(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "token" -------------
+	var token string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "token", chi.URLParam(r, "token"), &token, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "token", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PingHeartbeat(w, r, token)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PingHeartbeatPost operation middleware
+func (siw *ServerInterfaceWrapper) PingHeartbeatPost(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "token" -------------
+	var token string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "token", chi.URLParam(r, "token"), &token, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "token", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PingHeartbeatPost(w, r, token)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1149,6 +1308,60 @@ func (siw *ServerInterfaceWrapper) ListMonitorChecks(w http.ResponseWriter, r *h
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListMonitorChecks(w, r, monitorId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RegenerateHeartbeatToken operation middleware
+func (siw *ServerInterfaceWrapper) RegenerateHeartbeatToken(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "monitorId" -------------
+	var monitorId MonitorId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "monitorId", chi.URLParam(r, "monitorId"), &monitorId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "monitorId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params RegenerateHeartbeatTokenParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CsrfToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-CSRF-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-CSRF-Token", Err: err})
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		err := fmt.Errorf("Header parameter X-CSRF-Token is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-CSRF-Token", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RegenerateHeartbeatToken(w, r, monitorId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1619,6 +1832,15 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/api/v1/monitors/{monitorId}/resume", wrapper.ResumeMonitor)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/monitors/{monitorId}/heartbeat-token", wrapper.RegenerateHeartbeatToken)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/heartbeat/{token}", wrapper.PingHeartbeat)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/v1/heartbeat/{token}", wrapper.PingHeartbeatPost)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/v1/monitors/{monitorId}/stats", wrapper.GetMonitorStats)
 	})
 	r.Group(func(r chi.Router) {
@@ -2052,6 +2274,142 @@ type GetHealthdefaultApplicationProblemPlusJSONResponse struct {
 }
 
 func (response GetHealthdefaultApplicationProblemPlusJSONResponse) VisitGetHealthResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PingHeartbeatRequestObject struct {
+	Token string `json:"token"`
+}
+
+type PingHeartbeatResponseObject interface {
+	VisitPingHeartbeatResponse(w http.ResponseWriter) error
+}
+
+type PingHeartbeat204Response struct {
+}
+
+func (response PingHeartbeat204Response) VisitPingHeartbeatResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type PingHeartbeat404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response PingHeartbeat404ApplicationProblemPlusJSONResponse) VisitPingHeartbeatResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PingHeartbeat429ApplicationProblemPlusJSONResponse struct {
+	TooManyRequestsApplicationProblemPlusJSONResponse
+}
+
+func (response PingHeartbeat429ApplicationProblemPlusJSONResponse) VisitPingHeartbeatResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.RetryAfter != nil {
+		w.Header().Set("Retry-After", fmt.Sprint(*response.Headers.RetryAfter))
+	}
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PingHeartbeatdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response PingHeartbeatdefaultApplicationProblemPlusJSONResponse) VisitPingHeartbeatResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PingHeartbeatPostRequestObject struct {
+	Token string `json:"token"`
+}
+
+type PingHeartbeatPostResponseObject interface {
+	VisitPingHeartbeatPostResponse(w http.ResponseWriter) error
+}
+
+type PingHeartbeatPost204Response struct {
+}
+
+func (response PingHeartbeatPost204Response) VisitPingHeartbeatPostResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type PingHeartbeatPost404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response PingHeartbeatPost404ApplicationProblemPlusJSONResponse) VisitPingHeartbeatPostResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PingHeartbeatPost429ApplicationProblemPlusJSONResponse struct {
+	TooManyRequestsApplicationProblemPlusJSONResponse
+}
+
+func (response PingHeartbeatPost429ApplicationProblemPlusJSONResponse) VisitPingHeartbeatPostResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.RetryAfter != nil {
+		w.Header().Set("Retry-After", fmt.Sprint(*response.Headers.RetryAfter))
+	}
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PingHeartbeatPostdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response PingHeartbeatPostdefaultApplicationProblemPlusJSONResponse) VisitPingHeartbeatPostResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -2636,6 +2994,126 @@ type ListMonitorChecksdefaultApplicationProblemPlusJSONResponse struct {
 }
 
 func (response ListMonitorChecksdefaultApplicationProblemPlusJSONResponse) VisitListMonitorChecksResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RegenerateHeartbeatTokenRequestObject struct {
+	MonitorId MonitorId `json:"monitorId"`
+	Params    RegenerateHeartbeatTokenParams
+}
+
+type RegenerateHeartbeatTokenResponseObject interface {
+	VisitRegenerateHeartbeatTokenResponse(w http.ResponseWriter) error
+}
+
+type RegenerateHeartbeatToken200JSONResponse HeartbeatToken
+
+func (response RegenerateHeartbeatToken200JSONResponse) VisitRegenerateHeartbeatTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RegenerateHeartbeatToken400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response RegenerateHeartbeatToken400ApplicationProblemPlusJSONResponse) VisitRegenerateHeartbeatTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RegenerateHeartbeatToken401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response RegenerateHeartbeatToken401ApplicationProblemPlusJSONResponse) VisitRegenerateHeartbeatTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RegenerateHeartbeatToken403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response RegenerateHeartbeatToken403ApplicationProblemPlusJSONResponse) VisitRegenerateHeartbeatTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RegenerateHeartbeatToken404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response RegenerateHeartbeatToken404ApplicationProblemPlusJSONResponse) VisitRegenerateHeartbeatTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RegenerateHeartbeatToken409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response RegenerateHeartbeatToken409ApplicationProblemPlusJSONResponse) VisitRegenerateHeartbeatTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RegenerateHeartbeatTokendefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response RegenerateHeartbeatTokendefaultApplicationProblemPlusJSONResponse) VisitRegenerateHeartbeatTokenResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -3413,6 +3891,12 @@ type StrictServerInterface interface {
 	// GetHealth Service health and build info
 	// (GET /api/v1/health)
 	GetHealth(ctx context.Context, request GetHealthRequestObject) (GetHealthResponseObject, error)
+	// PingHeartbeat Ping a heartbeat monitor
+	// (GET /api/v1/heartbeat/{token})
+	PingHeartbeat(ctx context.Context, request PingHeartbeatRequestObject) (PingHeartbeatResponseObject, error)
+	// PingHeartbeatPost Ping a heartbeat monitor (POST)
+	// (POST /api/v1/heartbeat/{token})
+	PingHeartbeatPost(ctx context.Context, request PingHeartbeatPostRequestObject) (PingHeartbeatPostResponseObject, error)
 	// ListMonitors List monitors with their current status
 	// (GET /api/v1/monitors)
 	ListMonitors(ctx context.Context, request ListMonitorsRequestObject) (ListMonitorsResponseObject, error)
@@ -3431,6 +3915,9 @@ type StrictServerInterface interface {
 	// ListMonitorChecks Recent checks
 	// (GET /api/v1/monitors/{monitorId}/checks)
 	ListMonitorChecks(ctx context.Context, request ListMonitorChecksRequestObject) (ListMonitorChecksResponseObject, error)
+	// RegenerateHeartbeatToken Give a heartbeat a new ping URL
+	// (POST /api/v1/monitors/{monitorId}/heartbeat-token)
+	RegenerateHeartbeatToken(ctx context.Context, request RegenerateHeartbeatTokenRequestObject) (RegenerateHeartbeatTokenResponseObject, error)
 	// ListMonitorIncidents Incidents of a monitor
 	// (GET /api/v1/monitors/{monitorId}/incidents)
 	ListMonitorIncidents(ctx context.Context, request ListMonitorIncidentsRequestObject) (ListMonitorIncidentsResponseObject, error)
@@ -3635,6 +4122,58 @@ func (sh *strictHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// PingHeartbeat operation middleware
+func (sh *strictHandler) PingHeartbeat(w http.ResponseWriter, r *http.Request, token string) {
+	var request PingHeartbeatRequestObject
+
+	request.Token = token
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PingHeartbeat(ctx, request.(PingHeartbeatRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PingHeartbeat")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PingHeartbeatResponseObject); ok {
+		if err := validResponse.VisitPingHeartbeatResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PingHeartbeatPost operation middleware
+func (sh *strictHandler) PingHeartbeatPost(w http.ResponseWriter, r *http.Request, token string) {
+	var request PingHeartbeatPostRequestObject
+
+	request.Token = token
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PingHeartbeatPost(ctx, request.(PingHeartbeatPostRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PingHeartbeatPost")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PingHeartbeatPostResponseObject); ok {
+		if err := validResponse.VisitPingHeartbeatPostResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ListMonitors operation middleware
 func (sh *strictHandler) ListMonitors(w http.ResponseWriter, r *http.Request) {
 	var request ListMonitorsRequestObject
@@ -3799,6 +4338,33 @@ func (sh *strictHandler) ListMonitorChecks(w http.ResponseWriter, r *http.Reques
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListMonitorChecksResponseObject); ok {
 		if err := validResponse.VisitListMonitorChecksResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RegenerateHeartbeatToken operation middleware
+func (sh *strictHandler) RegenerateHeartbeatToken(w http.ResponseWriter, r *http.Request, monitorId MonitorId, params RegenerateHeartbeatTokenParams) {
+	var request RegenerateHeartbeatTokenRequestObject
+
+	request.MonitorId = monitorId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RegenerateHeartbeatToken(ctx, request.(RegenerateHeartbeatTokenRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RegenerateHeartbeatToken")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RegenerateHeartbeatTokenResponseObject); ok {
+		if err := validResponse.VisitRegenerateHeartbeatTokenResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -4049,130 +4615,152 @@ func (sh *strictHandler) GetUsage(w http.ResponseWriter, r *http.Request) {
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
+	"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",
+	"vnwucuXTx6f/HwAA//8=",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

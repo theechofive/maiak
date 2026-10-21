@@ -25,6 +25,15 @@ const (
 	DefaultExpectedStatus   = "2xx"
 )
 
+// Heartbeat bounds (ADR-0094); the database enforces them too (monitors_heartbeat_check).
+const (
+	MinExpectedIntervalSeconds     = 60
+	MaxExpectedIntervalSeconds     = 86400
+	DefaultExpectedIntervalSeconds = 300
+	MaxGraceSeconds                = 3600
+	DefaultGraceSeconds            = 60
+)
+
 // Host names that only resolve inside private networks or the cluster (single-label names are
 // rejected separately: inside Kubernetes they resolve through the search domains).
 var blockedSuffixes = []string{".localhost", ".internal", ".local", ".svc"}
@@ -166,6 +175,22 @@ func ValidateName(raw string) (string, string) {
 func ValidateExpectedStatus(s string) string {
 	if !expectedRegex.MatchString(s) {
 		return `must be "2xx", a status code from 200 to 299 or one from 400 to 599`
+	}
+	return ""
+}
+
+// ValidateExpectedInterval checks a heartbeat's expected ping interval in seconds.
+func ValidateExpectedInterval(n int) string {
+	if n < MinExpectedIntervalSeconds || n > MaxExpectedIntervalSeconds {
+		return "must be between 60 and 86400 seconds"
+	}
+	return ""
+}
+
+// ValidateGrace checks a heartbeat's grace period in seconds.
+func ValidateGrace(n int) string {
+	if n < 0 || n > MaxGraceSeconds {
+		return "must be between 0 and 3600 seconds"
 	}
 	return ""
 }

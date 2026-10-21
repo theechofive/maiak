@@ -29,7 +29,7 @@ func TestIntegrationMigrateFromScratchAndRerun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "audit_log,auth_identities,check_results,incident_monitors,incidents,memberships,monitor_channels,monitor_location_state," +
+	want := "audit_log,auth_identities,check_results,heartbeat_tokens,incident_monitors,incidents,memberships,monitor_channels,monitor_location_state," +
 		"monitor_locations,monitor_state,monitors,notification_channels,notification_deliveries,plans,probe_locations,result_rollups_hourly,rollup_state,sessions,tenants,users"
 	if got := strings.Join(tables, ","); got != want {
 		t.Fatalf("tables = %s, want %s", got, want)
@@ -58,6 +58,10 @@ var definerAllowList = map[string][]string{
 	"outbox_pending": {"maiak_worker"},
 	// Pause, resume and URL change reset the schedule within the caller's tenant (ADR-0018).
 	"reset_monitor_runtime": {"maiak_api"},
+	// The public heartbeat ping finds its heartbeat by token hash before the tenant is known, and
+	// jobs lists the heartbeats to evaluate across tenants (ADR-0094).
+	"heartbeat_ping":      {"maiak_api"},
+	"list_due_heartbeats": {"maiak_worker"},
 }
 
 // extraPolicies are the permissive policies on tenant tables that are not tenant isolation
@@ -80,6 +84,9 @@ var extraPolicies = map[string]struct {
 	// claim_deliveries and finish_delivery (incidents_outbox migration).
 	"notification_deliveries.owner_delivery_read":   {cmd: "r", roles: []string{"maiak_owner"}},
 	"notification_deliveries.owner_delivery_update": {cmd: "w", roles: []string{"maiak_owner"}},
+	// heartbeat_ping and list_due_heartbeats (ADR-0094).
+	"heartbeat_tokens.owner_heartbeat_read": {cmd: "r", roles: []string{"maiak_owner"}},
+	"heartbeat_tokens.owner_heartbeat_ping": {cmd: "w", roles: []string{"maiak_owner"}},
 }
 
 var runtimeRoles = []string{"maiak_api", "maiak_worker"}

@@ -81,6 +81,7 @@ func run() error {
 		CookieSecure:        cfg.CookieSecure,
 		TrustedProxyHops:    cfg.TrustedProxyHops,
 		RegistrationEnabled: cfg.RegistrationEnabled,
+		PublicURL:           cfg.PublicURL,
 	}, api.Deps{
 		Auth:     authSvc,
 		Monitors: monitors.NewService(pool, sched, incidents.NewService(sched)),
@@ -89,6 +90,7 @@ func run() error {
 		Plans:    plans.NewService(pool),
 		Logger:   log,
 		Metrics:  metrics.NewHTTP(reg),
+		Pings:    api.NewPingMetrics(reg),
 	})
 	if err != nil {
 		return err

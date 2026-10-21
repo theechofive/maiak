@@ -30,6 +30,8 @@ var definerCalls = map[string]string{
 	"finish_delivery":           `SELECT finish_delivery(gen_random_uuid(), gen_random_uuid(), 'sent', NULL, NULL)`,
 	"outbox_pending":            `SELECT outbox_pending()`,
 	"reset_monitor_runtime":     `SELECT reset_monitor_runtime(gen_random_uuid())`,
+	"heartbeat_ping":            `SELECT * FROM heartbeat_ping('\x00')`,
+	"list_due_heartbeats":       `SELECT * FROM list_due_heartbeats(1)`,
 }
 
 // Every definer function in the allow-list is executable by exactly the roles listed there: a

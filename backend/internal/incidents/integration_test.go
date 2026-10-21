@@ -57,8 +57,9 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) createMonitor(threshold int, notify bool) uuid.UUID {
 	f.t.Helper()
+	url := "https://shop.example.com/health?token=s3cr3t"
 	m, err := f.monitors.Create(f.ctx, f.actor, monitors.CreateInput{
-		Name: "Shop", URL: "https://shop.example.com/health?token=s3cr3t", FailureThreshold: &threshold, NotifySlack: &notify,
+		Name: "Shop", URL: &url, FailureThreshold: &threshold, NotifySlack: &notify,
 	})
 	if err != nil {
 		f.t.Fatal(err)

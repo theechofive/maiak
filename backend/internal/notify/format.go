@@ -65,16 +65,24 @@ func FormatOpened(p Payload, publicURL string) string {
 	if u := DisplayURL(p.URL); u != "" {
 		b.WriteString("\n" + Escape(u))
 	}
-	reason := p.Reason
-	if reason == "" {
-		reason = "unknown"
-	}
-	b.WriteString("\nReason: " + Escape(reason))
+	b.WriteString("\nReason: " + Escape(reasonText(p.Reason)))
 	if p.StartedAt != nil {
 		b.WriteString("\nSince: " + p.StartedAt.UTC().Format("2006-01-02 15:04:05") + " UTC")
 	}
 	fmt.Fprintf(&b, "\n<%s/monitors/%s|Open in Maiak>", Escape(publicURL), p.MonitorID)
 	return b.String()
+}
+
+// reasonText is the Reason line of an opened message: the error kind, with an explanation for
+// kinds whose name alone says too little in a Slack channel.
+func reasonText(kind string) string {
+	switch kind {
+	case "":
+		return "unknown"
+	case "heartbeat_missed": // monitors.ErrorKindHeartbeatMissed (ADR-0094)
+		return "heartbeat_missed (no ping within the expected interval and grace)"
+	}
+	return kind
 }
 
 // DisplayURL is the monitor URL as shown in Slack: scheme, host and path only. The query string

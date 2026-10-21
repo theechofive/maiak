@@ -38,6 +38,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/notify"
 	"github.com/theechofive/maiak/backend/internal/plans"
+	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
 	"github.com/theechofive/maiak/backend/internal/platform/metrics"
@@ -255,10 +256,12 @@ func TestIntegrationEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	sched := scheduler.New()
-	handler, err := api.NewHandler(api.Config{Version: "e2e", Commit: "e2e", CookieSecure: true}, api.Deps{
+	// Drives the api's in-memory rate limits (one heartbeat ping per token per second).
+	apiClock := clock.NewFake(time.Now())
+	handler, err := api.NewHandler(api.Config{Version: "e2e", Commit: "e2e", CookieSecure: true, PublicURL: publicURL}, api.Deps{
 		Auth: authSvc, Monitors: monitors.NewService(apiPool, sched, incidents.NewService(sched)),
 		Queries: queries.New(apiPool, nil), Slack: notify.NewService(apiPool, keys, notifier, publicURL), Plans: plans.NewService(apiPool),
-		Logger: log, Metrics: metrics.NewHTTP(prometheus.NewRegistry()),
+		Logger: log, Metrics: metrics.NewHTTP(prometheus.NewRegistry()), Clock: apiClock,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -479,9 +482,97 @@ func TestIntegrationEndToEnd(t *testing.T) {
 		}
 	})
 
+	// Heartbeat (P-03): api records pings, the jobs task applies them and missed deadlines through
+	// the incident machine, the outbox carries the Slack messages.
+	hkReg := prometheus.NewRegistry()
+	jobsMetrics := jobs.NewMetrics(hkReg)
+	tasks := jobs.DefaultTasks(jobsMetrics, log, monitors.NewService(workerPool, sched, incidents.NewService(sched)))
+	housekeeper := jobs.NewHousekeeper(workerPool, tasks, jobsMetrics, log, nil)
+	var evaluate jobs.Task
+	for _, task := range tasks {
+		if task.Name == "evaluate_heartbeats" {
+			evaluate = task
+		}
+	}
+	runEvaluation := func() {
+		t.Helper()
+		if got := housekeeper.RunTask(ctx, evaluate); got != "ok" {
+			t.Fatalf("evaluate_heartbeats: %s", got)
+		}
+	}
+	hb := c.mustDo(http.StatusCreated, http.MethodPost, "/api/v1/monitors", `{"type":"heartbeat","name":"Watchdog","expectedIntervalSeconds":60,"graceSeconds":30}`, unsafe)
+	hbID, _ := hb["id"].(string)
+	hbURL, _ := hb["heartbeatUrl"].(string)
+	if !strings.HasPrefix(hbURL, publicURL+"/api/v1/heartbeat/") || hb["status"] != "unknown" {
+		t.Fatalf("heartbeat: %v", hb)
+	}
+	hbToken := strings.TrimPrefix(hbURL, publicURL+"/api/v1/heartbeat/")
+	hbPath := strings.TrimPrefix(hbURL, publicURL)
+	c.mustDo(http.StatusNoContent, http.MethodGet, hbPath, "", nil)
+	runEvaluation()
+	if d := c.mustDo(http.StatusOK, http.MethodGet, "/api/v1/monitors/"+hbID, "", read); d["status"] != "up" || d["ongoingIncident"] != nil || d["lastPingAt"] == nil {
+		t.Fatalf("heartbeat after a ping: %v", d)
+	}
+	if n := deliverer.RunOnce(ctx); n != 0 || len(slack.sent()) != 2 {
+		t.Fatalf("a ping notified: claimed %d, sent %d", n, len(slack.sent()))
+	}
+	// A missed deadline: the clock of the heartbeat moves an hour back.
+	if _, err := admin.Exec(ctx, `UPDATE heartbeat_tokens SET waiting_since = waiting_since - interval '1 hour',
+		last_ping_at = last_ping_at - interval '1 hour', applied_ping_at = applied_ping_at - interval '1 hour' WHERE monitor_id = $1`, hbID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(ctx, `UPDATE monitor_location_state SET last_checked_at = last_checked_at - interval '1 hour' WHERE monitor_id = $1`, hbID); err != nil {
+		t.Fatal(err)
+	}
+	runEvaluation()
+	runEvaluation() // a second run does not open or notify again
+	hbDown := c.mustDo(http.StatusOK, http.MethodGet, "/api/v1/monitors/"+hbID, "", read)
+	hbIncident, _ := hbDown["ongoingIncident"].(map[string]any)
+	if hbDown["status"] != "down" || hbIncident == nil || hbIncident["reason"] != "heartbeat_missed" || hbDown["lastErrorKind"] != "heartbeat_missed" {
+		t.Fatalf("heartbeat after the missed deadline: %v", hbDown)
+	}
+	if mf := gatherCounter(t, hkReg, "maiak_jobs_heartbeats_missed_total"); mf != 1 {
+		t.Fatalf("maiak_jobs_heartbeats_missed_total = %v", mf)
+	}
+	if n := deliverer.RunOnce(ctx); n != 1 {
+		t.Fatalf("claimed %d heartbeat deliveries, want 1", n)
+	}
+	hbStarted := mustTime(t, hbIncident["startedAt"])
+	wantHBOpened := ":red_circle: *Watchdog* is down\n" +
+		"Reason: heartbeat_missed (no ping within the expected interval and grace)\n" +
+		"Since: " + hbStarted.UTC().Format("2006-01-02 15:04:05") + " UTC\n" +
+		"<" + publicURL + "/monitors/" + hbID + "|Open in Maiak>"
+	if got := slack.sent(); len(got) != 3 || got[2].text != wantHBOpened {
+		t.Fatalf("heartbeat opened message:\n%+v\nwant %q", got, wantHBOpened)
+	}
+	// The next ping (Alertmanager POSTs its webhook body) resolves it.
+	apiClock.Advance(time.Second)
+	c.mustDo(http.StatusNoContent, http.MethodPost, hbPath, `{"receiver":"maiak","status":"firing","alerts":[{"labels":{"alertname":"Watchdog"}}]}`, nil)
+	runEvaluation()
+	if n := deliverer.RunOnce(ctx); n != 1 {
+		t.Fatalf("claimed %d heartbeat deliveries, want 1", n)
+	}
+	hbIncs := c.mustDo(http.StatusOK, http.MethodGet, "/api/v1/monitors/"+hbID+"/incidents", "", read)["items"].([]any)
+	hbInc := hbIncs[0].(map[string]any)
+	hbDuration := mustTime(t, hbInc["resolvedAt"]).Sub(mustTime(t, hbInc["startedAt"]))
+	wantHBResolved := fmt.Sprintf(":large_green_circle: *Watchdog* is back up after %s", notify.HumanDuration(hbDuration.Truncate(time.Second)))
+	if got := slack.sent(); len(hbIncs) != 1 || len(got) != 4 || got[3].text != wantHBResolved {
+		t.Fatalf("heartbeat resolved message:\n%+v\nwant %q (incidents %v)", got, wantHBResolved, hbIncs)
+	}
+	if d := c.mustDo(http.StatusOK, http.MethodGet, "/api/v1/monitors/"+hbID, "", read); d["status"] != "up" || d["ongoingIncident"] != nil {
+		t.Fatalf("heartbeat after recovery: %v", d)
+	}
+	// Unknown tokens get 404; the worker never claimed the heartbeat.
+	if r := c.do(http.MethodGet, "/api/v1/heartbeat/"+hbToken+"x", "", nil); r.code != http.StatusNotFound || strings.Contains(r.raw, hbToken) {
+		t.Fatalf("unknown token: %d %s", r.code, r.raw)
+	}
+	if cks := checksOf(hbID); len(cks) != 0 {
+		t.Fatalf("heartbeat has check results: %v", cks)
+	}
+
 	// No secret reached the logs of any process.
 	out := logs.String()
-	for _, secret := range []string{adminPassword, session, csrf, webhookPath, "e2eWebhookSecret", "e2e-monitor-secret", targetHost} {
+	for _, secret := range []string{adminPassword, session, csrf, webhookPath, "e2eWebhookSecret", "e2e-monitor-secret", targetHost, hbToken} {
 		if strings.Contains(out, secret) {
 			t.Errorf("logs contain %q", secret)
 		}
@@ -489,6 +580,21 @@ func TestIntegrationEndToEnd(t *testing.T) {
 	if el := time.Since(start); el > 30*time.Second {
 		t.Errorf("end-to-end test took %v, budget 30 s", el)
 	}
+}
+
+func gatherCounter(t *testing.T, reg *prometheus.Registry, name string) float64 {
+	t.Helper()
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() == name && len(mf.GetMetric()) == 1 {
+			return mf.GetMetric()[0].GetCounter().GetValue()
+		}
+	}
+	t.Fatalf("no counter %s", name)
+	return 0
 }
 
 func mustTime(t *testing.T, v any) time.Time {

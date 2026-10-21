@@ -22,10 +22,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/theechofive/maiak/backend/internal/incidents"
 	"github.com/theechofive/maiak/backend/internal/jobs"
+	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/notify"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
+	"github.com/theechofive/maiak/backend/internal/scheduler"
 	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
 )
 
@@ -486,8 +489,10 @@ func TestIntegrationHousekeeping(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := jobs.NewMetrics(reg)
 	log := slog.New(slog.NewJSONHandler(e, nil))
-	tasks := jobs.DefaultTasks(m, log)
-	h := jobs.NewHousekeeper(e.Pool(t, e.WorkerURL, 2), tasks, m, log, nil)
+	pool := e.Pool(t, e.WorkerURL, 2)
+	sched := scheduler.New()
+	tasks := jobs.DefaultTasks(m, log, monitors.NewService(pool, sched, incidents.NewService(sched)))
+	h := jobs.NewHousekeeper(pool, tasks, m, log, nil)
 	task := func(name string) jobs.Task {
 		for _, t := range tasks {
 			if t.Name == name {

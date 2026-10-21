@@ -216,8 +216,7 @@ func count(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, r Resource) (int,
 	case ResourceChannel:
 		n, err = q.CountChannels(ctx, tenantID)
 	case ResourceHeartbeat:
-		// TODO(L-181): count heartbeat monitors once the type exists (P-03).
-		return 0, nil
+		n, err = q.CountLiveHeartbeats(ctx, tenantID)
 	default:
 		return 0, fmt.Errorf("plans: unknown resource %q", r)
 	}

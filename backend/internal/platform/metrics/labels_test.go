@@ -11,6 +11,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/theechofive/maiak/backend/internal/api"
 	"github.com/theechofive/maiak/backend/internal/auth"
 	"github.com/theechofive/maiak/backend/internal/jobs"
 	"github.com/theechofive/maiak/backend/internal/platform/metrics"
@@ -47,6 +48,7 @@ func allMetrics(t *testing.T) map[string][]string {
 	}
 	worker.NewMetrics(reg)
 	jobs.NewMetrics(reg)
+	api.NewPingMetrics(reg)
 
 	descRe := regexp.MustCompile(`fqName: "([^"]+)".*constLabels: \{([^}]*)\}, variableLabels: \{([^}]*)\}`)
 	nameRe := regexp.MustCompile(`([a-zA-Z_][a-zA-Z0-9_]*)=`)

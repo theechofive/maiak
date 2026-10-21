@@ -12,6 +12,8 @@ type Metrics struct {
 	lastSuccess  *prometheus.GaugeVec
 	// partitionsKept counts expired partitions retention could not drop, by reason.
 	partitionsKept *prometheus.CounterVec
+	// heartbeatsMissed counts missed heartbeat deadlines applied to the incident machine.
+	heartbeatsMissed prometheus.Counter
 }
 
 // NewMetrics registers the jobs metrics.
@@ -39,6 +41,9 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		partitionsKept: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "maiak_jobs_partitions_kept_total", Help: "Expired check_results partitions retention kept back, by reason (rollups_incomplete, error).",
 		}, []string{"reason"}),
+		heartbeatsMissed: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "maiak_jobs_heartbeats_missed_total", Help: "Missed heartbeat deadlines applied as failures (ADR-0094).",
+		}),
 	}
 	for _, s := range []string{statusSent, "retry", statusFailed} {
 		m.deliveries.WithLabelValues(s)
@@ -46,6 +51,6 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 	for _, r := range []string{keptRollupsIncomplete, keptError} {
 		m.partitionsKept.WithLabelValues(r)
 	}
-	reg.MustRegister(m.deliveries, m.duration, m.pending, m.claimErrors, m.housekeeping, m.lastSuccess, m.partitionsKept)
+	reg.MustRegister(m.deliveries, m.duration, m.pending, m.claimErrors, m.housekeeping, m.lastSuccess, m.partitionsKept, m.heartbeatsMissed)
 	return m
 }

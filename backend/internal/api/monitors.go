@@ -35,12 +35,13 @@ func (s *server) ListMonitors(ctx context.Context, _ gen.ListMonitorsRequestObje
 	items := make([]gen.MonitorListItem, len(list))
 	for i, m := range list {
 		items[i] = gen.MonitorListItem{
-			Id: m.ID, Name: m.Name, Url: m.URL, ExpectedStatus: m.ExpectedStatus,
+			Id: m.ID, Type: gen.MonitorType(m.Type), Name: m.Name, Url: m.URL, ExpectedStatus: m.ExpectedStatus,
 			IntervalSeconds: m.IntervalSeconds, TimeoutSeconds: m.TimeoutSeconds,
 			FailureThreshold: m.FailureThreshold, NotifySlack: m.NotifySlack, Paused: m.Paused,
 			Status: gen.MonitorStatus(m.Status), StatusSince: m.StatusSince, LastErrorKind: m.LastErrorKind,
 			LastCheckedAt: m.LastCheckedAt, TlsExpiresAt: m.TLSExpiresAt, OngoingIncident: toOngoing(m.Ongoing),
 			Uptime24h: m.Uptime24h, LastResponseMs: m.LastResponseMs,
+			LastPingAt: m.LastPingAt, ExpectedIntervalSeconds: expectedInterval(m), GraceSeconds: m.GraceSeconds,
 		}
 	}
 	return gen.ListMonitors200JSONResponse{
@@ -55,16 +56,25 @@ func (s *server) CreateMonitor(ctx context.Context, req gen.CreateMonitorRequest
 		return nil, err
 	}
 	b := req.Body
-	m, err := s.monitors.Create(ctx, a, monitors.CreateInput{
+	in := monitors.CreateInput{
 		Name: b.Name, URL: b.Url, IntervalSeconds: b.IntervalSeconds, TimeoutSeconds: b.TimeoutSeconds,
 		ExpectedStatus: b.ExpectedStatus, FailureThreshold: b.FailureThreshold, NotifySlack: b.NotifySlack,
-	})
+		ExpectedIntervalSeconds: b.ExpectedIntervalSeconds, GraceSeconds: b.GraceSeconds,
+	}
+	if b.Type != nil {
+		in.Type = string(*b.Type)
+	}
+	m, err := s.monitors.Create(ctx, a, in)
 	if err != nil {
 		return nil, err
 	}
 	d, err := s.detail(ctx, a.TenantID, m.ID)
 	if err != nil {
 		return nil, err
+	}
+	if m.HeartbeatToken != "" {
+		u := s.heartbeatURL(m.HeartbeatToken)
+		d.HeartbeatUrl = &u
 	}
 	return gen.CreateMonitor201JSONResponse(d), nil
 }
@@ -90,6 +100,7 @@ func (s *server) UpdateMonitor(ctx context.Context, req gen.UpdateMonitorRequest
 	if _, err := s.monitors.Update(ctx, a, req.MonitorId, monitors.UpdateInput{
 		Name: b.Name, URL: b.Url, IntervalSeconds: b.IntervalSeconds, TimeoutSeconds: b.TimeoutSeconds,
 		ExpectedStatus: b.ExpectedStatus, FailureThreshold: b.FailureThreshold, NotifySlack: b.NotifySlack,
+		ExpectedIntervalSeconds: b.ExpectedIntervalSeconds, GraceSeconds: b.GraceSeconds,
 	}); err != nil {
 		return nil, err
 	}
@@ -208,14 +219,24 @@ func (s *server) detail(ctx context.Context, tenantID, id uuid.UUID) (gen.Monito
 	}
 	m := d.Monitor
 	return gen.MonitorDetail{
-		Id: m.ID, Name: m.Name, Url: m.URL, ExpectedStatus: m.ExpectedStatus,
+		Id: m.ID, Type: gen.MonitorType(m.Type), Name: m.Name, Url: m.URL, ExpectedStatus: m.ExpectedStatus,
 		IntervalSeconds: m.IntervalSeconds, TimeoutSeconds: m.TimeoutSeconds,
 		FailureThreshold: m.FailureThreshold, NotifySlack: m.NotifySlack, Paused: m.Paused,
 		Status: gen.MonitorStatus(m.Status), StatusSince: m.StatusSince, LastErrorKind: m.LastErrorKind,
 		LastCheckedAt: m.LastCheckedAt, TlsExpiresAt: m.TLSExpiresAt, OngoingIncident: toOngoing(m.Ongoing),
+		LastPingAt: m.LastPingAt, ExpectedIntervalSeconds: expectedInterval(m), GraceSeconds: m.GraceSeconds,
 		Uptime:    gen.Uptime{H24: m.Uptime24h, D7: d.Uptime7d, D30: d.Uptime30d},
 		CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
 	}, nil
+}
+
+// expectedInterval is a heartbeat's expected ping interval (its interval_seconds), nil for http.
+func expectedInterval(m queries.Monitor) *int {
+	if m.Type != monitors.TypeHeartbeat {
+		return nil
+	}
+	v := m.IntervalSeconds
+	return &v
 }
 
 func toOngoing(in *queries.Incident) *gen.OngoingIncident {

@@ -15,10 +15,14 @@ import (
 // publicOperations need no session (compared case-insensitively: the embedded spec has the
 // operation ids as Go names). Everything else in the contract must answer 401 without one.
 // register and getPublicConfig were added deliberately with self-service registration (P-02).
-var publicOperations = []string{"getHealth", "getPublicConfig", "login", "register"}
+// The heartbeat ping (P-03, ADR-0094) is public on purpose: Alertmanager and cron jobs call it
+// without a session, the secret token in its URL is the credential.
+var publicOperations = []string{"getHealth", "getPublicConfig", "login", "register", "pingHeartbeat", "pingHeartbeatPost"}
 
-// csrfExempt are the unsafe operations without a session, hence without a CSRF token.
-var csrfExempt = []string{"login", "register"}
+// csrfExempt are the unsafe operations without a session, hence without a CSRF token. The POST
+// form of the heartbeat ping is one: it has no session to carry a CSRF token, and it changes only
+// the ping time of the heartbeat whose secret token is in the URL.
+var csrfExempt = []string{"login", "register", "pingHeartbeatPost"}
 
 func isCSRFExempt(operationID string) bool {
 	return slices.ContainsFunc(csrfExempt, func(id string) bool { return strings.EqualFold(id, operationID) })
@@ -49,6 +53,7 @@ func specOperations(t *testing.T) (*openapi3.T, []specOperation) {
 
 // concretePath fills path parameters with a syntactically valid value.
 func concretePath(p string) string {
+	p = strings.ReplaceAll(p, "{token}", "not-a-token")
 	return strings.ReplaceAll(p, "{monitorId}", "0192b9c4-7c5e-7000-8000-000000000001")
 }
 

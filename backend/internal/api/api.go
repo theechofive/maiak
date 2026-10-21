@@ -17,6 +17,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/go-chi/chi/v5"
 	middleware "github.com/oapi-codegen/nethttp-middleware"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/theechofive/maiak/backend/internal/api/gen"
 	"github.com/theechofive/maiak/backend/internal/auth"
@@ -51,6 +52,8 @@ type Config struct {
 	TrustedProxyHops int
 	// RegistrationEnabled is the kill switch of POST /auth/register (MAIAK_REGISTRATION_ENABLED).
 	RegistrationEnabled bool
+	// PublicURL is MAIAK_PUBLIC_URL (no trailing slash), the base of heartbeat ping URLs.
+	PublicURL string
 }
 
 // Deps are the collaborators of the HTTP layer.
@@ -62,6 +65,8 @@ type Deps struct {
 	Plans    *plans.Service
 	Logger   *slog.Logger
 	Metrics  *metrics.HTTP
+	// Pings counts heartbeat pings; nil keeps the counts unregistered.
+	Pings *PingMetrics
 	// Clock drives the in-process rate limits; nil means the system clock.
 	Clock clock.Clock
 }
@@ -76,6 +81,8 @@ type server struct {
 	log      *slog.Logger
 	// slackTests limits Slack test messages per tenant (per api replica, like the login limit).
 	slackTests *auth.Limiter
+	pingLimits pingLimits
+	pings      *PingMetrics
 	// lastXFFWarn is the UnixNano time of the last missing X-Forwarded-For warning.
 	lastXFFWarn atomic.Int64
 }
@@ -92,8 +99,14 @@ func NewHandler(cfg Config, deps Deps) (http.Handler, error) {
 	if clk == nil {
 		clk = clock.System{}
 	}
+	pings := deps.Pings
+	if pings == nil {
+		pings = NewPingMetrics(prometheus.NewRegistry())
+	}
 	s := &server{cfg: cfg, auth: deps.Auth, monitors: deps.Monitors, queries: deps.Queries, slack: deps.Slack, plans: deps.Plans, log: deps.Logger,
-		slackTests: auth.NewLimiter(1, slackTestInterval, 10_000, clk)}
+		slackTests: auth.NewLimiter(1, slackTestInterval, 10_000, clk),
+		pingLimits: newPingLimits(clk),
+		pings:      pings}
 
 	r := chi.NewRouter()
 	r.Use(httpx.RequestID, httpx.AccessLog(deps.Logger), httpx.Recover(deps.Logger))

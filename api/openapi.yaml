@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Maiak API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     REST API of Maiak, the multi-tenant uptime-monitoring service. This file is the source of
     truth: the Go server and the TypeScript client are generated from it (ADR-0008).
@@ -10,7 +10,7 @@ info:
     methods (POST, PUT, PATCH, DELETE) on authenticated endpoints also need the header
     `X-CSRF-Token` with the `csrf_token` returned by login, registration and
     `GET /api/v1/auth/me`; a missing or wrong token is answered with 403. Only health, the public
-    config, login and registration work without a session.
+    config, login, registration and the heartbeat ping work without a session.
 
     Errors are `application/problem+json` (RFC 9457). A request that does not match this
     contract (malformed JSON, wrong types, unknown or missing fields) gets 400; a well-formed
@@ -31,7 +31,9 @@ tags:
   - name: auth
     description: Login, logout and the current session
   - name: monitors
-    description: HTTPS monitors, their status, statistics, checks and incidents
+    description: HTTPS and heartbeat (watchdog) monitors, their status, statistics, checks and incidents
+  - name: heartbeat
+    description: The public ping endpoint of heartbeat monitors
   - name: settings
     description: Tenant settings such as the Slack webhook
   - name: plan
@@ -234,11 +236,21 @@ paths:
       operationId: createMonitor
       summary: Create a monitor
       description: |
-        Creates an HTTPS monitor. It starts with status `unknown` and is first checked within
-        about 30 seconds. Fails with 409 `urn:maiak:problem:plan-limit-reached` (`limit` is
-        `monitors`) when the tenant already has as many monitors as its plan allows (deleted
-        monitors do not count, see `GET /api/v1/usage`), and with 503 when the probe location
-        that runs new monitors is unavailable.
+        Creates an HTTPS monitor (`type` `http`, the default) or a heartbeat monitor (`type`
+        `heartbeat`). An HTTPS monitor needs `url`; it starts with status `unknown` and is first
+        checked within about 30 seconds. A heartbeat takes `expectedIntervalSeconds` and
+        `graceSeconds` instead and must not send `url` or `expectedStatus` (422);
+        `intervalSeconds`, `timeoutSeconds` and `failureThreshold` are ignored (one missed deadline
+        is down). The
+        response of a heartbeat carries `heartbeatUrl`, the secret ping URL, which is shown only
+        here and by `POST /api/v1/monitors/{monitorId}/heartbeat-token`. A heartbeat stays
+        `unknown` until its first ping (then `up`) or until its first deadline passes (then
+        `down`).
+
+        Fails with 409 `urn:maiak:problem:plan-limit-reached` (`limit` is `monitors` or
+        `heartbeats`) when the tenant already has as many monitors of that type as its plan allows
+        (deleted monitors do not count, see `GET /api/v1/usage`), and with 503 when the probe
+        location that runs new monitors is unavailable.
       tags: [monitors]
       security:
         - cookieAuth: []
@@ -300,7 +312,10 @@ paths:
       summary: Edit a monitor
       description: |
         Changes the given fields. `intervalSeconds` and `timeoutSeconds` cannot be changed in the
-        MVP: sending them with a different value fails with 422.
+        MVP: sending them with a different value fails with 422. A heartbeat may change `name`,
+        `expectedIntervalSeconds`, `graceSeconds` and `notifySlack` (its deadline follows the new
+        values); `failureThreshold` is ignored and the http fields fail with 422, as do the
+        heartbeat fields on an http monitor.
       tags: [monitors]
       security:
         - cookieAuth: []
@@ -416,6 +431,87 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/monitors/{monitorId}/heartbeat-token:
+    parameters:
+      - $ref: "#/components/parameters/MonitorId"
+    post:
+      operationId: regenerateHeartbeatToken
+      summary: Give a heartbeat a new ping URL
+      description: |
+        Replaces the token of a heartbeat monitor. The old URL stops working immediately (it is
+        answered like any unknown token) and the new one is returned once: only a hash is stored,
+        so the server cannot show it again. Fails with 409 `urn:maiak:problem:not-a-heartbeat`
+        for an HTTPS monitor.
+      tags: [monitors]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "200":
+          description: The new ping URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeartbeatToken"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/heartbeat/{token}:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        description: The secret token of the heartbeat's URL. Any value is accepted here; an unknown one gets 404.
+        schema:
+          type: string
+    get:
+      operationId: pingHeartbeat
+      summary: Ping a heartbeat monitor
+      description: |
+        Public on purpose (ADR-0094): Alertmanager's webhook receiver and cron jobs call it without
+        a session and without a CSRF token; the token in the URL is the credential. Records a ping
+        and answers 204. A paused or deleted heartbeat also gets 204 but nothing is recorded. Any
+        unknown token gets the same 404 problem. At most one ping per second per token is
+        accepted, and unknown tokens are rate limited per client IP; excess requests get 429.
+      tags: [heartbeat]
+      security: []
+      responses:
+        "204":
+          description: The ping was accepted
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: pingHeartbeatPost
+      summary: Ping a heartbeat monitor (POST)
+      description: |
+        The same as the GET, for senders that can only POST (Alertmanager's webhook receiver). The
+        body is ignored (at most 64 KiB is read).
+      tags: [heartbeat]
+      security: []
+      responses:
+        "204":
+          description: The ping was accepted
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         default:
           $ref: "#/components/responses/Error"
   /api/v1/monitors/{monitorId}/stats:
@@ -818,8 +914,21 @@ components:
       enum: [owner, admin, member, viewer]
     MonitorStatus:
       type: string
-      description: Aggregated status. `unknown` until the first check after creation, resume or a URL change, and while the monitor is paused (`paused` is then true).
+      description: Aggregated status. `unknown` until the first check after creation, resume or a URL change (for a heartbeat, until the first ping or the first missed deadline), and while the monitor is paused (`paused` is then true).
       enum: [unknown, up, down]
+    MonitorType:
+      type: string
+      description: "`http`: an HTTPS check every minute. `heartbeat`: a watchdog that expects pings on its secret URL."
+      enum: [http, heartbeat]
+    HeartbeatToken:
+      type: object
+      additionalProperties: false
+      required: [heartbeatUrl]
+      properties:
+        heartbeatUrl:
+          type: string
+          description: The secret ping URL; shown once, store it like a password
+          example: https://maiak.klr-ops.net/api/v1/heartbeat/3q2-7wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
     ExpectedStatus:
       type: string
       description: |
@@ -831,8 +940,10 @@ components:
     MonitorCreate:
       type: object
       additionalProperties: false
-      required: [name, url]
+      required: [name]
       properties:
+        type:
+          $ref: "#/components/schemas/MonitorType"
         name:
           type: string
           minLength: 1
@@ -840,10 +951,20 @@ components:
           example: Website
         url:
           type: string
-          description: HTTPS URL on port 443, without credentials; hosts that are private IP literals or internal names are rejected
+          description: Required for `http`. HTTPS URL on port 443, without credentials; hosts that are private IP literals or internal names are rejected
           minLength: 1
           maxLength: 2048
           example: https://example.com/health
+        expectedIntervalSeconds:
+          type: integer
+          description: Heartbeat only. How often a ping is expected; 300 when omitted (no schema default, so http requests stay free of it)
+          minimum: 60
+          maximum: 86400
+        graceSeconds:
+          type: integer
+          description: Heartbeat only. Extra time after the expected interval before the heartbeat is down; 60 when omitted
+          minimum: 0
+          maximum: 3600
         intervalSeconds:
           type: integer
           description: Check interval; only 60 is accepted in the MVP
@@ -888,6 +1009,14 @@ components:
           maximum: 3
         notifySlack:
           type: boolean
+        expectedIntervalSeconds:
+          type: integer
+          minimum: 60
+          maximum: 86400
+        graceSeconds:
+          type: integer
+          minimum: 0
+          maximum: 3600
     Incident:
       type: object
       additionalProperties: false
@@ -905,7 +1034,7 @@ components:
           nullable: true
         reason:
           type: string
-          description: Why the monitor went down (the error kind of the failing checks, for example `timeout` or `http_status`)
+          description: Why the monitor went down (the error kind of the failing checks, for example `timeout`, `unexpected_status` or `heartbeat_missed`)
     OngoingIncident:
       type: object
       nullable: true
@@ -926,6 +1055,7 @@ components:
       additionalProperties: false
       required:
         - id
+        - type
         - name
         - url
         - intervalSeconds
@@ -940,16 +1070,22 @@ components:
         - lastCheckedAt
         - tlsExpiresAt
         - ongoingIncident
+        - lastPingAt
+        - expectedIntervalSeconds
+        - graceSeconds
         - uptime24h
         - lastResponseMs
       properties:
         id:
           type: string
           format: uuid
+        type:
+          $ref: "#/components/schemas/MonitorType"
         name:
           type: string
         url:
           type: string
+          description: The checked URL; empty for a heartbeat
         intervalSeconds:
           type: integer
         timeoutSeconds:
@@ -983,6 +1119,19 @@ components:
           description: Expiry of the certificate seen by the last successful check
         ongoingIncident:
           $ref: "#/components/schemas/OngoingIncident"
+        lastPingAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Heartbeat only. Time of the newest accepted ping; null before the first and for http monitors
+        expectedIntervalSeconds:
+          type: integer
+          nullable: true
+          description: Heartbeat only (null for http monitors)
+        graceSeconds:
+          type: integer
+          nullable: true
+          description: Heartbeat only (null for http monitors)
         uptime24h:
           type: number
           format: double
@@ -1042,6 +1191,7 @@ components:
       additionalProperties: false
       required:
         - id
+        - type
         - name
         - url
         - intervalSeconds
@@ -1056,6 +1206,9 @@ components:
         - lastCheckedAt
         - tlsExpiresAt
         - ongoingIncident
+        - lastPingAt
+        - expectedIntervalSeconds
+        - graceSeconds
         - uptime
         - createdAt
         - updatedAt
@@ -1063,10 +1216,13 @@ components:
         id:
           type: string
           format: uuid
+        type:
+          $ref: "#/components/schemas/MonitorType"
         name:
           type: string
         url:
           type: string
+          description: The checked URL; empty for a heartbeat
         intervalSeconds:
           type: integer
         timeoutSeconds:
@@ -1097,6 +1253,19 @@ components:
           nullable: true
         ongoingIncident:
           $ref: "#/components/schemas/OngoingIncident"
+        lastPingAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Heartbeat only. Time of the newest accepted ping; null before the first and for http monitors
+        expectedIntervalSeconds:
+          type: integer
+          nullable: true
+          description: Heartbeat only (null for http monitors)
+        graceSeconds:
+          type: integer
+          nullable: true
+          description: Heartbeat only (null for http monitors)
         uptime:
           $ref: "#/components/schemas/Uptime"
         createdAt:
@@ -1105,6 +1274,9 @@ components:
         updatedAt:
           type: string
           format: date-time
+        heartbeatUrl:
+          type: string
+          description: Only in the response that creates a heartbeat. The secret ping URL; it is not stored and cannot be shown again
     StatsRange:
       type: string
       enum: [24h, 7d, 30d]
@@ -1244,10 +1416,11 @@ components:
         monitors:
           type: integer
           minimum: 0
+          description: HTTPS monitors
         heartbeats:
           type: integer
           minimum: 0
-          description: Heartbeat (watchdog) monitors; usage is always 0 until that monitor type exists
+          description: Heartbeat (watchdog) monitors
         channels:
           type: integer
           minimum: 0

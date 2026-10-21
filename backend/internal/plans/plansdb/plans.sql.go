@@ -25,14 +25,27 @@ func (q *Queries) CountChannels(ctx context.Context, tenantID uuid.UUID) (int64,
 	return count, err
 }
 
+const countLiveHeartbeats = `-- name: CountLiveHeartbeats :one
+SELECT count(*)
+FROM monitors
+WHERE tenant_id = $1 AND deleted_at IS NULL AND type = 'heartbeat'
+`
+
+func (q *Queries) CountLiveHeartbeats(ctx context.Context, tenantID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countLiveHeartbeats, tenantID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countLiveMonitors = `-- name: CountLiveMonitors :one
 SELECT count(*)
 FROM monitors
-WHERE tenant_id = $1 AND deleted_at IS NULL
+WHERE tenant_id = $1 AND deleted_at IS NULL AND type = 'http'
 `
 
 // Read-only count for the quota (monitors are owned by internal/monitors). Soft-deleted
-// monitors free their slot; paused ones still count.
+// monitors free their slot; paused ones still count. Heartbeats have their own quota.
 func (q *Queries) CountLiveMonitors(ctx context.Context, tenantID uuid.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countLiveMonitors, tenantID)
 	var count int64

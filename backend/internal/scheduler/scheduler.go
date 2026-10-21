@@ -64,6 +64,19 @@ func (s *Service) InitMonitorLocation(ctx context.Context, tx pgx.Tx, tenantID, 
 	return nil
 }
 
+// InitParkedMonitorLocation creates the schedule row of a heartbeat's (monitor, location): it is
+// never due (next_run_at is infinity) and only carries the incident machine's per-location state
+// (ADR-0094). tx must be the tenant transaction that created the monitor.
+func (s *Service) InitParkedMonitorLocation(ctx context.Context, tx pgx.Tx, tenantID, monitorID, locationID uuid.UUID) error {
+	err := schedulerdb.New(tx).InsertParkedLocationState(ctx, schedulerdb.InsertParkedLocationStateParams{
+		TenantID: tenantID, MonitorID: monitorID, LocationID: locationID,
+	})
+	if err != nil {
+		return fmt.Errorf("scheduler: init parked monitor location: %w", err)
+	}
+	return nil
+}
+
 // Restart resets every location of a monitor on pause, resume and URL change: counters to
 // zero, status unknown, any lease dropped (a check in flight is then discarded at its lease
 // check) and the next run after a random jitter of up to MaxStartJitter. It goes through the

@@ -303,7 +303,8 @@ func TestIntegrationUnsafeOperationsNeedCSRF(t *testing.T) {
 	checked := 0
 	for _, path := range spec.Paths.InMatchingOrder() {
 		for method, op := range spec.Paths.Value(path).Operations() {
-			// login and register run without a session, so they have no CSRF token (contract_test.go).
+			// login, register and the heartbeat ping run without a session, so they have no CSRF
+			// token (contract_test.go).
 			if method == http.MethodGet || isCSRFExemptOperation(op.OperationID) {
 				continue
 			}
@@ -331,5 +332,5 @@ func TestIntegrationUnsafeOperationsNeedCSRF(t *testing.T) {
 }
 
 func isCSRFExemptOperation(id string) bool {
-	return strings.EqualFold(id, "login") || strings.EqualFold(id, "register")
+	return strings.EqualFold(id, "login") || strings.EqualFold(id, "register") || strings.EqualFold(id, "pingHeartbeatPost")
 }

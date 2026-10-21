@@ -1,5 +1,6 @@
 // Command jobs delivers the notification outbox to Slack and runs the singleton housekeeping
-// tasks: partitions, hourly rollups, retention and expired-session purge (internal/jobs).
+// tasks: partitions, hourly rollups, retention, expired-session purge and the heartbeat
+// evaluation (internal/jobs).
 package main
 
 import (
@@ -11,7 +12,9 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/theechofive/maiak/backend/internal/incidents"
 	"github.com/theechofive/maiak/backend/internal/jobs"
+	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/notify"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/config"
@@ -20,6 +23,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
 	"github.com/theechofive/maiak/backend/internal/platform/metrics"
+	"github.com/theechofive/maiak/backend/internal/scheduler"
 )
 
 var (
@@ -62,7 +66,9 @@ func run() error {
 		Metrics:  m,
 		Log:      log,
 	})
-	housekeeper := jobs.NewHousekeeper(pool, jobs.DefaultTasks(m, log), m, log, clock.System{})
+	sched := scheduler.New()
+	mon := monitors.NewService(pool, sched, incidents.NewService(sched))
+	housekeeper := jobs.NewHousekeeper(pool, jobs.DefaultTasks(m, log, mon), m, log, clock.System{})
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {

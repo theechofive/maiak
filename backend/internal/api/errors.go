@@ -37,6 +37,7 @@ const (
 	problemValidation         = "urn:maiak:problem:validation"
 	problemNotImplemented     = "urn:maiak:problem:not-implemented"
 	problemPlanLimitReached   = "urn:maiak:problem:plan-limit-reached"
+	problemNotHeartbeat       = "urn:maiak:problem:not-a-heartbeat"
 	problemEmailTaken         = "urn:maiak:problem:email-taken"
 	problemRegistrationOff    = "urn:maiak:problem:registration-disabled"
 	problemSlackNotConfigured = "urn:maiak:problem:slack-not-configured"
@@ -62,6 +63,10 @@ var (
 // logged and returned as a generic 500 without detail.
 func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err error) {
 	p := httpx.Problem{RequestID: logging.RequestID(r.Context()), Instance: r.URL.Path}
+	if strings.HasPrefix(r.URL.Path, monitors.HeartbeatPath) {
+		// The path of a ping carries its secret token; it is never echoed.
+		p.Instance = monitors.HeartbeatPath + "{token}"
+	}
 
 	var badReq *badRequestError
 	var reqErr *openapi3filter.RequestError
@@ -100,6 +105,8 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 		p.Type, p.Title, p.Status = problemPlanLimitReached, "Plan limit reached", http.StatusConflict
 		p.Detail = fmt.Sprintf("The %s plan allows at most %d %s.", limitErr.PlanName, limitErr.Max, limitErr.Resource)
 		p.Limit, p.Max = string(limitErr.Resource), &limitErr.Max
+	case errors.Is(err, monitors.ErrNotHeartbeat):
+		p.Type, p.Title, p.Status = problemNotHeartbeat, "Not a heartbeat monitor", http.StatusConflict
 	case errors.Is(err, notify.ErrNotConfigured):
 		p.Type, p.Title, p.Status = problemSlackNotConfigured, "Slack is not configured", http.StatusConflict
 	case errors.As(err, &sendErr) && sendErr.Kind == notify.KindRateLimited:

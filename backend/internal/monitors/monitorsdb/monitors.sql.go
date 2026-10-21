@@ -13,7 +13,7 @@ import (
 )
 
 const getMonitor = `-- name: GetMonitor :one
-SELECT m.id, m.name, m.config, m.interval_seconds, m.timeout_seconds, m.failure_threshold,
+SELECT m.id, m.name, m.type, m.config, m.interval_seconds, m.timeout_seconds, m.failure_threshold,
        m.notify_slack, m.paused, m.created_at, m.updated_at,
        s.status, s.status_changed_at, s.last_error_kind, s.last_checked_at, s.tls_expires_at,
        s.current_incident_id
@@ -30,6 +30,7 @@ type GetMonitorParams struct {
 type GetMonitorRow struct {
 	ID                uuid.UUID
 	Name              string
+	Type              string
 	Config            []byte
 	IntervalSeconds   int32
 	TimeoutSeconds    int32
@@ -52,6 +53,7 @@ func (q *Queries) GetMonitor(ctx context.Context, arg GetMonitorParams) (GetMoni
 	err := row.Scan(
 		&i.ID,
 		&i.Name,
+		&i.Type,
 		&i.Config,
 		&i.IntervalSeconds,
 		&i.TimeoutSeconds,
@@ -68,6 +70,22 @@ func (q *Queries) GetMonitor(ctx context.Context, arg GetMonitorParams) (GetMoni
 		&i.CurrentIncidentID,
 	)
 	return i, err
+}
+
+const insertHeartbeatToken = `-- name: InsertHeartbeatToken :exec
+INSERT INTO heartbeat_tokens (tenant_id, monitor_id, token_hash)
+VALUES ($1, $2, $3)
+`
+
+type InsertHeartbeatTokenParams struct {
+	TenantID  uuid.UUID
+	MonitorID uuid.UUID
+	TokenHash []byte
+}
+
+func (q *Queries) InsertHeartbeatToken(ctx context.Context, arg InsertHeartbeatTokenParams) error {
+	_, err := q.db.Exec(ctx, insertHeartbeatToken, arg.TenantID, arg.MonitorID, arg.TokenHash)
+	return err
 }
 
 const insertMonitor = `-- name: InsertMonitor :exec
@@ -133,8 +151,41 @@ func (q *Queries) InsertMonitorState(ctx context.Context, arg InsertMonitorState
 	return err
 }
 
+const lockHeartbeat = `-- name: LockHeartbeat :one
+SELECT waiting_since, last_ping_at, applied_ping_at, missed_deadline
+FROM heartbeat_tokens
+WHERE tenant_id = $1 AND monitor_id = $2
+FOR UPDATE
+`
+
+type LockHeartbeatParams struct {
+	TenantID  uuid.UUID
+	MonitorID uuid.UUID
+}
+
+type LockHeartbeatRow struct {
+	WaitingSince   time.Time
+	LastPingAt     *time.Time
+	AppliedPingAt  *time.Time
+	MissedDeadline *time.Time
+}
+
+// Every change of a heartbeat's state (pause, resume, delete, evaluation in jobs) takes this row
+// lock first, so they are serialised (ADR-0094).
+func (q *Queries) LockHeartbeat(ctx context.Context, arg LockHeartbeatParams) (LockHeartbeatRow, error) {
+	row := q.db.QueryRow(ctx, lockHeartbeat, arg.TenantID, arg.MonitorID)
+	var i LockHeartbeatRow
+	err := row.Scan(
+		&i.WaitingSince,
+		&i.LastPingAt,
+		&i.AppliedPingAt,
+		&i.MissedDeadline,
+	)
+	return i, err
+}
+
 const lockMonitor = `-- name: LockMonitor :one
-SELECT id, name, config, interval_seconds, timeout_seconds, failure_threshold, notify_slack, paused
+SELECT id, name, type, config, interval_seconds, timeout_seconds, failure_threshold, notify_slack, paused
 FROM monitors
 WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
 FOR UPDATE
@@ -148,6 +199,7 @@ type LockMonitorParams struct {
 type LockMonitorRow struct {
 	ID               uuid.UUID
 	Name             string
+	Type             string
 	Config           []byte
 	IntervalSeconds  int32
 	TimeoutSeconds   int32
@@ -162,6 +214,7 @@ func (q *Queries) LockMonitor(ctx context.Context, arg LockMonitorParams) (LockM
 	err := row.Scan(
 		&i.ID,
 		&i.Name,
+		&i.Type,
 		&i.Config,
 		&i.IntervalSeconds,
 		&i.TimeoutSeconds,
@@ -170,6 +223,50 @@ func (q *Queries) LockMonitor(ctx context.Context, arg LockMonitorParams) (LockM
 		&i.Paused,
 	)
 	return i, err
+}
+
+const markHeartbeatApplied = `-- name: MarkHeartbeatApplied :exec
+UPDATE heartbeat_tokens
+SET applied_ping_at = $1, missed_deadline = $2
+WHERE tenant_id = $3 AND monitor_id = $4
+`
+
+type MarkHeartbeatAppliedParams struct {
+	AppliedPingAt  *time.Time
+	MissedDeadline *time.Time
+	TenantID       uuid.UUID
+	MonitorID      uuid.UUID
+}
+
+func (q *Queries) MarkHeartbeatApplied(ctx context.Context, arg MarkHeartbeatAppliedParams) error {
+	_, err := q.db.Exec(ctx, markHeartbeatApplied,
+		arg.AppliedPingAt,
+		arg.MissedDeadline,
+		arg.TenantID,
+		arg.MonitorID,
+	)
+	return err
+}
+
+const replaceHeartbeatToken = `-- name: ReplaceHeartbeatToken :execrows
+UPDATE heartbeat_tokens
+SET token_hash = $1, created_at = now()
+WHERE tenant_id = $2 AND monitor_id = $3
+`
+
+type ReplaceHeartbeatTokenParams struct {
+	TokenHash []byte
+	TenantID  uuid.UUID
+	MonitorID uuid.UUID
+}
+
+// Regenerate: the old hash is gone, so the old URL answers like any unknown token at once.
+func (q *Queries) ReplaceHeartbeatToken(ctx context.Context, arg ReplaceHeartbeatTokenParams) (int64, error) {
+	result, err := q.db.Exec(ctx, replaceHeartbeatToken, arg.TokenHash, arg.TenantID, arg.MonitorID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const resetMonitorState = `-- name: ResetMonitorState :exec
@@ -191,6 +288,23 @@ type ResetMonitorStateParams struct {
 // about again. maiak_api has column grants for exactly these columns (ADR-0018).
 func (q *Queries) ResetMonitorState(ctx context.Context, arg ResetMonitorStateParams) error {
 	_, err := q.db.Exec(ctx, resetMonitorState, arg.ClearTls, arg.TenantID, arg.MonitorID)
+	return err
+}
+
+const restartHeartbeatWait = `-- name: RestartHeartbeatWait :exec
+UPDATE heartbeat_tokens
+SET waiting_since = now(), applied_ping_at = last_ping_at
+WHERE tenant_id = $1 AND monitor_id = $2
+`
+
+type RestartHeartbeatWaitParams struct {
+	TenantID  uuid.UUID
+	MonitorID uuid.UUID
+}
+
+// Resume: the deadline counts from now, and pings from before the pause are not applied later.
+func (q *Queries) RestartHeartbeatWait(ctx context.Context, arg RestartHeartbeatWaitParams) error {
+	_, err := q.db.Exec(ctx, restartHeartbeatWait, arg.TenantID, arg.MonitorID)
 	return err
 }
 
@@ -229,14 +343,15 @@ func (q *Queries) SoftDeleteMonitor(ctx context.Context, arg SoftDeleteMonitorPa
 
 const updateMonitor = `-- name: UpdateMonitor :exec
 UPDATE monitors
-SET name = $1, config = $2, failure_threshold = $3,
-    notify_slack = $4, updated_at = now()
-WHERE tenant_id = $5 AND id = $6
+SET name = $1, config = $2, interval_seconds = $3, failure_threshold = $4,
+    notify_slack = $5, updated_at = now()
+WHERE tenant_id = $6 AND id = $7
 `
 
 type UpdateMonitorParams struct {
 	Name             string
 	Config           []byte
+	IntervalSeconds  int32
 	FailureThreshold int32
 	NotifySlack      bool
 	TenantID         uuid.UUID
@@ -247,6 +362,7 @@ func (q *Queries) UpdateMonitor(ctx context.Context, arg UpdateMonitorParams) er
 	_, err := q.db.Exec(ctx, updateMonitor,
 		arg.Name,
 		arg.Config,
+		arg.IntervalSeconds,
 		arg.FailureThreshold,
 		arg.NotifySlack,
 		arg.TenantID,

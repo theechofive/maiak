@@ -62,7 +62,9 @@ type Incident struct {
 
 // Monitor is a monitor with its current state, as the list shows it.
 type Monitor struct {
-	ID               uuid.UUID
+	ID uuid.UUID
+	// Type is "http" or "heartbeat".
+	Type             string
 	Name             string
 	URL              string
 	ExpectedStatus   string
@@ -77,6 +79,10 @@ type Monitor struct {
 	LastErrorKind *string
 	LastCheckedAt *time.Time
 	TLSExpiresAt  *time.Time
+	// LastPingAt is a heartbeat's newest accepted ping; GraceSeconds its grace. Both are nil for
+	// http monitors (and LastPingAt before the first ping).
+	LastPingAt   *time.Time
+	GraceSeconds *int
 	// Ongoing is the open incident, nil when there is none.
 	Ongoing *Incident
 	// Uptime24h is the percentage of successful checks in the last 24 h; nil when none ran.
@@ -100,14 +106,16 @@ type Summary struct {
 }
 
 const monitorColumns = `
-SELECT m.id, m.name, COALESCE(m.config ->> 'url', ''), COALESCE(m.config ->> 'expectedStatus', '2xx'),
+SELECT m.id, m.type, m.name, COALESCE(m.config ->> 'url', ''), COALESCE(m.config ->> 'expectedStatus', '2xx'),
        m.interval_seconds, m.timeout_seconds, m.failure_threshold, m.notify_slack, m.paused,
        m.created_at, m.updated_at,
        s.status, s.status_changed_at, s.last_error_kind, s.last_checked_at, s.tls_expires_at,
        i.id, i.started_at, COALESCE(i.reason, '` + unknownReason + `'),
-       lr.latency_ms
+       lr.latency_ms, h.last_ping_at,
+       CASE WHEN m.type = 'heartbeat' THEN (m.config ->> 'graceSeconds')::integer END
 FROM monitors AS m
 JOIN monitor_state AS s ON s.tenant_id = m.tenant_id AND s.monitor_id = m.id
+LEFT JOIN heartbeat_tokens AS h ON h.tenant_id = m.tenant_id AND h.monitor_id = m.id
 LEFT JOIN incidents AS i ON i.tenant_id = s.tenant_id AND i.id = s.current_incident_id AND i.resolved_at IS NULL
 -- The newest result through the primary key (monitor_id, checked_at); the lower bound lets the
 -- planner prune old monthly partitions.
@@ -127,10 +135,10 @@ func scanMonitor(row pgx.Row) (Monitor, error) {
 	var incID *uuid.UUID
 	var incStarted *time.Time
 	var incReason string
-	var latency *int32
-	err := row.Scan(&m.ID, &m.Name, &m.URL, &m.ExpectedStatus, &interval, &timeout, &threshold, &m.NotifySlack, &m.Paused,
+	var latency, grace *int32
+	err := row.Scan(&m.ID, &m.Type, &m.Name, &m.URL, &m.ExpectedStatus, &interval, &timeout, &threshold, &m.NotifySlack, &m.Paused,
 		&m.CreatedAt, &m.UpdatedAt, &m.Status, &m.StatusSince, &m.LastErrorKind, &m.LastCheckedAt, &m.TLSExpiresAt,
-		&incID, &incStarted, &incReason, &latency)
+		&incID, &incStarted, &incReason, &latency, &m.LastPingAt, &grace)
 	if err != nil {
 		return Monitor{}, err
 	}
@@ -144,6 +152,10 @@ func scanMonitor(row pgx.Row) (Monitor, error) {
 	if latency != nil {
 		v := int(*latency)
 		m.LastResponseMs = &v
+	}
+	if grace != nil {
+		v := int(*grace)
+		m.GraceSeconds = &v
 	}
 	return m, nil
 }
