@@ -53,7 +53,8 @@ func specOperations(t *testing.T) (*openapi3.T, []specOperation) {
 
 // concretePath fills path parameters with a syntactically valid value.
 func concretePath(p string) string {
-	p = strings.ReplaceAll(p, "{token}", "not-a-token")
+	// A well-formed heartbeat token: a malformed one is answered 404 before any other work.
+	p = strings.ReplaceAll(p, "{token}", strings.Repeat("A", 43))
 	return strings.ReplaceAll(p, "{monitorId}", "0192b9c4-7c5e-7000-8000-000000000001")
 }
 

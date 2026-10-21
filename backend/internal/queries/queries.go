@@ -112,7 +112,7 @@ SELECT m.id, m.type, m.name, COALESCE(m.config ->> 'url', ''), COALESCE(m.config
        s.status, s.status_changed_at, s.last_error_kind, s.last_checked_at, s.tls_expires_at,
        i.id, i.started_at, COALESCE(i.reason, '` + unknownReason + `'),
        lr.latency_ms, h.last_ping_at,
-       CASE WHEN m.type = 'heartbeat' THEN (m.config ->> 'graceSeconds')::integer END
+       CASE WHEN m.type = 'heartbeat' THEN (m.config ->> 'graceSeconds')::numeric::integer END
 FROM monitors AS m
 JOIN monitor_state AS s ON s.tenant_id = m.tenant_id AND s.monitor_id = m.id
 LEFT JOIN heartbeat_tokens AS h ON h.tenant_id = m.tenant_id AND h.monitor_id = m.id

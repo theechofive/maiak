@@ -1,9 +1,13 @@
 package api
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -15,18 +19,30 @@ import (
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
 )
 
-// The public ping endpoint is the only request path without a session (ADR-0092, ADR-0094). It
-// hashes whatever token it gets and looks the hash up, so unknown tokens cost the same and get
-// the same 404; the token and its hash are never logged or echoed.
+// The public ping endpoint is the only request path without a session (ADR-0092, ADR-0094,
+// ADR-0096). Every token that is not known gets the same 404, malformed or not; the token and its
+// hash are never logged or echoed.
 const (
-	// pingInterval: at most one accepted ping per token per second.
+	// pingInterval: at most one ping per token per second reaches the database.
 	pingInterval = time.Second
-	// unknownPingLimit pings with unknown tokens per unknownPingWindow per client IP; a
-	// misconfigured sender that keeps an old URL (one ping a minute) stays far below it.
+	// unknownPingLimit unknown (or malformed) tokens per unknownPingWindow per client IP get 404,
+	// the rest 429; a misconfigured sender that keeps an old URL (one ping a minute) stays far
+	// below it. Known tokens never count against it and are never refused by it.
 	unknownPingLimit  = 30
 	unknownPingWindow = 5 * time.Minute
 	// pingBodyBytes is how much of an ignored body is read, so the connection can be reused.
 	pingBodyBytes = 64 << 10
+	// maxPingsInFlight bounds the lookups running or waiting for a database connection at once;
+	// recentPingSlots of them are only for tokens accepted recently, so a flood of unknown
+	// tokens cannot crowd out the senders that work.
+	maxPingsInFlight = 64
+	recentPingSlots  = 16
+	// Bounds of the limiter tables; beyond them the oldest or arbitrary entries are dropped.
+	pingTokenKeys    = 100_000
+	pingIPKeys       = 10_000
+	recentTokenSlots = 10_000
+	// heartbeatTokenLen is the length of a token: 32 bytes in URL-safe base64 without padding.
+	heartbeatTokenLen = 43
 )
 
 // Ping results (maiak_heartbeat_pings_total{result}).
@@ -35,6 +51,7 @@ const (
 	pingIgnored     = "ignored"
 	pingUnknown     = "unknown"
 	pingRateLimited = "rate_limited"
+	pingBusy        = "busy"
 	pingError       = "error"
 )
 
@@ -47,9 +64,11 @@ type PingMetrics struct {
 func NewPingMetrics(reg prometheus.Registerer) *PingMetrics {
 	m := &PingMetrics{pings: prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "maiak_heartbeat_pings_total",
-		Help: "Heartbeat pings by result (accepted, ignored for paused or deleted heartbeats, unknown token, rate_limited, error).",
+		Help: "Heartbeat pings by result (accepted; ignored for paused or deleted heartbeats; unknown or malformed token, 404; " +
+			"rate_limited: a token over one ping per second or an unknown token from a client IP over its limit, 429; " +
+			"busy: too many pings in flight, 429; error).",
 	}, []string{"result"})}
-	for _, r := range []string{pingAccepted, pingIgnored, pingUnknown, pingRateLimited, pingError} {
+	for _, r := range []string{pingAccepted, pingIgnored, pingUnknown, pingRateLimited, pingBusy, pingError} {
 		m.pings.WithLabelValues(r)
 	}
 	reg.MustRegister(m.pings)
@@ -70,29 +89,45 @@ func (s *server) PingHeartbeatPost(ctx context.Context, req gen.PingHeartbeatPos
 	return gen.PingHeartbeatPost204Response{}, nil
 }
 
+// ping is ADR-0096: a malformed token is unknown without any further work; then the per-token
+// limit, the in-flight bound and the lookup; only a token the lookup does not know is counted
+// against the client IP, so unknown-token traffic from an address (or from the shared bucket of
+// requests without a usable X-Forwarded-For) never blocks a known token.
 func (s *server) ping(ctx context.Context, token string) error {
+	l := s.pingLimits
 	r := httpRequest(ctx)
+	if !wellFormedHeartbeatToken(token) {
+		return s.unknownPing(ctx, r)
+	}
+	hash := monitors.HashHeartbeatToken(token)
+	key := string(hash)
+	if ok, retry := l.perToken.Reserve(key); !ok {
+		s.pings.pings.WithLabelValues(pingRateLimited).Inc()
+		return &auth.RateLimitedError{RetryAfter: retry}
+	}
 	if r.Body != nil {
 		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, pingBodyBytes))
 	}
-	hash := monitors.HashHeartbeatToken(token)
-	ip, key := s.limiterIP(ctx, r).String(), string(hash)
-	if err := s.pingLimits.reserve(ip, key); err != nil {
-		s.pings.pings.WithLabelValues(pingRateLimited).Inc()
-		return err
+	release, ok := l.acquire(key)
+	if !ok {
+		l.perToken.Refund(key)
+		s.pings.pings.WithLabelValues(pingBusy).Inc()
+		return &auth.RateLimitedError{RetryAfter: time.Second}
 	}
+	defer release()
 	res, err := s.monitors.Ping(ctx, hash)
 	switch {
 	case errors.Is(err, monitors.ErrUnknownHeartbeat):
-		s.pingLimits.unknownToken(key)
-		s.pings.pings.WithLabelValues(pingUnknown).Inc()
-		return errNotFound
+		// Forgotten, so an unknown token never gets the per-token 429, only the per-IP one.
+		l.perToken.Reset(key)
+		l.recent.remove(key)
+		return s.unknownPing(ctx, r)
 	case err != nil:
-		s.pingLimits.failed(ip, key)
+		l.perToken.Refund(key)
 		s.pings.pings.WithLabelValues(pingError).Inc()
 		return err
 	}
-	s.pingLimits.knownToken(ip)
+	l.recent.add(key)
 	logging.SetTenantID(ctx, res.TenantID.String())
 	if res.Recorded {
 		s.pings.pings.WithLabelValues(pingAccepted).Inc()
@@ -102,44 +137,114 @@ func (s *server) ping(ctx context.Context, token string) error {
 	return nil
 }
 
-// pingLimits are the in-memory limits of the ping endpoint (per api replica, ADR-0094): one
-// accepted ping per token per second, and unknownPingLimit pings with unknown tokens per client
-// IP per unknownPingWindow. An attempt is counted for both before the lookup, and settled after.
+// unknownPing answers a token that is not known: 404, or 429 once the client IP is over its
+// unknown-token limit.
+func (s *server) unknownPing(ctx context.Context, r *http.Request) error {
+	ip := s.limiterIP(ctx, r).String()
+	if ok, retry := s.pingLimits.perIP.Reserve(ip); !ok {
+		s.pings.pings.WithLabelValues(pingRateLimited).Inc()
+		return &auth.RateLimitedError{RetryAfter: retry}
+	}
+	s.pings.pings.WithLabelValues(pingUnknown).Inc()
+	return errNotFound
+}
+
+// wellFormedHeartbeatToken reports whether token can be a token NewHeartbeatToken issued:
+// exactly heartbeatTokenLen characters of the URL-safe base64 alphabet.
+func wellFormedHeartbeatToken(token string) bool {
+	if len(token) != heartbeatTokenLen {
+		return false
+	}
+	for i := range len(token) {
+		switch c := token[i]; {
+		case 'A' <= c && c <= 'Z', 'a' <= c && c <= 'z', '0' <= c && c <= '9', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// pingLimits are the in-memory limits of the ping endpoint (per api replica, ADR-0096), every
+// table bounded: one ping per token per second, unknownPingLimit unknown tokens per client IP per
+// unknownPingWindow, at most maxPingsInFlight lookups at once, and the recently accepted token
+// hashes that may use the reserved in-flight slots.
 type pingLimits struct {
 	perToken *auth.Limiter
 	perIP    *auth.Limiter
+	recent   *recentTokens
+	inFlight atomic.Int64
 }
 
-func newPingLimits(clk clock.Clock) pingLimits {
-	return pingLimits{
-		perToken: auth.NewLimiter(1, pingInterval, 100_000, clk),
-		perIP:    auth.NewLimiter(unknownPingLimit, unknownPingWindow, 10_000, clk),
+func newPingLimits(clk clock.Clock) *pingLimits {
+	return &pingLimits{
+		perToken: auth.NewLimiter(1, pingInterval, pingTokenKeys, clk),
+		perIP:    auth.NewLimiter(unknownPingLimit, unknownPingWindow, pingIPKeys, clk),
+		recent:   newRecentTokens(recentTokenSlots),
 	}
 }
 
-// reserve counts a ping of token hash key from ip, or returns a *auth.RateLimitedError.
-func (l pingLimits) reserve(ip, key string) error {
-	if ok, retry := l.perIP.Reserve(ip); !ok {
-		return &auth.RateLimitedError{RetryAfter: retry}
+// acquire takes an in-flight slot for a lookup of token hash key, or reports false when the
+// slots are taken. Tokens accepted recently may use all slots, others all but recentPingSlots.
+func (l *pingLimits) acquire(key string) (func(), bool) {
+	limit := int64(maxPingsInFlight - recentPingSlots)
+	if l.recent.contains(key) {
+		limit = maxPingsInFlight
 	}
-	if ok, retry := l.perToken.Reserve(key); !ok {
-		l.perIP.Refund(ip)
-		return &auth.RateLimitedError{RetryAfter: retry}
+	if l.inFlight.Add(1) > limit {
+		l.inFlight.Add(-1)
+		return nil, false
 	}
-	return nil
+	return func() { l.inFlight.Add(-1) }, true
 }
 
-// knownToken settles a ping of a known token: it does not count against the IP.
-func (l pingLimits) knownToken(ip string) { l.perIP.Refund(ip) }
+// recentTokens is a bounded LRU set of token hashes.
+type recentTokens struct {
+	mu    sync.Mutex
+	max   int
+	order *list.List // front: most recently added
+	index map[string]*list.Element
+}
 
-// unknownToken settles a ping of an unknown token: it stays counted against the IP, and the
-// token is forgotten, so every unknown token keeps getting the same 404 and never this 429.
-func (l pingLimits) unknownToken(key string) { l.perToken.Reset(key) }
+func newRecentTokens(maxKeys int) *recentTokens {
+	return &recentTokens{max: maxKeys, order: list.New(), index: map[string]*list.Element{}}
+}
 
-// failed settles a ping that could not be looked up: it counts nowhere.
-func (l pingLimits) failed(ip, key string) {
-	l.perToken.Refund(key)
-	l.perIP.Refund(ip)
+func (r *recentTokens) contains(key string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.index[key]
+	return ok
+}
+
+func (r *recentTokens) add(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.index[key]; ok {
+		r.order.MoveToFront(e)
+		return
+	}
+	r.index[key] = r.order.PushFront(key)
+	if r.order.Len() > r.max {
+		oldest := r.order.Back()
+		r.order.Remove(oldest)
+		delete(r.index, oldest.Value.(string))
+	}
+}
+
+func (r *recentTokens) remove(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.index[key]; ok {
+		r.order.Remove(e)
+		delete(r.index, key)
+	}
+}
+
+func (r *recentTokens) len() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.order.Len()
 }
 
 func (s *server) RegenerateHeartbeatToken(ctx context.Context, req gen.RegenerateHeartbeatTokenRequestObject) (gen.RegenerateHeartbeatTokenResponseObject, error) {

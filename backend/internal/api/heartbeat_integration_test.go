@@ -204,6 +204,34 @@ func TestIntegrationHeartbeatAPI(t *testing.T) {
 		}
 	})
 
+	t.Run("unknown-token traffic never blocks a known token", func(t *testing.T) {
+		// Well-formed unknown tokens are looked up and counted against the IP like malformed ones.
+		for i := range 30 {
+			guess := fmt.Sprintf("%043d", i)
+			if u := c.do(http.MethodGet, monitors.HeartbeatPath+guess, "", xff("192.0.2.60")); u.code != http.StatusNotFound {
+				t.Fatalf("guess %d: %d", i, u.code)
+			}
+		}
+		if u := c.do(http.MethodGet, monitors.HeartbeatPath+strings.Repeat("Z", 43), "", xff("192.0.2.60")); u.code != http.StatusTooManyRequests {
+			t.Fatalf("well-formed guess over the limit: %d", u.code)
+		}
+		clk.Advance(time.Second)
+		if g := c.do(http.MethodGet, pingPath, "", xff("192.0.2.60")); g.code != http.StatusNoContent {
+			t.Fatalf("known token from the exhausted IP: %d %s", g.code, g.raw)
+		}
+		// The shared bucket of requests without X-Forwarded-For behaves the same.
+		for i := range 31 {
+			c.do(http.MethodGet, monitors.HeartbeatPath+fmt.Sprintf("shared-%d", i), "", nil)
+		}
+		if u := c.do(http.MethodGet, monitors.HeartbeatPath+"shared-x", "", nil); u.code != http.StatusTooManyRequests {
+			t.Fatalf("shared bucket not exhausted: %d", u.code)
+		}
+		clk.Advance(time.Second)
+		if g := c.do(http.MethodPost, pingPath, "", nil); g.code != http.StatusNoContent {
+			t.Fatalf("known token from the exhausted shared bucket: %d %s", g.code, g.raw)
+		}
+	})
+
 	t.Run("regenerate", func(t *testing.T) {
 		if rr := c.do(http.MethodPost, "/api/v1/monitors/"+id+"/heartbeat-token", "", cookie); rr.code != http.StatusForbidden {
 			t.Fatalf("without CSRF: %d", rr.code)

@@ -53,11 +53,13 @@ Rules of thumb:
 - Maiak accepts at most one ping per second per URL; extra pings get `429`, which Alertmanager logs and retries harmlessly.
 - The ping may be `GET` or `POST`; the body is ignored. A test by hand: `curl -fsS -X POST "$(cat /path/to/url)"` answers `204`.
 
-Kubernetes example for the file (kube-prometheus-stack: `alertmanager.alertmanagerSpec.secrets: [maiak-heartbeat]` mounts it under `/etc/alertmanager/secrets/maiak-heartbeat/`):
+Kubernetes example for the file (kube-prometheus-stack: `alertmanager.alertmanagerSpec.secrets: [maiak-heartbeat]` mounts it under `/etc/alertmanager/secrets/maiak-heartbeat/`). Always name the cluster context explicitly. The command reads the URL from standard input, so it stays out of the command line, the process list and the shell history: run it, paste the URL, then end the input with Ctrl-D (press it twice if the cursor is still on the URL's line). A trailing newline is harmless, Alertmanager trims the file's content.
 
 ```
-kubectl --context <cluster> -n monitoring create secret generic maiak-heartbeat --from-literal=url='https://maiak.klr-ops.net/api/v1/heartbeat/<token>'
+kubectl --context <your-cluster-context> -n monitoring create secret generic maiak-heartbeat --from-file=url=/dev/stdin
 ```
+
+The Maiak web app shows the same configuration and command right after creating the heartbeat (with `group_interval` and `repeat_interval` set to half the expected interval, at least 30 s).
 
 ## 3. How deadlines work
 - **Deadline** = the newer of the last ping and the start of the wait, plus the expected interval, plus the grace. The start of the wait is the creation time, or the time of the last resume.
@@ -66,7 +68,7 @@ kubectl --context <cluster> -n monitoring create secret generic maiak-heartbeat 
 - **Never pinged:** a new heartbeat is *Pending* (`unknown`) until its first ping (then up) or until its first deadline passes (then down). Configure Alertmanager before the first deadline (interval plus grace after creation) to avoid a first false alarm.
 - **Paused:** no evaluation, pings answer `204` but are not recorded, and an open incident is closed without a notification. **Resume** restarts the wait from that moment; the heartbeat is pending until the next ping or deadline.
 - **Deleted:** pings answer `204` and change nothing; the URL is dead for good.
-- An unknown or regenerated token answers `404`. Repeated unknown tokens from one address are limited (`429`).
+- An unknown, malformed or regenerated token answers `404`. Repeated unknown tokens from one address are limited (`429`); this limit never applies to a valid URL, so a misbehaving client behind the same address cannot block your pings ([ADR-0096](../adr/0096-heartbeat-review-fixes.md)).
 
 ## 4. Troubleshooting
 | Symptom | Check |
@@ -74,7 +76,7 @@ kubectl --context <cluster> -n monitoring create secret generic maiak-heartbeat 
 | Heartbeat stays pending | Alertmanager logs for the `maiak-heartbeat` receiver; is the `Watchdog` alert firing (`ALERTS{alertname="Watchdog"}`)? Does `curl` on the URL answer `204`? |
 | `404` from the URL | The token was regenerated or mistyped; regenerate and update the Secret |
 | Down although Alertmanager runs | `repeat_interval`/`group_interval` above the expected interval, or the route does not match `alertname="Watchdog"` (another route catches it first without `continue`) |
-| `429` in Alertmanager logs | Pings faster than once a second (several Alertmanager replicas each send; harmless), or many unknown tokens from one address |
+| `429` in Alertmanager logs | Pings faster than once a second (several Alertmanager replicas each send; harmless), the api momentarily overloaded (`Retry-After: 1`, `maiak_heartbeat_pings_total{result="busy"}`; Alertmanager retries), or, for a wrong URL, many unknown tokens from one address |
 
 Operators: `maiak_heartbeat_pings_total{result}` (api) and `maiak_jobs_heartbeats_missed_total`, `maiak_jobs_housekeeping_runs_total{task="evaluate_heartbeats"}` (jobs), see the [observability runbook](observability.md).
 

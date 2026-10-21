@@ -375,3 +375,55 @@ func isLimit(err error, r plans.Resource, limit int) bool {
 	var le *plans.LimitError
 	return errors.As(err, &le) && le.Resource == r && le.Max == limit
 }
+
+// A ping of a heartbeat that is already up is only marked as seen; the incident machine runs for
+// pings that change the state (unknown or down to up), as before (ADR-0096).
+func TestIntegrationHeartbeatPingWhileUp(t *testing.T) {
+	f := newHBFixture(t, "heartbeatpingup")
+	m, hash := f.create(false)
+	times := func() (lastPing, applied, stateChecked, locChecked time.Time) {
+		t.Helper()
+		if err := f.admin.QueryRow(f.ctx, `SELECT h.last_ping_at, h.applied_ping_at, s.last_checked_at, l.last_checked_at
+			FROM heartbeat_tokens h JOIN monitor_state s ON s.monitor_id = h.monitor_id
+			JOIN monitor_location_state l ON l.monitor_id = h.monitor_id WHERE h.monitor_id = $1`, m.ID).
+			Scan(&lastPing, &applied, &stateChecked, &locChecked); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	// unknown -> up: the machine applies the ping.
+	f.ping(hash)
+	f.evaluate()
+	first, applied, stateChecked, locChecked := times()
+	if s := f.state(m.ID); s.status != "up" || !applied.Equal(first) || !stateChecked.Equal(first) || !locChecked.Equal(first) {
+		t.Fatalf("first ping: %+v applied %v checked %v/%v ping %v", s, applied, stateChecked, locChecked, first)
+	}
+
+	// up -> up: only applied_ping_at moves.
+	f.ping(hash)
+	f.evaluate()
+	second, applied, stateChecked, locChecked := times()
+	if !second.After(first) || !applied.Equal(second) || !stateChecked.Equal(first) || !locChecked.Equal(first) {
+		t.Fatalf("ping while up: ping %v applied %v checked %v/%v, want the machine untouched at %v", second, applied, stateChecked, locChecked, first)
+	}
+	if s := f.state(m.ID); s.status != "up" || s.incidents != 0 {
+		t.Fatalf("ping while up: %+v", s)
+	}
+	if n := f.evaluate(); n != 0 {
+		t.Fatalf("re-evaluated: %d", n)
+	}
+
+	// down -> up: the machine applies the ping again and resolves the incident at the ping time.
+	f.age(m.ID, 2*time.Minute)
+	if n := f.evaluate(); n != 1 {
+		t.Fatalf("miss: %d", n)
+	}
+	f.ping(hash)
+	f.evaluate()
+	third, applied, stateChecked, locChecked := times()
+	s := f.state(m.ID)
+	if s.status != "up" || s.open != nil || s.incidents != 1 || !applied.Equal(third) || !stateChecked.Equal(third) || !locChecked.Equal(third) {
+		t.Fatalf("recovery: %+v ping %v applied %v checked %v/%v", s, third, applied, stateChecked, locChecked)
+	}
+}

@@ -54,6 +54,8 @@ func TestIntegrationHeartbeatSchema(t *testing.T) {
 			`INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', 'h', 'heartbeat', '{"graceSeconds": "60"}', 300, 1)`: "monitors_heartbeat_check",
 			`INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', 'h', 'heartbeat', '{"graceSeconds": 3601}', 300, 1)`: "monitors_heartbeat_check",
 			`INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', 'h', 'heartbeat', '{"graceSeconds": 1.5}', 300, 1)`:  "monitors_heartbeat_check",
+			`INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', 'h', 'heartbeat', '{"graceSeconds": 60.0}', 300, 1)`: "monitors_heartbeat_check",
+			`INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', 'h', 'heartbeat', '{"graceSeconds": -1}', 300, 1)`:   "monitors_heartbeat_check",
 			`INSERT INTO monitors (id, tenant_id, name, type, config) VALUES (gen_random_uuid(), '` + tenantA + `', 'h', 'tcp', '{}')`:                                                                        "monitors_type_check",
 		} {
 			if _, err := admin.Exec(ctx, stmt); err == nil || !strings.Contains(err.Error(), want) {

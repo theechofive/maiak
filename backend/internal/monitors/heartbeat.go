@@ -258,9 +258,14 @@ func (s *Service) evaluateHeartbeat(ctx context.Context, tenantID, id uuid.UUID)
 		in := incidents.ResultInput{TenantID: tenantID, MonitorID: id, LocationID: locs[0].LocationID, Now: now}
 		applied, missedAt := hb.AppliedPingAt, hb.MissedDeadline
 		if step.Ping != nil {
-			in.Result = machine.Result{OK: true, CheckedAt: *step.Ping}
-			if _, err := s.incidents.ApplyResult(ctx, tx, in); err != nil {
-				return err
+			// An OK result changes nothing for a heartbeat that is already up (one location,
+			// failure threshold 1), so the ping is only marked as seen (ADR-0096): steady pings
+			// cost one row update here, not the incident machine's writes.
+			if locs[0].Status != string(machine.Up) {
+				in.Result = machine.Result{OK: true, CheckedAt: *step.Ping}
+				if _, err := s.incidents.ApplyResult(ctx, tx, in); err != nil {
+					return err
+				}
 			}
 			applied = step.Ping
 		}

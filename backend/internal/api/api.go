@@ -81,7 +81,7 @@ type server struct {
 	log      *slog.Logger
 	// slackTests limits Slack test messages per tenant (per api replica, like the login limit).
 	slackTests *auth.Limiter
-	pingLimits pingLimits
+	pingLimits *pingLimits
 	pings      *PingMetrics
 	// lastXFFWarn is the UnixNano time of the last missing X-Forwarded-For warning.
 	lastXFFWarn atomic.Int64
