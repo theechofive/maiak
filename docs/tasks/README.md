@@ -3,6 +3,7 @@
 - [Backend tasks](backend.md)
 - [Frontend tasks](frontend.md)
 - [Deploy tasks](deploy.md)
+- [Phase 2 tasks](phase2.md): plans and quotas, registration, watchdog, admin panel
 
 ## Conventions
 - IDs: `B-nn` backend, `F-nn` frontend, `D-nn` deploy. Statuses: `todo`, `doing`, `done`, `blocked`.
