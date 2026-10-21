@@ -14,6 +14,15 @@ export type Incident = Schemas["Incident"];
 export type SlackSettings = Schemas["SlackSettings"];
 export type Usage = Schemas["Usage"];
 export type PublicConfig = Schemas["PublicConfig"];
+export type AdminStats = Schemas["AdminStats"];
+export type AdminTenant = Schemas["AdminTenant"];
+export type AdminTenantList = Schemas["AdminTenantList"];
+export type AdminTenantUpdate = Schemas["AdminTenantUpdate"];
+export type AdminUser = Schemas["AdminUser"];
+export type AdminUserList = Schemas["AdminUserList"];
+
+/** Page size of the admin lists (the API default; at most 100). */
+export const ADMIN_PAGE_SIZE = 25;
 
 /** Dashboard refresh interval (ADR-0015). TanStack Query pauses it while the tab is hidden. */
 export const POLL_MS = 15_000;
@@ -28,6 +37,11 @@ export const queryKeys = {
   slack: ["settings", "slack"] as const,
   usage: ["usage"] as const,
   publicConfig: ["public-config"] as const,
+  adminStats: ["admin", "stats"] as const,
+  adminTenants: (query: string, offset: number, includeDeleted: boolean) =>
+    ["admin", "tenants", { query, offset, includeDeleted }] as const,
+  adminTenant: (id: string) => ["admin", "tenant", id] as const,
+  adminUsers: (id: string) => ["admin", "tenant", id, "users"] as const,
 };
 
 export async function login(login: string, password: string): Promise<SessionInfo> {
@@ -120,3 +134,41 @@ export const putSlackSettings = (webhookUrl: string) =>
 export const testSlack = () => unwrap(client.POST("/api/v1/settings/slack/test"));
 
 export const getUsage = () => unwrap(client.GET("/api/v1/usage"));
+
+// Platform admin panel (P-04, ADR-0097). Every call answers 403 to anybody but the platform admin.
+
+export const getAdminStats = () => unwrap(client.GET("/api/v1/admin/stats"));
+
+export const listAdminTenants = (query: string, offset: number, includeDeleted: boolean) =>
+  unwrap(
+    client.GET("/api/v1/admin/tenants", {
+      params: { query: { query, offset, limit: ADMIN_PAGE_SIZE, includeDeleted } },
+    }),
+  );
+
+const tenantPath = (tenantId: string) => ({ params: { path: { tenantId } } });
+
+export const getAdminTenant = (tenantId: string) =>
+  unwrap(client.GET("/api/v1/admin/tenants/{tenantId}", tenantPath(tenantId)));
+
+export const updateAdminTenant = (tenantId: string, body: AdminTenantUpdate) =>
+  unwrap(client.PATCH("/api/v1/admin/tenants/{tenantId}", { ...tenantPath(tenantId), body }));
+
+export const deleteAdminTenant = (tenantId: string) =>
+  unwrap(client.DELETE("/api/v1/admin/tenants/{tenantId}", tenantPath(tenantId)));
+
+/** The members of a tenant (the first page is enough for the panel: tenants have one owner). */
+export const listAdminTenantUsers = (tenantId: string) =>
+  unwrap(
+    client.GET("/api/v1/admin/tenants/{tenantId}/users", {
+      params: { path: { tenantId }, query: { limit: 100 } },
+    }),
+  );
+
+/** A new temporary password for the user, returned once; all of the user's sessions end. */
+export const resetAdminUserPassword = (userId: string) =>
+  unwrap(
+    client.POST("/api/v1/admin/users/{userId}/reset-password", {
+      params: { path: { userId } },
+    }),
+  );

@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { Link, Navigate, useLocation } from "react-router-dom";
-import { ApiError, errorMessage } from "../api/client";
+import { ACCOUNT_SUSPENDED_PROBLEM_TYPE, ApiError, errorMessage } from "../api/client";
 import { useAuth } from "../auth/AuthProvider";
 import { redirectTarget } from "../auth/RequireAuth";
 import { formatDuration } from "../lib/format";
@@ -9,6 +9,9 @@ import { useRegistrationEnabled } from "../lib/publicConfig";
 function loginErrorMessage(err: unknown): string {
   if (err instanceof ApiError && (err.status === 401 || err.status === 400)) {
     return "Wrong login or password. Try again.";
+  }
+  if (err instanceof ApiError && err.type === ACCOUNT_SUSPENDED_PROBLEM_TYPE) {
+    return "This account is suspended. Contact the administrator of this Maiak installation.";
   }
   if (err instanceof ApiError && err.status === 429) {
     return err.retryAfter

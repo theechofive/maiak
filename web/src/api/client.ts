@@ -13,6 +13,9 @@ export const PLAN_LIMIT_PROBLEM_TYPE = "urn:maiak:problem:plan-limit-reached";
 /** Registration problems (P-02): the email has an account, or registration is turned off. */
 export const EMAIL_TAKEN_PROBLEM_TYPE = "urn:maiak:problem:email-taken";
 export const REGISTRATION_DISABLED_PROBLEM_TYPE = "urn:maiak:problem:registration-disabled";
+/** Platform admin problems (P-04, ADR-0097). */
+export const ACCOUNT_SUSPENDED_PROBLEM_TYPE = "urn:maiak:problem:account-suspended";
+export const FORBIDDEN_PROBLEM_TYPE = "urn:maiak:problem:forbidden";
 const LOGIN_PATH = "/api/v1/auth/login";
 
 // The CSRF token lives only in memory (ADR-0015): it is fetched again from /auth/me after a reload.

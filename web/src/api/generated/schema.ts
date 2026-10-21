@@ -59,7 +59,9 @@ export interface paths {
      *     the system login (`admin`), case-insensitive (normalised to lowercase); the session is
      *     bound to the user's tenant. Failures always return the same generic error. Attempts are
      *     rate limited per client IP and per normalised login. Like registration, it needs no CSRF
-     *     token (there is no session yet).
+     *     token (there is no session yet). When the login and password are right but the tenant was
+     *     suspended or deleted by the platform admin, the answer is 403
+     *     `urn:maiak:problem:account-suspended`; a wrong password never reveals that state.
      */
     post: operations["login"];
     delete?: never;
@@ -467,6 +469,141 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/admin/stats": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Platform-wide counts
+     * @description Tenants by state, active users, live monitors and heartbeats of tenants that are not deleted, and every plan with its number of tenants. Platform admins only.
+     */
+    get: operations["adminGetStats"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/admin/tenants": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List tenants
+     * @description Tenants of the platform with plan, status and usage, newest first. `query` matches the
+     *     slug, the name, the id or the login of a member (substring, case-insensitive). Deleted
+     *     tenants are listed only with `includeDeleted=true`. Platform admins only.
+     */
+    get: operations["adminListTenants"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/admin/tenants/{tenantId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Tenant id; a value that is not a UUID is answered with 400 */
+        tenantId: components["parameters"]["TenantId"];
+      };
+      cookie?: never;
+    };
+    /**
+     * One tenant
+     * @description One tenant with plan, status and usage; deleted tenants included. Platform admins only.
+     */
+    get: operations["adminGetTenant"];
+    put?: never;
+    post?: never;
+    /**
+     * Soft-delete a tenant
+     * @description Marks the tenant deleted (and suspended). Nothing is erased: its data stays, its users
+     *     cannot log in, its sessions stop working and nothing of it is checked or delivered any
+     *     more. Deleting a deleted tenant changes nothing. The `default` tenant and a tenant the
+     *     admin belongs to cannot be deleted (409 `urn:maiak:problem:protected-tenant`). Platform
+     *     admins only.
+     */
+    delete: operations["adminDeleteTenant"];
+    options?: never;
+    head?: never;
+    /**
+     * Change a tenant's plan or status
+     * @description Changes the plan (`planKey`, an existing plan, otherwise 422) and/or the status (`active`
+     *     or `suspended`, otherwise 422) in one transaction; at least one is required (422). Each
+     *     change writes an audit row in the tenant. A plan change keeps every existing monitor and
+     *     channel: usage above the new limits only blocks new creations. A suspended tenant's users
+     *     cannot log in (403 `urn:maiak:problem:account-suspended`), its sessions stop working, its
+     *     monitors and heartbeats are not checked or evaluated and its Slack deliveries wait. The
+     *     `default` tenant and a tenant the admin belongs to cannot be suspended (409
+     *     `urn:maiak:problem:protected-tenant`); a deleted tenant cannot be changed (409
+     *     `urn:maiak:problem:tenant-deleted`). Platform admins only.
+     */
+    patch: operations["adminUpdateTenant"];
+    trace?: never;
+  };
+  "/api/v1/admin/tenants/{tenantId}/users": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Tenant id; a value that is not a UUID is answered with 400 */
+        tenantId: components["parameters"]["TenantId"];
+      };
+      cookie?: never;
+    };
+    /**
+     * Users of a tenant
+     * @description The members of the tenant (deleted tenants included), oldest membership first. `query` matches the login. Platform admins only.
+     */
+    get: operations["adminListTenantUsers"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/admin/users/{userId}/reset-password": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description User id; a value that is not a UUID is answered with 400 */
+        userId: string;
+      };
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Give a user a temporary password
+     * @description Replaces the user's password with a random temporary password, deletes all of the user's
+     *     sessions and writes an audit row (never with the password). The password is in this
+     *     answer only (`Cache-Control: no-store`); hand it to the user over a trusted channel. The
+     *     password of the system admin is managed by its Secret and cannot be reset here (409
+     *     `urn:maiak:problem:system-admin`). Platform admins only.
+     */
+    post: operations["adminResetUserPassword"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -522,6 +659,12 @@ export interface components {
        */
       login: string;
       display_name: string;
+      /**
+       * @description Whether the user is the platform admin (only the system admin configured by
+       *     `MAIAK_ADMIN_LOGIN`; no API grants it). Always present in answers of this version;
+       *     camelCase like every field added after ADR-0017.
+       */
+      isPlatformAdmin?: boolean;
     };
     Tenant: {
       /** Format: uuid */
@@ -809,6 +952,100 @@ export interface components {
       /** @description Notification channels (the Slack webhook) */
       channels: number;
     };
+    /**
+     * @description `suspended`: the tenant's users cannot log in and nothing of it is checked. A deleted tenant is also `suspended` and has `deletedAt`.
+     * @enum {string}
+     */
+    TenantStatus: "active" | "suspended";
+    AdminTenant: {
+      /** Format: uuid */
+      id: string;
+      slug: string;
+      name: string;
+      /** @example free */
+      planKey: string;
+      /** @example Free */
+      planName: string;
+      status: components["schemas"]["TenantStatus"];
+      /** Format: date-time */
+      createdAt: string;
+      /**
+       * Format: date-time
+       * @description Set when the tenant is soft-deleted
+       */
+      deletedAt: string | null;
+      /** @description Members of the tenant */
+      users: number;
+      /** @description HTTPS monitors that are not deleted (paused ones included) */
+      monitors: number;
+      /** @description Heartbeat monitors that are not deleted (paused ones included) */
+      heartbeats: number;
+    };
+    AdminTenantList: {
+      items: components["schemas"]["AdminTenant"][];
+      /** @description Number of all matching tenants */
+      total: number;
+      limit: number;
+      offset: number;
+    };
+    /** @description At least one field; the status is checked by the server (422 for anything but `active` or `suspended`) */
+    AdminTenantUpdate: {
+      /** @example internal */
+      planKey?: string;
+      /**
+       * @description `active` or `suspended`
+       * @example suspended
+       */
+      status?: string;
+    };
+    AdminUser: {
+      /** Format: uuid */
+      id: string;
+      login: string;
+      /** @enum {string} */
+      status: "active" | "disabled";
+      role: components["schemas"]["MembershipRole"];
+      /** Format: date-time */
+      createdAt: string;
+      /** @description The system admin; its password is managed by its Secret and cannot be reset here */
+      isPlatformAdmin: boolean;
+    };
+    AdminUserList: {
+      items: components["schemas"]["AdminUser"][];
+      total: number;
+      limit: number;
+      offset: number;
+    };
+    TemporaryPassword: {
+      /**
+       * Format: password
+       * @description The new password (24 characters); shown once, never stored or logged in plain text
+       */
+      temporaryPassword: string;
+    };
+    AdminPlanCount: {
+      key: string;
+      name: string;
+      /** @description Tenants on the plan that are not deleted */
+      tenants: number;
+    };
+    AdminStats: {
+      tenants: {
+        /** @description Tenants that are not deleted */
+        total: number;
+        active: number;
+        suspended: number;
+        deleted: number;
+      };
+      /** @description Active users */
+      users: number;
+      /** @description HTTPS monitors that are not deleted, in tenants that are not deleted */
+      monitors: number;
+      /** @description Heartbeat monitors that are not deleted, in tenants that are not deleted */
+      heartbeats: number;
+      /** @description Every plan, also those without tenants */
+      plans: components["schemas"]["AdminPlanCount"][];
+    };
     FieldError: {
       /**
        * @description Dotted path of the request body field
@@ -951,6 +1188,14 @@ export interface components {
   parameters: {
     /** @description Monitor id; a value that is not a UUID is answered with 400 */
     MonitorId: string;
+    /** @description Tenant id; a value that is not a UUID is answered with 400 */
+    TenantId: string;
+    /** @description Case-insensitive substring to search for; empty lists everything */
+    AdminQuery: string;
+    /** @description Page size */
+    Limit: number;
+    /** @description Number of items to skip */
+    Offset: number;
     /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
     CsrfToken: string;
   };
@@ -1028,6 +1273,15 @@ export interface operations {
       };
       400: components["responses"]["BadRequest"];
       401: components["responses"]["Unauthorized"];
+      /** @description The tenant is suspended or deleted (`urn:maiak:problem:account-suspended`) */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
       429: components["responses"]["TooManyRequests"];
       default: components["responses"]["Error"];
     };
@@ -1603,6 +1857,225 @@ export interface operations {
       };
       401: components["responses"]["Unauthorized"];
       403: components["responses"]["Forbidden"];
+      409: components["responses"]["Conflict"];
+      429: components["responses"]["TooManyRequests"];
+      default: components["responses"]["Error"];
+    };
+  };
+  adminGetStats: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The counts */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AdminStats"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      default: components["responses"]["Error"];
+    };
+  };
+  adminListTenants: {
+    parameters: {
+      query?: {
+        /** @description Case-insensitive substring to search for; empty lists everything */
+        query?: components["parameters"]["AdminQuery"];
+        /** @description Page size */
+        limit?: components["parameters"]["Limit"];
+        /** @description Number of items to skip */
+        offset?: components["parameters"]["Offset"];
+        /** @description Also list soft-deleted tenants */
+        includeDeleted?: boolean;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description One page of tenants */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AdminTenantList"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      default: components["responses"]["Error"];
+    };
+  };
+  adminGetTenant: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Tenant id; a value that is not a UUID is answered with 400 */
+        tenantId: components["parameters"]["TenantId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The tenant */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AdminTenant"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      default: components["responses"]["Error"];
+    };
+  };
+  adminDeleteTenant: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description Tenant id; a value that is not a UUID is answered with 400 */
+        tenantId: components["parameters"]["TenantId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Deleted */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      default: components["responses"]["Error"];
+    };
+  };
+  adminUpdateTenant: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description Tenant id; a value that is not a UUID is answered with 400 */
+        tenantId: components["parameters"]["TenantId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AdminTenantUpdate"];
+      };
+    };
+    responses: {
+      /** @description The tenant after the change */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AdminTenant"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      422: components["responses"]["UnprocessableEntity"];
+      default: components["responses"]["Error"];
+    };
+  };
+  adminListTenantUsers: {
+    parameters: {
+      query?: {
+        /** @description Case-insensitive substring to search for; empty lists everything */
+        query?: components["parameters"]["AdminQuery"];
+        /** @description Page size */
+        limit?: components["parameters"]["Limit"];
+        /** @description Number of items to skip */
+        offset?: components["parameters"]["Offset"];
+      };
+      header?: never;
+      path: {
+        /** @description Tenant id; a value that is not a UUID is answered with 400 */
+        tenantId: components["parameters"]["TenantId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description One page of users */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AdminUserList"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      default: components["responses"]["Error"];
+    };
+  };
+  adminResetUserPassword: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description User id; a value that is not a UUID is answered with 400 */
+        userId: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The temporary password, shown once */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TemporaryPassword"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
       409: components["responses"]["Conflict"];
       429: components["responses"]["TooManyRequests"];
       default: components["responses"]["Error"];

@@ -30,6 +30,11 @@ export default function Layout() {
             <li>
               <NavLink to="/settings">Settings</NavLink>
             </li>
+            {auth.session?.user.isPlatformAdmin === true && (
+              <li>
+                <NavLink to="/admin">Admin</NavLink>
+              </li>
+            )}
           </ul>
           <ul>
             <li>

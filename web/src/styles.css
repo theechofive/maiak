@@ -166,3 +166,13 @@ td.url {
   color: var(--pico-muted-color);
   font-size: 0.8em;
 }
+
+/* Text for screen readers only (table headers without a visible label). */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
