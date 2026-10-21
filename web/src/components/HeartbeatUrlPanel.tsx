@@ -57,8 +57,12 @@ export default function HeartbeatUrlPanel({
       <pre aria-label="Alertmanager configuration">
         <code>{alertmanagerSnippet(expectedIntervalSeconds)}</code>
       </pre>
-      <pre aria-label="Secret with the URL">
-        <code>{secretCommand(url)}</code>
+      <p id="heartbeat-secret-hint">
+        Run this with your cluster&apos;s context, paste the URL, then press Ctrl-D, so the URL
+        stays out of your shell history:
+      </p>
+      <pre aria-label="Secret with the URL" aria-describedby="heartbeat-secret-hint">
+        <code>{secretCommand()}</code>
       </pre>
       {children}
     </article>

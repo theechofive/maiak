@@ -1,3 +1,6 @@
+/// <reference types="node" />
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describeErrorKind } from "./format";
 import {
   alertmanagerSnippet,
@@ -14,6 +17,14 @@ import {
 } from "./monitorForm";
 
 const now = Date.parse("2026-10-21T12:00:00Z");
+
+// Tests run from web/ (npm test).
+const runbook = readFileSync(
+  resolve(process.cwd(), "../docs/runbooks/heartbeat-alertmanager.md"),
+  "utf8",
+);
+/** The Alertmanager block of the runbook (section 2), which the snippet must follow. */
+const RUNBOOK_ALERTMANAGER = /```yaml\n([\s\S]*?)\n```/.exec(runbook)?.[1];
 
 describe("heartbeat helpers", () => {
   it("describes the expectation", () => {
@@ -44,9 +55,19 @@ describe("heartbeat helpers", () => {
     expect(snippet).toContain("repeat_interval: 450s");
     expect(snippet).toContain("send_resolved: false");
     expect(snippet).toContain("group_wait: 0s");
-    expect(secretCommand("https://x/api/v1/heartbeat/t")).toContain(
-      "--from-literal=url='https://x/api/v1/heartbeat/t'",
+    expect(secretCommand()).toBe(
+      "kubectl --context <your-cluster-context> -n monitoring create secret generic maiak-heartbeat --from-file=url=/dev/stdin",
     );
+    expect(secretCommand()).not.toContain("--from-literal");
+  });
+
+  it("has the structure of the runbook's Alertmanager configuration", () => {
+    // The runbook's block with its example values; the snippet differs only in the intervals.
+    const runbookBlock = alertmanagerSnippet(120)
+      .replace("# The URL is a secret: keep it in a file, not in this config.\n      ", "")
+      .replaceAll("60s", "1m");
+    expect(runbookBlock).toBe(RUNBOOK_ALERTMANAGER);
+    expect(runbook).toContain(secretCommand());
   });
 
   it("labels the missed-heartbeat reason", () => {

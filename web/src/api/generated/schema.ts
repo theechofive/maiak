@@ -295,7 +295,7 @@ export interface paths {
       query?: never;
       header?: never;
       path: {
-        /** @description The secret token of the heartbeat's URL. Any value is accepted here; an unknown one gets 404. */
+        /** @description The secret token of the heartbeat's URL. Any value is accepted here; an unknown or malformed one gets 404. */
         token: string;
       };
       cookie?: never;
@@ -305,8 +305,10 @@ export interface paths {
      * @description Public on purpose (ADR-0094): Alertmanager's webhook receiver and cron jobs call it without
      *     a session and without a CSRF token; the token in the URL is the credential. Records a ping
      *     and answers 204. A paused or deleted heartbeat also gets 204 but nothing is recorded. Any
-     *     unknown token gets the same 404 problem. At most one ping per second per token is
-     *     accepted, and unknown tokens are rate limited per client IP; excess requests get 429.
+     *     unknown or malformed token gets the same 404 problem. At most one ping per second per
+     *     token is accepted; unknown tokens are rate limited per client IP, which never limits a
+     *     known token; excess requests get 429, as do pings while the server has too many in
+     *     flight (ADR-0096).
      */
     get: operations["pingHeartbeat"];
     put?: never;
@@ -1373,7 +1375,7 @@ export interface operations {
       query?: never;
       header?: never;
       path: {
-        /** @description The secret token of the heartbeat's URL. Any value is accepted here; an unknown one gets 404. */
+        /** @description The secret token of the heartbeat's URL. Any value is accepted here; an unknown or malformed one gets 404. */
         token: string;
       };
       cookie?: never;
@@ -1397,7 +1399,7 @@ export interface operations {
       query?: never;
       header?: never;
       path: {
-        /** @description The secret token of the heartbeat's URL. Any value is accepted here; an unknown one gets 404. */
+        /** @description The secret token of the heartbeat's URL. Any value is accepted here; an unknown or malformed one gets 404. */
         token: string;
       };
       cookie?: never;

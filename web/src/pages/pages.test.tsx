@@ -708,7 +708,9 @@ describe("watchdogs", () => {
     expect(snippet).toHaveTextContent("repeat_interval: 450s");
     expect(snippet).toHaveTextContent("url_file:");
     expect(snippet).not.toHaveTextContent(url);
-    expect(screen.getByLabelText("Secret with the URL")).toHaveTextContent(url);
+    const secret = screen.getByLabelText("Secret with the URL");
+    expect(secret).toHaveTextContent("--from-file=url=/dev/stdin");
+    expect(secret).not.toHaveTextContent(url);
 
     await userEvent.click(
       screen.getByRole("button", { name: "I saved the URL, open the monitor" }),

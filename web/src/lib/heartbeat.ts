@@ -44,27 +44,42 @@ export function repeatInterval(expectedSeconds: number): string {
   return `${Math.max(30, Math.floor(expectedSeconds / 2))}s`;
 }
 
-/** The Alertmanager route and receiver for the Watchdog alert; the URL itself lives in a file. */
+/**
+ * The Alertmanager route and receivers for the Watchdog alert, structured exactly like the
+ * runbook (docs/runbooks/heartbeat-alertmanager.md); the URL itself lives in a file.
+ */
 export function alertmanagerSnippet(expectedSeconds: number): string {
   const repeat = repeatInterval(expectedSeconds);
   return `route:
+  receiver: default
   routes:
     - receiver: maiak-heartbeat
       matchers:
         - alertname = "Watchdog"
+      # Send the first ping at once and repeat well inside the expected interval.
       group_wait: 0s
       group_interval: ${repeat}
       repeat_interval: ${repeat}
+      continue: false
 
 receivers:
+  - name: default
+    # ... your normal receivers ...
   - name: maiak-heartbeat
     webhook_configs:
       # The URL is a secret: keep it in a file, not in this config.
       - url_file: /etc/alertmanager/secrets/maiak-heartbeat/url
-        send_resolved: false`;
+        # The Watchdog never resolves; a resolved notification would only be a stray ping.
+        send_resolved: false
+        # max_alerts: 1 keeps the (ignored) body small.
+        max_alerts: 1`;
 }
 
-/** A Kubernetes Secret holding the URL for url_file. */
-export function secretCommand(url: string): string {
-  return `kubectl -n monitoring create secret generic maiak-heartbeat --from-literal=url='${url}'`;
+/**
+ * Creates the Kubernetes Secret for url_file. The URL is read from standard input (paste it, then
+ * end the input with Ctrl-D), so it never appears on the command line or in the shell history;
+ * the context is explicit so the command cannot hit whatever cluster is current.
+ */
+export function secretCommand(): string {
+  return "kubectl --context <your-cluster-context> -n monitoring create secret generic maiak-heartbeat --from-file=url=/dev/stdin";
 }
