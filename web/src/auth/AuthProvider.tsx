@@ -11,6 +11,8 @@ export interface AuthValue {
   error: unknown;
   retry: () => void;
   login: (login: string, password: string) => Promise<void>;
+  /** Registers and signs in (the answer is a session like login's). */
+  register: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -45,6 +47,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       retry: () => void me.refetch(),
       login: async (login, password) => {
         const session = await api.login(login, password);
+        queryClient.setQueryData(queryKeys.me, session);
+      },
+      register: async (email, password) => {
+        const session = await api.register(email, password);
         queryClient.setQueryData(queryKeys.me, session);
       },
       logout: async () => {

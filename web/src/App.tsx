@@ -6,6 +6,7 @@ import MonitorDetails from "./pages/MonitorDetails";
 import MonitorForm from "./pages/MonitorForm";
 import Monitors from "./pages/Monitors";
 import NotFound from "./pages/NotFound";
+import Register from "./pages/Register";
 import Settings from "./pages/Settings";
 
 export default function App() {
@@ -16,6 +17,14 @@ export default function App() {
         element={
           <main className="container">
             <Login />
+          </main>
+        }
+      />
+      <Route
+        path="/register"
+        element={
+          <main className="container">
+            <Register />
           </main>
         }
       />

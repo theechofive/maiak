@@ -10,6 +10,9 @@ const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 export const CSRF_PROBLEM_TYPE = "urn:maiak:problem:csrf";
 /** Problem type of a plan quota failure (409, with the members `limit` and `max`, ADR-0093). */
 export const PLAN_LIMIT_PROBLEM_TYPE = "urn:maiak:problem:plan-limit-reached";
+/** Registration problems (P-02): the email has an account, or registration is turned off. */
+export const EMAIL_TAKEN_PROBLEM_TYPE = "urn:maiak:problem:email-taken";
+export const REGISTRATION_DISABLED_PROBLEM_TYPE = "urn:maiak:problem:registration-disabled";
 const LOGIN_PATH = "/api/v1/auth/login";
 
 // The CSRF token lives only in memory (ADR-0015): it is fetched again from /auth/me after a reload.

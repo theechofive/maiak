@@ -57,6 +57,12 @@ export default function Monitors() {
           <p>
             Maiak checks your HTTPS endpoint every minute and alerts you in Slack when it fails.
           </p>
+          {usage.data && !atMonitorLimit(usage.data) && (
+            <p>
+              Your {usage.data.plan.name} plan includes{" "}
+              {countOf(usage.data.limits.monitors, "monitor", "monitors")}.
+            </p>
+          )}
           <AddMonitor usage={usage.data} />
         </article>
       </section>

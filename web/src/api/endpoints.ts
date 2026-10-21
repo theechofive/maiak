@@ -13,6 +13,7 @@ export type Check = Schemas["Check"];
 export type Incident = Schemas["Incident"];
 export type SlackSettings = Schemas["SlackSettings"];
 export type Usage = Schemas["Usage"];
+export type PublicConfig = Schemas["PublicConfig"];
 
 /** Dashboard refresh interval (ADR-0015). TanStack Query pauses it while the tab is hidden. */
 export const POLL_MS = 15_000;
@@ -26,6 +27,7 @@ export const queryKeys = {
   incidents: (id: string) => ["monitors", id, "incidents"] as const,
   slack: ["settings", "slack"] as const,
   usage: ["usage"] as const,
+  publicConfig: ["public-config"] as const,
 };
 
 export async function login(login: string, password: string): Promise<SessionInfo> {
@@ -33,6 +35,16 @@ export async function login(login: string, password: string): Promise<SessionInf
   setCsrfToken(session.csrf_token);
   return session;
 }
+
+/** Registers a new account and workspace; the answer is a session, exactly like login. */
+export async function register(email: string, password: string): Promise<SessionInfo> {
+  const session = await unwrap(client.POST("/api/v1/auth/register", { body: { email, password } }));
+  setCsrfToken(session.csrf_token);
+  return session;
+}
+
+/** Settings the app needs before login (no session). */
+export const getPublicConfig = () => unwrap(client.GET("/api/v1/public/config"));
 
 /** The current session, or null when not logged in. */
 export async function getMe(): Promise<SessionInfo | null> {

@@ -47,10 +47,10 @@ The session cookie is `Secure`. Against a remote HTTPS target the proxy rewrites
 ## Layout
 
 - `src/main.tsx` providers (error boundary, Query, Router, auth, toasts); `src/App.tsx` routes
-- `src/auth/` session context (`GET /auth/me`), login and logout, `RequireAuth` route guard
+- `src/auth/` session context (`GET /auth/me`), login, registration and logout, `RequireAuth` route guard
 - `src/components/` app shell with the top bar, toasts (polite live region), error boundary, loading and error states, the SVG response-time chart
-- `src/pages/` one file per page: login, monitors list, add/edit monitor, monitor details, settings
-- `src/lib/` pure helpers with unit tests: `format.ts` (all durations, times and numbers; local time zone), `monitors.ts` (status text, summary, filter), `monitorForm.ts` (validation mirroring the server, server field-error mapping), `chart.ts` (scales and gaps), `slack.ts`
+- `src/pages/` one file per page: login, registration (`/register`, linked only when `GET /api/v1/public/config` says `registrationEnabled`), monitors list, add/edit monitor, monitor details, settings
+- `src/lib/` pure helpers with unit tests: `format.ts` (all durations, times and numbers; local time zone), `monitors.ts` (status text, summary, filter), `monitorForm.ts` (validation mirroring the server, server field-error mapping), `registerForm.ts` (the registration policy mirroring the server), `publicConfig.ts`, `chart.ts` (scales and gaps), `slack.ts`
 - `src/test/utils.tsx` test helpers: `mockApi` routes `fetch` by `METHOD /path` and answers 501 for anything else, like the backend's unimplemented operations
 - `src/styles.css` the few custom CSS rules on top of Pico
 

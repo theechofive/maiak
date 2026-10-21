@@ -28,7 +28,7 @@ export default function RequireAuth() {
   return <Outlet />;
 }
 
-/** The path to return to after login: only same-app paths, never back to /login. */
+/** The path to return to after login: only same-app paths, never back to /login or /register. */
 export function redirectTarget(state: unknown): string {
   const from =
     typeof state === "object" && state !== null ? (state as { from?: unknown }).from : undefined;
@@ -40,6 +40,8 @@ export function redirectTarget(state: unknown): string {
   ) {
     return "/";
   }
-  if (from === "/login" || from.startsWith("/login?")) return "/";
+  for (const page of ["/login", "/register"]) {
+    if (from === page || from.startsWith(`${page}?`)) return "/";
+  }
   return from;
 }

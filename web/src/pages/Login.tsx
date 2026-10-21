@@ -1,9 +1,10 @@
 import { useState, type FormEvent } from "react";
-import { Navigate, useLocation } from "react-router-dom";
+import { Link, Navigate, useLocation } from "react-router-dom";
 import { ApiError, errorMessage } from "../api/client";
 import { useAuth } from "../auth/AuthProvider";
 import { redirectTarget } from "../auth/RequireAuth";
 import { formatDuration } from "../lib/format";
+import { useRegistrationEnabled } from "../lib/publicConfig";
 
 function loginErrorMessage(err: unknown): string {
   if (err instanceof ApiError && (err.status === 401 || err.status === 400)) {
@@ -20,6 +21,7 @@ function loginErrorMessage(err: unknown): string {
 export default function Login() {
   const auth = useAuth();
   const location = useLocation();
+  const registrationEnabled = useRegistrationEnabled();
   const [login, setLogin] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -33,7 +35,7 @@ export default function Login() {
     setError(null);
     try {
       // On success the session is set and the redirect above takes over.
-      // Logins are case-insensitive; the server lowercases them.
+      // An email or the system login, case-insensitive; the server lowercases it.
       await auth.login(login.trim(), password);
     } catch (err) {
       setError(loginErrorMessage(err));
@@ -46,7 +48,7 @@ export default function Login() {
       <h1>Sign in</h1>
       <form onSubmit={onSubmit}>
         <label>
-          Login
+          Email or login
           <input
             type="text"
             name="login"
@@ -78,6 +80,11 @@ export default function Login() {
           Sign in
         </button>
       </form>
+      {registrationEnabled === true && (
+        <p>
+          No account yet? <Link to="/register">Create account</Link>
+        </p>
+      )}
     </article>
   );
 }

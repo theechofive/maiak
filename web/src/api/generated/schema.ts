@@ -24,6 +24,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/public/config": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Settings the web app needs before login
+     * @description Public, needs no session. Tells the web app whether to offer registration.
+     */
+    get: operations["getPublicConfig"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/auth/login": {
     parameters: {
       query?: never;
@@ -35,12 +55,47 @@ export interface paths {
     put?: never;
     /**
      * Log in with login and password
-     * @description Creates a session and sets the `maiak_session` cookie. The login is case-insensitive
-     *     (normalised to lowercase). Failures always return the same generic error. Attempts are
-     *     rate limited per client IP and per normalised login. This is the only unsafe operation
-     *     without a CSRF token (there is no session yet).
+     * @description Creates a session and sets the `maiak_session` cookie. The login is an email address or
+     *     the system login (`admin`), case-insensitive (normalised to lowercase); the session is
+     *     bound to the user's tenant. Failures always return the same generic error. Attempts are
+     *     rate limited per client IP and per normalised login. Like registration, it needs no CSRF
+     *     token (there is no session yet).
      */
     post: operations["login"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/auth/register": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Register a new account and workspace
+     * @description Self-service registration (ADR-0092). Creates a tenant on the `free` plan, the user as its
+     *     `owner` and a session, sets the `maiak_session` cookie and answers like login (the user is
+     *     logged in). There is no email verification and no email is sent.
+     *
+     *     The email is trimmed and lowercased; it must be 3-254 characters of `a-z 0-9 . _ + - @`
+     *     (the characters a login may contain) with one `@`, a non-empty local part and a domain
+     *     with a dot. The password must be 12-128 characters (Unicode code points) and differ from
+     *     the email; there are no composition rules. Policy failures are 422 with `fieldErrors`.
+     *
+     *     An email that is already registered is answered with 409 `urn:maiak:problem:email-taken`:
+     *     without verification, registration cannot hide whether an account exists. When
+     *     registration is turned off (`MAIAK_REGISTRATION_ENABLED=false`) the answer is 403
+     *     `urn:maiak:problem:registration-disabled`. Every attempt that reaches the password hash
+     *     counts against the per-client-IP limit of the login, and hashing shares the login's
+     *     bounded queue (429 with Retry-After). No CSRF token is needed (there is no session yet).
+     */
+    post: operations["register"];
     delete?: never;
     options?: never;
     head?: never;
@@ -353,12 +408,28 @@ export interface components {
     };
     LoginRequest: {
       /**
-       * @description The user's login, case-insensitive (the default admin is `admin`)
+       * @description An email address or the system login (the default admin is `admin`), case-insensitive
        * @example admin
        */
       login: string;
       /** Format: password */
       password: string;
+    };
+    RegisterRequest: {
+      /**
+       * @description Email address; the policy (see the operation) is checked by the server (422)
+       * @example owner@example.com
+       */
+      email: string;
+      /**
+       * Format: password
+       * @description 12-128 characters, not equal to the email; checked by the server (422)
+       */
+      password: string;
+    };
+    PublicConfig: {
+      /** @description Whether `POST /api/v1/auth/register` accepts registrations */
+      registrationEnabled: boolean;
     };
     SessionInfo: {
       user: components["schemas"]["User"];
@@ -373,7 +444,7 @@ export interface components {
       /** Format: uuid */
       id: string;
       /**
-       * @description Lowercase login (the default admin is `admin`)
+       * @description Lowercase login, the email address of a registered user (the default admin is `admin`)
        * @example admin
        */
       login: string;
@@ -793,6 +864,27 @@ export interface operations {
       default: components["responses"]["Error"];
     };
   };
+  getPublicConfig: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The public configuration */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PublicConfig"];
+        };
+      };
+      default: components["responses"]["Error"];
+    };
+  };
   login: {
     parameters: {
       query?: never;
@@ -819,6 +911,54 @@ export interface operations {
       };
       400: components["responses"]["BadRequest"];
       401: components["responses"]["Unauthorized"];
+      429: components["responses"]["TooManyRequests"];
+      default: components["responses"]["Error"];
+    };
+  };
+  register: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["RegisterRequest"];
+      };
+    };
+    responses: {
+      /** @description Registered and logged in */
+      201: {
+        headers: {
+          /** @description The session cookie (`maiak_session`, HttpOnly, SameSite=Lax) */
+          "Set-Cookie"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SessionInfo"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      /** @description Registration is turned off (`urn:maiak:problem:registration-disabled`) */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The email is already registered (`urn:maiak:problem:email-taken`) */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      422: components["responses"]["UnprocessableEntity"];
       429: components["responses"]["TooManyRequests"];
       default: components["responses"]["Error"];
     };

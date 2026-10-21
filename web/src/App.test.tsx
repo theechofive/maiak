@@ -19,7 +19,7 @@ describe("auth guard", () => {
     renderApp("/settings");
 
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
-    const loginField = screen.getByLabelText("Login");
+    const loginField = screen.getByLabelText("Email or login");
     expect(loginField).toHaveAttribute("type", "text");
     expect(loginField).toHaveAttribute("autocomplete", "username");
     expect(loginField).toHaveValue("");
@@ -41,7 +41,7 @@ describe("auth guard", () => {
       "POST /api/v1/auth/login": () => problem(401, "Invalid credentials"),
     });
     renderApp("/login");
-    await userEvent.type(await screen.findByLabelText("Login"), "nobody");
+    await userEvent.type(await screen.findByLabelText("Email or login"), "nobody");
     await userEvent.type(screen.getByLabelText("Password"), "nope");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -123,7 +123,7 @@ describe("login rate limit", () => {
 
   const submit = async () => {
     renderApp("/login");
-    await userEvent.type(await screen.findByLabelText("Login"), "admin");
+    await userEvent.type(await screen.findByLabelText("Email or login"), "admin");
     await userEvent.type(screen.getByLabelText("Password"), "wrong");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
   };
