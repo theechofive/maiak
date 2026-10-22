@@ -1,7 +1,16 @@
 -- name: GetUserByEmail :one
-SELECT id, email, password_hash, display_name, status, is_platform_admin
+SELECT id, email, password_hash, display_name, status, is_platform_admin, updated_at
 FROM users
 WHERE email = @email;
+
+-- name: LockUserCredential :one
+-- The login's re-check of a verified credential (ADR-0098). FOR SHARE waits for a password reset
+-- or rotation in flight and blocks a new one until the session is committed; the api's column
+-- UPDATE grant on users is what allows the row lock.
+SELECT password_hash, status, updated_at
+FROM users
+WHERE id = @id
+FOR SHARE;
 
 -- name: GetUserByID :one
 SELECT id, email, display_name, status, is_platform_admin

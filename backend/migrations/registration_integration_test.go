@@ -42,8 +42,9 @@ func TestIntegrationAuthLoginTenant(t *testing.T) {
 		t.Fatalf("oldest membership: %v, want %s", got, tenantB)
 	}
 	pgtest.MustExec(t, admin, `UPDATE tenants SET status = 'suspended' WHERE id = '`+tenantB+`'`)
-	if got := loginTenant(userOne); got == nil || got.String() != tenantB {
-		t.Fatalf("suspended tenant is returned (the login refuses it): %v", got)
+	// An active tenant wins over a suspended one (P-09, ADR-0098).
+	if got := loginTenant(userOne); got == nil || got.String() != tenantA {
+		t.Fatalf("suspended tenant skipped for an active one: %v, want %s", got, tenantA)
 	}
 	pgtest.MustExec(t, admin, `UPDATE tenants SET deleted_at = now() WHERE id = '`+tenantB+`'`)
 	if got := loginTenant(userOne); got == nil || got.String() != tenantA {

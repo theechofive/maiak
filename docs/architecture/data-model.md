@@ -65,7 +65,7 @@ All are owned by `maiak_owner`, pin `search_path = public, pg_temp`, are not exe
 | Function | Grantee | Called by | Purpose |
 |---|---|---|---|
 | `auth_lookup_session(token_hash)` | `maiak_api` | api (`auth.Service.Authenticate`) | Finds a session before the tenant is known |
-| `auth_login_tenant(user_id)` | `maiak_api` | api (`auth.Service.Login`) | The tenant a login binds to: `default` if the user is a member of it, otherwise the user's oldest membership in a tenant that is not deleted, otherwise (since P-04) a deleted one so the login can answer "suspended", or NULL (P-02, ADR-0095, ADR-0097) |
+| `auth_login_tenant(user_id)` | `maiak_api` | api (`auth.Service.Login`) | The tenant a login binds to: `default` if the user is a member of it, otherwise the user's oldest membership in a tenant that is not deleted, otherwise (since P-04) a deleted one so the login can answer "suspended", or NULL; live before deleted, then active before suspended (P-09) (P-02, ADR-0095, ADR-0097, ADR-0098) |
 | `auth_create_tenant(id, slug, name)` | `maiak_api` | api (`tenants.Create` on registration, `tenants.Ensure` in `BootstrapAdmin`) | Inserts a tenant on `internal` for the slug `default` and on `free` otherwise; returns the id, or NULL when the slug is taken (ADR-0095) |
 | `auth_count_other_memberships(user_id, tenant_id)` | `maiak_api` | api (`BootstrapAdmin`) | Number of the user's memberships outside the tenant, deleted tenants included; non-zero refuses the admin adoption (ADR-0095) |
 | `auth_revoke_user_sessions(user_id)` | `maiak_api` | api (`BootstrapAdmin`) | Deletes the user's sessions in every tenant under the isolation policy, tenant by tenant, and restores the caller's `app.tenant_id` (ADR-0095) |
@@ -89,7 +89,7 @@ All are owned by `maiak_owner`, pin `search_path = public, pg_temp`, are not exe
 | `detach_expired_partition(name)` | `maiak_worker` | jobs, daily | Retention step 2 |
 | `drop_detached_partition(name)` | `maiak_worker` | jobs, daily | Retention step 3 |
 | `purge_expired_sessions()` | `maiak_worker` | jobs, hourly | Deletes expired sessions |
-| `claim_deliveries(n)` | `maiak_worker` | jobs, every second | Leases ready outbox rows (oldest first per monitor) of active tenants that are not deleted (P-04), sets `claim_token`, requeues expired claims and counts the attempt |
+| `claim_deliveries(n)` | `maiak_worker` | jobs, every second | Leases ready outbox rows (oldest first per monitor) of active tenants that are not deleted (P-04), sets `claim_token`, requeues expired claims and counts the attempt; marks pending rows of deleted tenants `failed` (`tenant_deleted`) once (P-09) |
 | `finish_delivery(id, token, status, error, retry_at)` | `maiak_worker` | jobs | Records an outcome only for the holder of the claim token |
 | `outbox_pending()` | `maiak_worker` | jobs, every 15 s | Count for `maiak_jobs_outbox_pending` |
 

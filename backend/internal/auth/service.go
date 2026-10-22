@@ -92,6 +92,10 @@ type Service struct {
 
 	// defaultTenant is set by BootstrapAdmin. Failed logins of unknown users are audited in it.
 	defaultTenant uuid.UUID
+
+	// afterVerify runs between the password verification and the session transaction of a
+	// login. It does nothing; the integration tests replace it to pause a login there.
+	afterVerify func()
 }
 
 // NewService builds the service. Call BootstrapAdmin before serving logins.
@@ -112,14 +116,15 @@ func NewService(pool *db.Pool, opts Options) (*Service, error) {
 		opts.HashQueueWait = defaultHashQueueWait
 	}
 	s := &Service{
-		pool:       pool,
-		ttl:        opts.SessionTTL,
-		clock:      opts.Clock,
-		log:        opts.Logger,
-		ipLimit:    opts.IPLimiter,
-		loginLimit: opts.LoginLimiter,
-		hashSem:    make(chan struct{}, maxConcurrentHashes),
-		hashWait:   opts.HashQueueWait,
+		pool:        pool,
+		ttl:         opts.SessionTTL,
+		clock:       opts.Clock,
+		log:         opts.Logger,
+		ipLimit:     opts.IPLimiter,
+		loginLimit:  opts.LoginLimiter,
+		hashSem:     make(chan struct{}, maxConcurrentHashes),
+		hashWait:    opts.HashQueueWait,
+		afterVerify: func() {},
 		logins: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "maiak_auth_logins_total",
 			Help: "Login attempts by result (succeeded, failed, suspended, rate_limited).",
@@ -365,7 +370,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 		s.loginLimit.Refund(loginKey)
 	}
 
-	user, tenantID, ok, err := s.checkPassword(ctx, loginKey, in.Password)
+	user, tenantID, cred, ok, err := s.checkPassword(ctx, loginKey, in.Password)
 	if err != nil {
 		refund()
 		if errors.Is(err, ErrRateLimited) {
@@ -390,12 +395,16 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 		}
 		return LoginResult{}, ErrInvalidCredentials
 	}
+	s.afterVerify()
 
 	var res LoginResult
 	err = errNoMembership
 	if tenantID != uuid.Nil {
 		err = db.WithTenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
 			q := authdb.New(tx)
+			if err := recheckCredential(ctx, q, user.ID, cred); err != nil {
+				return err
+			}
 			role, err := q.GetMembershipRole(ctx, authdb.GetMembershipRoleParams{TenantID: tenantID, UserID: user.ID})
 			if errors.Is(err, pgx.ErrNoRows) {
 				return errNoMembership
@@ -430,9 +439,13 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 			return nil
 		})
 	}
-	if errors.Is(err, errNoMembership) {
+	if errors.Is(err, errNoMembership) || errors.Is(err, errCredentialChanged) {
+		reason := "no_active_membership"
+		if errors.Is(err, errCredentialChanged) {
+			reason = "credential_changed"
+		}
 		s.logins.WithLabelValues("failed").Inc()
-		if aerr := s.auditFailure(ctx, auditTenant, &user.ID, in.IP, "no_active_membership"); aerr != nil {
+		if aerr := s.auditFailure(ctx, auditTenant, &user.ID, in.IP, reason); aerr != nil {
 			return LoginResult{}, aerr
 		}
 		return LoginResult{}, ErrInvalidCredentials
@@ -460,15 +473,26 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 // answers ErrInvalidCredentials.
 var errNoMembership = errors.New("auth: no active membership")
 
+// errCredentialChanged means the verified password hash was replaced, or the user disabled, after
+// the verification. The caller answers ErrInvalidCredentials.
+var errCredentialChanged = errors.New("auth: credential changed during login")
+
 // errSuspended means the credentials are right but the user's tenant is suspended or deleted.
 // The caller answers ErrAccountSuspended.
 var errSuspended = errors.New("auth: tenant suspended")
+
+// credential is the stored password a login verified: the session is created only while it is
+// still the current one (recheckCredential).
+type credential struct {
+	hash      string
+	updatedAt time.Time
+}
 
 // checkPassword looks the user and the tenant the login binds to up and verifies the password.
 // It always runs one argon2 verification (against a dummy hash for unknown or password-less
 // users), so the response time does not reveal whether the login exists. tenantID is uuid.Nil
 // when the user is unknown or has no membership in a live tenant.
-func (s *Service) checkPassword(ctx context.Context, login, password string) (*User, uuid.UUID, bool, error) {
+func (s *Service) checkPassword(ctx context.Context, login, password string) (*User, uuid.UUID, credential, bool, error) {
 	var row *authdb.GetUserByEmailRow
 	var tenantID *uuid.UUID
 	err := db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
@@ -485,7 +509,7 @@ func (s *Service) checkPassword(ctx context.Context, login, password string) (*U
 		return tx.QueryRow(ctx, `SELECT auth_login_tenant($1)`, r.ID).Scan(&tenantID)
 	})
 	if err != nil {
-		return nil, uuid.Nil, false, fmt.Errorf("auth: get user: %w", err)
+		return nil, uuid.Nil, credential{}, false, fmt.Errorf("auth: get user: %w", err)
 	}
 
 	hash := s.dummy
@@ -497,20 +521,44 @@ func (s *Service) checkPassword(ctx context.Context, login, password string) (*U
 		}
 	}
 	if err := s.acquireHash(ctx); err != nil {
-		return nil, uuid.Nil, false, err
+		return nil, uuid.Nil, credential{}, false, err
 	}
 	match := hash.Verify(password)
 	<-s.hashSem
 
 	if row == nil {
-		return nil, uuid.Nil, false, nil
+		return nil, uuid.Nil, credential{}, false, nil
 	}
 	u := &User{ID: row.ID, Login: row.Email, DisplayName: row.DisplayName, IsPlatformAdmin: row.IsPlatformAdmin}
 	ok := match && hash != s.dummy && row.Status == userStatusActive
-	if tenantID == nil {
-		return u, uuid.Nil, ok, nil
+	var cred credential
+	if ok {
+		cred = credential{hash: *row.PasswordHash, updatedAt: row.UpdatedAt}
 	}
-	return u, *tenantID, ok, nil
+	if tenantID == nil {
+		return u, uuid.Nil, cred, ok, nil
+	}
+	return u, *tenantID, cred, ok, nil
+}
+
+// recheckCredential re-reads the user's credential with a share lock in the session's
+// transaction (ADR-0098). The password was verified against an earlier read, so a reset or a
+// rotation that committed since then changed password_hash and updated_at, and the session is
+// refused. One still in flight holds the row lock: the re-read waits for it and then sees the new
+// row; one that starts later waits for this transaction and deletes the new session with the
+// user's other sessions (auth_revoke_user_sessions).
+func recheckCredential(ctx context.Context, q *authdb.Queries, userID uuid.UUID, cred credential) error {
+	c, err := q.LockUserCredential(ctx, userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errCredentialChanged
+	}
+	if err != nil {
+		return fmt.Errorf("lock user: %w", err)
+	}
+	if c.Status != userStatusActive || c.PasswordHash == nil || *c.PasswordHash != cred.hash || !c.UpdatedAt.Equal(cred.updatedAt) {
+		return errCredentialChanged
+	}
+	return nil
 }
 
 // normalizeLogin is the one place logins are made case-insensitive: bootstrap, lookup and

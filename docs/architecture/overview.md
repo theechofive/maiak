@@ -68,7 +68,7 @@ worker  -> claim_due_monitors(n, location)   lease on (monitor, location), skips
              scheduler.Complete              lease check (stale -> discard), next_run_at
              incidents.ApplyResult           location and monitor state; open/resolve incident;
                                              notification_deliveries row when Slack is active (SAME transaction)
-jobs    -> claim_deliveries(n)               oldest first per monitor, claim token, lease 2 min; skips inactive tenants
+jobs    -> claim_deliveries(n)               oldest first per monitor, claim token, lease 2 min; skips inactive tenants, fails pending rows of deleted ones (ADR-0098)
         -> notify.Format + SlackNotifier     guarded client, no redirects
         -> finish_delivery(id, token, ...)   sent / retry with backoff / failed after 5 attempts
 web     -> GET /api/v1/...                   api reads through internal/queries (monitor_state, results, rollups, incidents)

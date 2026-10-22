@@ -545,3 +545,111 @@ func TestIntegrationHashPassword(t *testing.T) {
 		t.Fatalf("hash %q: params %+v err %v", phc, parsed, err)
 	}
 }
+
+// A login whose password was verified before a password change never keeps a session (P-09,
+// ADR-0098): the login is paused between the verification and the session transaction while a
+// rotation commits, or while a reset is still in flight in a second transaction.
+func TestIntegrationLoginRaceWithPasswordReset(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("auth_login_race"))
+	ctx := context.Background()
+	admin := env.AdminConn(t)
+	hash1, _ := crypto.HashPassword("first", cheap)
+	hash2, _ := crypto.HashPassword("second", cheap)
+	hash3, _ := crypto.HashPassword("third", cheap)
+	svc := newBootstrapped(t, env, "admin", hash1)
+
+	sessions := func() int {
+		t.Helper()
+		var n int
+		if err := admin.QueryRow(ctx, `SELECT count(*) FROM sessions AS s JOIN users AS u ON u.id = s.user_id WHERE u.email = 'admin'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	// pausedLogin starts a login that stops after its password verification; resume lets it go on.
+	pausedLogin := func(password string) (resume func(), done <-chan error) {
+		t.Helper()
+		paused, cont := make(chan struct{}), make(chan struct{})
+		svc.SetAfterVerify(func() { close(paused); <-cont })
+		out := make(chan error, 1)
+		go func() {
+			_, err := svc.Login(ctx, auth.LoginInput{Login: "admin", Password: password, IP: testIP})
+			out <- err
+		}()
+		<-paused
+		return func() { close(cont) }, out
+	}
+	t.Cleanup(func() { svc.SetAfterVerify(func() {}) })
+
+	t.Run("a rotation committed after the verification", func(t *testing.T) {
+		resume, done := pausedLogin("first")
+		// Another replica rotates the password from the Secret.
+		newBootstrapped(t, env, "admin", hash2)
+		resume()
+		if err := <-done; !errors.Is(err, auth.ErrInvalidCredentials) {
+			t.Fatalf("login verified before the rotation: err = %v, want ErrInvalidCredentials", err)
+		}
+		if n := sessions(); n != 0 {
+			t.Fatalf("sessions = %d, want 0", n)
+		}
+	})
+
+	t.Run("a reset in flight in a second transaction", func(t *testing.T) {
+		resume, done := pausedLogin("second")
+		tx, err := admin.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		// What admin_reset_user_password does: new hash and updated_at, then the sessions go.
+		if _, err := tx.Exec(ctx, `UPDATE users SET password_hash = $1, updated_at = now() WHERE email = 'admin'`, hash3); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(ctx, `SELECT auth_revoke_user_sessions(id) FROM users WHERE email = 'admin'`); err != nil {
+			t.Fatal(err)
+		}
+		resume()
+		// The session transaction waits for the row lock of the reset.
+		waitForLockWait(t, env, "FOR SHARE")
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; !errors.Is(err, auth.ErrInvalidCredentials) {
+			t.Fatalf("login verified before the reset: err = %v, want ErrInvalidCredentials", err)
+		}
+		if n := sessions(); n != 0 {
+			t.Fatalf("sessions = %d, want 0", n)
+		}
+	})
+
+	t.Run("an unchanged credential still logs in", func(t *testing.T) {
+		resume, done := pausedLogin("third")
+		resume()
+		if err := <-done; err != nil {
+			t.Fatalf("login: %v", err)
+		}
+		if n := sessions(); n != 1 {
+			t.Fatalf("sessions = %d, want 1", n)
+		}
+	})
+}
+
+// waitForLockWait waits until a backend of the test database waits for a lock in a query that
+// contains fragment.
+func waitForLockWait(t *testing.T, env *pgtest.Env, fragment string) {
+	t.Helper()
+	conn := env.AdminConn(t)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting bool
+		if err := conn.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock' AND strpos(query, $1) > 0)`, fragment).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("no backend waits for a lock in a query with %q", fragment)
+}

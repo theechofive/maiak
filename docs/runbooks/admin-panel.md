@@ -24,9 +24,9 @@ Until outgoing email exists (L-170) this is the only recovery path.
 1. Verify the request through a channel you trust (the customer's known contact, not only an email that claims to be them). Without email verification, registration proves nothing about who owns an address (R-120).
 2. Open `/admin/tenants`, search for the customer's email, open the tenant.
 3. In the users table choose **Reset password** for that user and confirm.
-4. Copy the temporary password from the panel. It is shown once: the server keeps only its hash, and leaving the page clears it. If it is lost, reset again.
+4. Copy the temporary password from the panel. It is shown once: the server keeps only its hash, and hiding the panel or leaving the page clears it from the page (the web app keeps no other copy, ADR-0098). If it is lost, reset again.
 5. Hand it over through a trusted channel, never in a ticket or a shared chat (L-232). Ask the user to keep it in a password manager: there is no way to change it in the app yet (L-233).
-6. The user's open sessions were deleted; they log in with their email and the temporary password.
+6. The user's open sessions were deleted, and a login that was checking the old password at that moment is refused too (ADR-0098); they log in with their email and the temporary password.
 
 The system admin's own password is not reset here: change the hash in the `maiak-admin` Secret (`maiakctl hashpw`, or delete the generated Secrets and re-sync, ADR-0091); the api replaces it at the next start and deletes the admin's sessions.
 
@@ -34,12 +34,12 @@ The system admin's own password is not reset here: change the hash in the `maiak
 Use it for abuse, non-payment or a customer's request to freeze an account.
 - **Logins:** a user of the tenant who enters the right password gets "account suspended" (403); a wrong password still gets the generic error.
 - **Sessions:** existing sessions stop working on the next request (they are kept; unsuspending revives those that have not expired).
-- **Checks and alerts:** the worker claims none of its monitors, its heartbeats are not evaluated and pings are answered 204 but not recorded, and its Slack deliveries are not sent. Deliveries that were already queued wait and are sent after an unsuspend, so the customer may get late alerts then. Open incidents stay open.
+- **Checks and alerts:** the worker claims none of its monitors, its heartbeats are not evaluated and pings are answered 204 but not recorded, and its Slack deliveries are not sent. Deliveries that were already queued wait; see the unsuspend note below. Open incidents stay open.
 - **Data:** nothing is deleted; monitors, results, incidents, Slack settings and users stay. Retention keeps working as for everybody.
-- Unsuspend with the same button. Checks resume within about a minute. Pings sent during the suspension were not recorded, so a heartbeat whose deadline passed meanwhile goes down at the next evaluation (within 30 s) and alerts, unless a ping arrives first (L-235); warn the customer. The incident resolves with the next ping.
+- Unsuspend with the same button. Checks resume within about a minute. Slack deliveries that waited more than 15 minutes are not sent: the unsuspend marks them `failed` with `last_error = 'tenant_suspended'` and the audit row `admin.tenant.unsuspended` records how many (`deliveries_expired`); newer ones are sent at once (ADR-0098). Pings sent during the suspension were not recorded, so a heartbeat whose deadline passed meanwhile goes down at the next evaluation (within 30 s) and alerts, unless a ping arrives first (L-235); warn the customer. The incident resolves with the next ping.
 
 ## Delete a tenant
-- Soft delete: `deleted_at` is set and the status becomes `suspended`, with every effect of a suspension. The tenant disappears from the default list (tick "Show deleted" to see it) and can no longer be changed in the panel.
+- Soft delete: `deleted_at` is set and the status becomes `suspended`, with every effect of a suspension. Its pending Slack deliveries are marked `failed` (`last_error = 'tenant_deleted'`) by the next delivery claim and are never sent, even after a restore. The tenant disappears from the default list (tick "Show deleted" to see it) and can no longer be changed in the panel.
 - Nothing is erased (L-234). Its users still exist and keep their email: they cannot register again with it, and a login with the right password says "account suspended". To give a deleted customer access again, restore the tenant with SQL as `maiak_owner` (`UPDATE tenants SET deleted_at = NULL, status = 'active', updated_at = now() WHERE id = ...`) and record why in the ledger or the incident note.
 
 ## Plans and existing usage

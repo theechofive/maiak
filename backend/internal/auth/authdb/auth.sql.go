@@ -70,7 +70,7 @@ func (q *Queries) GetMembershipRole(ctx context.Context, arg GetMembershipRolePa
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, password_hash, display_name, status, is_platform_admin
+SELECT id, email, password_hash, display_name, status, is_platform_admin, updated_at
 FROM users
 WHERE email = $1
 `
@@ -82,6 +82,7 @@ type GetUserByEmailRow struct {
 	DisplayName     string
 	Status          string
 	IsPlatformAdmin bool
+	UpdatedAt       time.Time
 }
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error) {
@@ -94,6 +95,7 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (GetUserByEm
 		&i.DisplayName,
 		&i.Status,
 		&i.IsPlatformAdmin,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -250,6 +252,29 @@ func (q *Queries) ListOtherActiveOwners(ctx context.Context, arg ListOtherActive
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockUserCredential = `-- name: LockUserCredential :one
+SELECT password_hash, status, updated_at
+FROM users
+WHERE id = $1
+FOR SHARE
+`
+
+type LockUserCredentialRow struct {
+	PasswordHash *string
+	Status       string
+	UpdatedAt    time.Time
+}
+
+// The login's re-check of a verified credential (ADR-0098). FOR SHARE waits for a password reset
+// or rotation in flight and blocks a new one until the session is committed; the api's column
+// UPDATE grant on users is what allows the row lock.
+func (q *Queries) LockUserCredential(ctx context.Context, id uuid.UUID) (LockUserCredentialRow, error) {
+	row := q.db.QueryRow(ctx, lockUserCredential, id)
+	var i LockUserCredentialRow
+	err := row.Scan(&i.PasswordHash, &i.Status, &i.UpdatedAt)
+	return i, err
 }
 
 const touchSession = `-- name: TouchSession :exec
