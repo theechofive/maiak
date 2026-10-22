@@ -245,8 +245,8 @@ function TenantInfo({ tenant }: { tenant: AdminTenant }) {
         >
           <p>
             Its users can sign in again and its monitors are checked again within a minute. Slack
-            alerts that waited are sent now, and watchdogs that missed their deadline meanwhile go
-            down until their next ping.
+            alerts that waited up to 15 minutes are sent now, older ones are dropped, and watchdogs
+            that missed their deadline meanwhile go down until their next ping.
           </p>
         </ConfirmDialog>
       )}
@@ -276,14 +276,17 @@ function TenantUsers({ tenant }: { tenant: AdminTenant }) {
     queryFn: () => listAdminTenantUsers(tenant.id),
   });
   const [confirmUser, setConfirmUser] = useState<AdminUser | null>(null);
-  // The temporary password lives only here: never in storage, gone when the page is left.
+  // The temporary password lives only here: never in storage, gone when hidden or the page is
+  // left. The mutation keeps no copy: gcTime 0 and reset() right after copying it (ADR-0098).
   const [temporary, setTemporary] = useState<{ login: string; password: string } | null>(null);
 
   const reset = useMutation({
     mutationFn: (user: AdminUser) => resetAdminUserPassword(user.id),
+    gcTime: 0,
     onSuccess: (res, user) => {
       setConfirmUser(null);
       setTemporary({ login: user.login, password: res.temporaryPassword });
+      reset.reset();
     },
     onError: (err) => {
       setConfirmUser(null);
@@ -296,7 +299,14 @@ function TenantUsers({ tenant }: { tenant: AdminTenant }) {
       <h2>Users</h2>
       {temporary && (
         <TemporaryPasswordPanel login={temporary.login} password={temporary.password}>
-          <button type="button" className="secondary" onClick={() => setTemporary(null)}>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => {
+              setTemporary(null);
+              reset.reset();
+            }}
+          >
             I handed it over, hide it
           </button>
         </TemporaryPasswordPanel>

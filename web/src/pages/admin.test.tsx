@@ -341,6 +341,37 @@ describe("admin tenant details", () => {
     expect(setItem.mock.calls.flat().join(" ")).not.toContain("abcdefghijkmnpqrstuvwxyz");
   });
 
+  it("keeps no temporary password in the mutation cache", async () => {
+    details({
+      "POST /api/v1/admin/users/u-1/reset-password": () =>
+        json({ temporaryPassword: "abcdefghijkmnpqrstuvwxyz" }),
+    });
+    const { queryClient } = renderApp("/admin/tenants/t-1");
+    const cached = () =>
+      JSON.stringify(
+        queryClient
+          .getMutationCache()
+          .getAll()
+          .map((m) => m.state),
+      );
+    const rows = within(await screen.findByRole("table")).getAllByRole("row");
+    const aliceRow = rows.find((r) => within(r).queryByText("alice@alpha.example"))!;
+    await userEvent.click(within(aliceRow).getByRole("button", { name: "Reset password" }));
+    await userEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Reset password" }),
+    );
+    expect(await screen.findByLabelText("Temporary password")).toHaveValue(
+      "abcdefghijkmnpqrstuvwxyz",
+    );
+    // Copied into the panel's state; the mutation itself no longer holds it.
+    await waitFor(() => expect(cached()).not.toContain("temporaryPassword"));
+
+    await userEvent.click(screen.getByRole("button", { name: "I handed it over, hide it" }));
+    expect(screen.queryByLabelText("Temporary password")).toBeNull();
+    await waitFor(() => expect(cached()).not.toContain("temporaryPassword"));
+    expect(cached()).not.toContain("abcdefghijkmnpqrstuvwxyz");
+  });
+
   it("shows a 409 for the system admin and other reset errors as a toast", async () => {
     details({
       "POST /api/v1/admin/users/u-1/reset-password": () =>
