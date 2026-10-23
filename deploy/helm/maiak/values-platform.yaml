@@ -22,7 +22,7 @@ web:
   image:
     # CI-MANAGED: rewritten by .github/workflows/release.yml (web-image job). Keep this key at
     # exactly `web.image.tag` (4-space indent, double quotes).
-    tag: "8caa9b2"
+    tag: "d946f01"
 
 # Admin login and encryption key (ADR-0091): generated in the cluster on the first sync. Log in as `admin` with
 # the one-time password from the Secret maiak-admin-initial, then delete that Secret
