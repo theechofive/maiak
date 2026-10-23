@@ -62,7 +62,7 @@ expect_fail() {
 }
 expect_fail "http public URL" --set config.publicUrl=http://maiak.example.com
 expect_fail "public URL with trailing slash" --set config.publicUrl=https://maiak.example.com/
-expect_fail "PreSync migration with bootstrap" -f "$platform" --set migration.hookPhase=PreSync
+expect_fail "PreSync migration with bootstrap" -f "$platform" --set dbBootstrap.enabled=true --set migration.hookPhase=PreSync
 expect_fail "bootstrap without host" --set dbBootstrap.enabled=true
 expect_fail "memory limit missing" --set worker.resources.limits=null
 expect_fail "unknown secrets source" --set secrets.admin.source=manual
