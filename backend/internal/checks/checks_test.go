@@ -199,10 +199,14 @@ func TestProbeTimeout(t *testing.T) {
 // A cancelled parent context (worker shutdown) is not a failed check (ADR-0018).
 func TestProbeCancelledParent(t *testing.T) {
 	started := make(chan struct{})
+	// The handler answers only after the test, so the cancellation is the only way for Probe to return
+	// (a handler that returned on a closed connection could race the client and deliver a 200).
+	release := make(chan struct{})
 	s := newTLSServer(t, "hang.test", time.Now().Add(time.Hour), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		close(started)
-		<-r.Context().Done()
+		<-release
 	}))
+	t.Cleanup(func() { close(release) })
 	p := NewHTTPSProber(routingClient(t, map[string]*tlsServer{"hang.test": s}))
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { <-started; cancel() }()
