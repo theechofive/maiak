@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/theechofive/maiak/backend/internal/incidents"
 	"github.com/theechofive/maiak/backend/internal/notify"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/db"
@@ -80,9 +81,11 @@ type delivery struct {
 	TenantID  uuid.UUID
 	Kind      string
 	MonitorID uuid.UUID
-	ChannelID uuid.UUID
-	Payload   []byte
-	Attempts  int
+	// IncidentID is nil for tls_expiring.
+	IncidentID *uuid.UUID
+	ChannelID  uuid.UUID
+	Payload    []byte
+	Attempts   int
 	// Token fences finish_delivery: only the holder of this claim can record its outcome.
 	Token uuid.UUID
 }
@@ -180,14 +183,14 @@ func (r *Deliverer) claim(ctx context.Context, n int) ([]delivery, error) {
 	defer cancel()
 	var out []delivery
 	err := db.WithTx(ctx, r.d.Pool, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT id, tenant_id, kind, monitor_id, channel_id, payload, attempts, claim_token FROM claim_deliveries($1)`, n)
+		rows, err := tx.Query(ctx, `SELECT id, tenant_id, kind, monitor_id, incident_id, channel_id, payload, attempts, claim_token FROM claim_deliveries($1)`, n)
 		if err != nil {
 			return err
 		}
 		out, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (delivery, error) {
 			var dl delivery
 			var attempts int32
-			err := row.Scan(&dl.ID, &dl.TenantID, &dl.Kind, &dl.MonitorID, &dl.ChannelID, &dl.Payload, &attempts, &dl.Token)
+			err := row.Scan(&dl.ID, &dl.TenantID, &dl.Kind, &dl.MonitorID, &dl.IncidentID, &dl.ChannelID, &dl.Payload, &attempts, &dl.Token)
 			dl.Attempts = int(attempts)
 			return dl, err
 		})
@@ -206,13 +209,23 @@ func (r *Deliverer) deliver(ctx context.Context, dl delivery) {
 	log := r.d.Log.With("delivery_id", dl.ID, "monitor_id", dl.MonitorID, "kind", dl.Kind)
 
 	var target notify.Target
+	stillDown := true
 	err := r.tenantTx(ctx, dl.TenantID, func(tx pgx.Tx) error {
 		var err error
+		if dl.Kind == notify.DeliveryReminder && dl.IncidentID != nil {
+			// A reminder queued before the incident resolved (or the monitor was paused or
+			// deleted) must not say the monitor is still down.
+			if stillDown, err = incidents.StillDown(ctx, tx, dl.TenantID, *dl.IncidentID); err != nil || !stillDown {
+				return err
+			}
+		}
 		target, err = r.d.Channels.DeliveryTarget(ctx, tx, dl.TenantID, dl.ChannelID)
 		return err
 	})
 	var reason string
 	switch {
+	case err == nil && !stillDown:
+		reason = "incident_resolved"
 	case errors.Is(err, notify.ErrChannelNotFound):
 		reason = "channel_missing"
 	case errors.Is(err, notify.ErrUndecryptable):

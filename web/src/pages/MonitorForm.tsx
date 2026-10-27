@@ -33,6 +33,7 @@ import { GRACE_MAX, INTERVAL_MAX, INTERVAL_MIN, INTERVAL_PRESETS } from "../lib/
 import {
   describeSetup,
   emptyMonitorForm,
+  keepLiveChannels,
   mapServerErrors,
   NAME_MAX,
   toCreateRequest,
@@ -147,12 +148,17 @@ function MonitorFormBody({
   // A new heartbeat: its URL is shown once, here, before moving on.
   const [created, setCreated] = useState<MonitorDetail | undefined>();
   const usage = useUsage();
+  // Shared with the channel picker (same query key). A selected channel that was deleted since
+  // the monitor was loaded is dropped before saving, instead of failing with 422.
+  const channels = useQuery({ queryKey: queryKeys.channels, queryFn: listChannels });
 
   const save = useMutation({
-    mutationFn: (v: MonitorFormValues) =>
-      mode === "create"
-        ? createMonitor(toCreateRequest(v))
-        : updateMonitor(id!, toMonitorRequest(v)),
+    mutationFn: (v: MonitorFormValues) => {
+      const saved = keepLiveChannels(v, channels.data?.items);
+      return mode === "create"
+        ? createMonitor(toCreateRequest(saved))
+        : updateMonitor(id!, toMonitorRequest(saved));
+    },
     onSuccess: async (saved) => {
       if (mode === "create") void queryClient.invalidateQueries({ queryKey: queryKeys.usage });
       await queryClient.invalidateQueries({ queryKey: queryKeys.monitors });

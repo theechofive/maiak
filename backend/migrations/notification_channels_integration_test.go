@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -72,6 +73,10 @@ func TestIntegrationNotificationChannels(t *testing.T) {
 		}
 		if want := "Slack {down,recovered,tls_expiring} {} 0 true"; got != want {
 			t.Fatalf("existing channel = %q, want %q", got, want)
+		}
+		var validated bool
+		if err := admin.QueryRow(ctx, `SELECT convalidated FROM pg_constraint WHERE conname = 'notification_deliveries_kind_check'`).Scan(&validated); err != nil || validated {
+			t.Fatalf("kind check validated=%v (%v); it is added NOT VALID on purpose", validated, err)
 		}
 		// Several Slack channels per tenant.
 		channel(tenantA, "", "")
@@ -294,6 +299,38 @@ func TestIntegrationNotificationChannels(t *testing.T) {
 		pgtest.MustExec(t, admin, `UPDATE tenants SET status = 'active' WHERE id = '`+tenantB+`'`)
 		if got := reminders(); got[otherTenant+"/"+incB] != 1 {
 			t.Fatalf("tenant b: %v", got)
+		}
+
+		// The function serialises itself: a call blocked by another transaction's lock waits and
+		// then queues nothing that the first call queued.
+		pgtest.MustExec(t, admin, `UPDATE notification_deliveries SET created_at = now() - interval '11 minutes' WHERE kind = 'reminder'`)
+		holder, err := worker.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var first int
+		if err := holder.QueryRow(ctx, `SELECT enqueue_incident_reminders(100)`).Scan(&first); err != nil || first != 2 {
+			t.Fatalf("first call queued %d (%v), want 2", first, err)
+		}
+		other := env.Conn(t, env.WorkerURL)
+		done := make(chan int, 1)
+		go func() {
+			var n int
+			if err := other.QueryRow(ctx, `SELECT enqueue_incident_reminders(100)`).Scan(&n); err != nil {
+				n = -1
+			}
+			done <- n
+		}()
+		select {
+		case n := <-done:
+			t.Fatalf("second call did not wait for the lock: %d", n)
+		case <-time.After(200 * time.Millisecond):
+		}
+		if err := holder.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if n := <-done; n != 0 {
+			t.Fatalf("second call queued %d after the first committed, want 0", n)
 		}
 
 		// The api role cannot queue reminders.

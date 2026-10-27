@@ -131,7 +131,6 @@ func TestIntegrationChannelsAPI(t *testing.T) {
 	for field, body := range map[string]string{
 		"webhookUrl":      `{"name":"x","webhookUrl":"https://evil.example/services/T0SECRET/x"}`,
 		"name":            `{"name":"  ","webhookUrl":"` + slackURL + `"}`,
-		"mention":         `{"name":"x","webhookUrl":"` + slackURL + `","mention":["<https://evil.example|click>"]}`,
 		"reminderMinutes": `{"name":"x","webhookUrl":"` + slackURL + `","reminderMinutes":3}`,
 	} {
 		r := record(c.do(http.MethodPost, "/api/v1/channels", body, unsafe))
@@ -140,13 +139,16 @@ func TestIntegrationChannelsAPI(t *testing.T) {
 			t.Fatalf("%s: %d %s", field, r.code, r.raw)
 		}
 	}
-	// Contract: unknown fields, unknown events, four mentions, more than a day of reminders.
+	// Contract: unknown fields, unknown events, four mentions, more than a day of reminders,
+	// mentions outside the pattern.
 	for _, body := range []string{
 		`{"name":"x","webhookUrl":"` + slackURL + `","extra":1}`,
 		`{"name":"x","webhookUrl":"` + slackURL + `","events":["agent_offline"]}`,
 		`{"name":"x","webhookUrl":"` + slackURL + `","events":[]}`,
 		`{"name":"x","webhookUrl":"` + slackURL + `","mention":["@here","@channel","<@U1>","<@U2>"]}`,
 		`{"name":"x","webhookUrl":"` + slackURL + `","reminderMinutes":1441}`,
+		`{"name":"x","webhookUrl":"` + slackURL + `","mention":["<https://evil.example|click>"]}`,
+		`{"name":"x","webhookUrl":"` + slackURL + `","mention":["@everyone"]}`,
 		`{"name":"x"}`,
 	} {
 		if r := record(c.do(http.MethodPost, "/api/v1/channels", body, unsafe)); r.code != http.StatusBadRequest {

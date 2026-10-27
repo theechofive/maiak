@@ -28,7 +28,8 @@ ALTER TABLE notification_channels
         CHECK (reminder_minutes = 0 OR reminder_minutes BETWEEN 5 AND 1440),
     ADD COLUMN deleted_at       timestamptz;
 
--- Deleting a channel wipes its encrypted webhook URL.
+-- Deleting a channel wipes its encrypted webhook URL. The check holds for every existing row (the
+-- column was NOT NULL); notification_channels is small, so validating it here is cheap.
 ALTER TABLE notification_channels ALTER COLUMN config_encrypted DROP NOT NULL;
 ALTER TABLE notification_channels ADD CONSTRAINT notification_channels_config_present
     CHECK (deleted_at IS NOT NULL OR config_encrypted IS NOT NULL) NOT VALID;
@@ -36,11 +37,12 @@ ALTER TABLE notification_channels VALIDATE CONSTRAINT notification_channels_conf
 
 DROP INDEX notification_channels_one_slack_idx;
 
--- Reminders of open incidents.
+-- Reminders of open incidents. The new check is a superset of the old one, so every existing row
+-- satisfies it: it is added NOT VALID (enforced for new and updated rows) and not validated,
+-- which would scan notification_deliveries while this transaction holds its ACCESS EXCLUSIVE lock.
 ALTER TABLE notification_deliveries DROP CONSTRAINT notification_deliveries_kind_check;
 ALTER TABLE notification_deliveries ADD CONSTRAINT notification_deliveries_kind_check
     CHECK (kind IN ('opened', 'resolved', 'tls_expiring', 'reminder')) NOT VALID;
-ALTER TABLE notification_deliveries VALIDATE CONSTRAINT notification_deliveries_kind_check;
 
 -- Deliveries of one channel are ordered per monitor; a channel waiting for its retry no longer
 -- holds back the other channels of the same monitor. Same signature, owner and grants.
@@ -156,7 +158,9 @@ CREATE POLICY owner_reminder_insert ON notification_deliveries FOR INSERT TO mai
 -- reminder_minutes have passed since the newest 'opened' or 'reminder' delivery of that incident
 -- to that channel (or since the incident started when there is none). At most p_limit rows per
 -- call (capped at 1000), oldest incidents first. Delivery ids are UUIDv7 built from the clock.
--- jobs calls it every minute under an advisory lock. Returns the number of rows queued.
+-- jobs calls it every minute; the function takes its own transaction advisory lock first, so
+-- concurrent calls are serialised and the second one sees the first one's rows (each statement
+-- of a volatile SQL function takes a new snapshot). Returns the number of rows queued.
 -- +goose StatementBegin
 CREATE FUNCTION enqueue_incident_reminders(p_limit integer)
 RETURNS integer
@@ -165,6 +169,8 @@ VOLATILE
 SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
+    SELECT pg_advisory_xact_lock(hashtext('maiak.enqueue_incident_reminders'));
+
     WITH due AS (
         SELECT i.tenant_id, i.id AS incident_id, i.monitor_id, i.started_at, c.id AS channel_id, m.name AS monitor_name
         FROM incidents AS i

@@ -269,6 +269,17 @@ func (s *Service) ResolveOpen(ctx context.Context, tx pgx.Tx, tenantID, monitorI
 	return nil
 }
 
+// StillDown reports whether a reminder for incidentID may still be sent: the incident is open and
+// its monitor notifies and is neither paused nor deleted. tx must be a tenant transaction of
+// tenantID; jobs checks it before sending a queued reminder (ADR-0100).
+func StillDown(ctx context.Context, tx pgx.Tx, tenantID, incidentID uuid.UUID) (bool, error) {
+	ok, err := incidentsdb.New(tx).IncidentStillDown(ctx, incidentsdb.IncidentStillDownParams{TenantID: tenantID, IncidentID: incidentID})
+	if err != nil {
+		return false, fmt.Errorf("incidents: still down: %w", err)
+	}
+	return ok, nil
+}
+
 // payloadBase and payload are the outbox payload: what the Slack message (B-13) needs and no
 // secret. The URL is reduced to scheme, host and path because query strings often carry tokens.
 type payloadBase struct {

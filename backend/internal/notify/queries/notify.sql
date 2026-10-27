@@ -10,11 +10,13 @@ FROM notification_channels
 WHERE tenant_id = @tenant_id AND id = @id AND deleted_at IS NULL;
 
 -- name: LockChannel :one
--- Serialises changes of one channel (patch, delete, test outcome).
+-- Serialises changes of one channel (patch, delete, test outcome). NO KEY UPDATE: the key never
+-- changes, so inserts into monitor_channels and notification_deliveries (FOR KEY SHARE on the
+-- referenced row) are not blocked by it.
 SELECT id, config_encrypted, status
 FROM notification_channels
 WHERE tenant_id = @tenant_id AND id = @id AND deleted_at IS NULL
-FOR UPDATE;
+FOR NO KEY UPDATE;
 
 -- name: InsertChannel :exec
 INSERT INTO notification_channels (id, tenant_id, type, name, config_encrypted, events, mention, reminder_minutes)
@@ -23,21 +25,21 @@ VALUES (@id, @tenant_id, 'slack_webhook', @name, @config_encrypted, @events, @me
 -- name: UpdateChannel :exec
 UPDATE notification_channels
 SET name = @name, events = @events, mention = @mention, reminder_minutes = @reminder_minutes, updated_at = now()
-WHERE tenant_id = @tenant_id AND id = @id;
+WHERE tenant_id = @tenant_id AND id = @id AND deleted_at IS NULL;
 
 -- name: ReplaceChannelConfig :exec
 -- A new webhook makes a failed channel active again; the id stays, so queued deliveries go to
 -- the new URL.
 UPDATE notification_channels
 SET config_encrypted = @config_encrypted, status = 'active', updated_at = now()
-WHERE tenant_id = @tenant_id AND id = @id;
+WHERE tenant_id = @tenant_id AND id = @id AND deleted_at IS NULL;
 
 -- name: SoftDeleteChannel :exec
 -- The webhook is wiped. status 'failed' keeps the previous release from using the channel
 -- during a rollout (ADR-0100).
 UPDATE notification_channels
 SET deleted_at = now(), config_encrypted = NULL, status = 'failed', updated_at = now()
-WHERE tenant_id = @tenant_id AND id = @id;
+WHERE tenant_id = @tenant_id AND id = @id AND deleted_at IS NULL;
 
 -- name: DetachChannel :execrows
 DELETE FROM monitor_channels

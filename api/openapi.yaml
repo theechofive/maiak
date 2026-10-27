@@ -1794,11 +1794,12 @@ components:
         $ref: "#/components/schemas/ChannelEvent"
     ChannelMention:
       type: array
-      description: Slack mentions put in front of `down` and reminder messages; each is `@here`, `@channel`, `<!subteam^ID>` or `<@UID>` (422 otherwise)
+      description: Slack mentions put in front of `down` and reminder messages; each is `@here`, `@channel`, `<!subteam^ID>` or `<@UID>` (400 otherwise)
       maxItems: 3
       items:
         type: string
         maxLength: 32
+        pattern: "^(@here|@channel|<!subteam\\^[A-Z0-9]{2,20}>|<@[UW][A-Z0-9]{2,20}>)$"
       example: ["@here"]
     ReminderMinutes:
       type: integer

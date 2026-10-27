@@ -62,6 +62,30 @@ func (q *Queries) GetMonitorForResult(ctx context.Context, arg GetMonitorForResu
 	return i, err
 }
 
+const incidentStillDown = `-- name: IncidentStillDown :one
+SELECT EXISTS (
+    SELECT 1
+    FROM incidents AS i
+    JOIN monitors AS m ON m.tenant_id = i.tenant_id AND m.id = i.monitor_id
+    WHERE i.tenant_id = $1 AND i.id = $2 AND i.resolved_at IS NULL
+      AND m.notify_slack AND NOT m.paused AND m.deleted_at IS NULL
+)::boolean
+`
+
+type IncidentStillDownParams struct {
+	TenantID   uuid.UUID
+	IncidentID uuid.UUID
+}
+
+// A queued reminder is sent only while its incident is open and its monitor notifies and is
+// neither paused nor deleted (ADR-0100).
+func (q *Queries) IncidentStillDown(ctx context.Context, arg IncidentStillDownParams) (bool, error) {
+	row := q.db.QueryRow(ctx, incidentStillDown, arg.TenantID, arg.IncidentID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const insertDelivery = `-- name: InsertDelivery :exec
 INSERT INTO notification_deliveries (id, tenant_id, kind, monitor_id, incident_id, channel_id, payload)
 VALUES ($1, $2, $3, $4, $5, $6, $7)

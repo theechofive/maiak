@@ -1,5 +1,5 @@
 import { ApiError, errorMessage } from "../api/client";
-import type { MonitorCreate, MonitorDetail, MonitorUpdate } from "../api/endpoints";
+import type { Channel, MonitorCreate, MonitorDetail, MonitorUpdate } from "../api/endpoints";
 import { formatDuration } from "./format";
 import {
   DEFAULT_GRACE,
@@ -74,6 +74,19 @@ export function valuesFromMonitor(m: MonitorDetail): MonitorFormValues {
     expectedIntervalSeconds: String(m.expectedIntervalSeconds ?? DEFAULT_INTERVAL),
     graceSeconds: String(m.graceSeconds ?? DEFAULT_GRACE),
   };
+}
+
+/**
+ * Drops selected channels that are not in the live channel list (deleted since the monitor was
+ * loaded). Without a loaded list the selection is sent unchanged and the server decides.
+ */
+export function keepLiveChannels(
+  v: MonitorFormValues,
+  live: Channel[] | undefined,
+): MonitorFormValues {
+  if (!live) return v;
+  const ids = new Set(live.map((c) => c.id));
+  return { ...v, channelIds: v.channelIds.filter((id) => ids.has(id)) };
 }
 
 /** A whole number of seconds within [min, max], or undefined. */

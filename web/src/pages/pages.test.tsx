@@ -301,6 +301,25 @@ describe("monitor form", () => {
     );
   });
 
+  it("drops a selected channel that was deleted before saving", async () => {
+    let body: unknown;
+    const current = detail({ id: "m7", name: "Shop", channelIds: ["gone", "c1"] });
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/channels": () => json({ items: [channel()] }),
+      "GET /api/v1/monitors/m7": () => json(current),
+      "PATCH /api/v1/monitors/m7": async (req) => {
+        body = await req.json();
+        return json(current);
+      },
+    });
+    renderApp("/monitors/m7/edit");
+    const picker = await screen.findByRole("group", { name: "Notification channels" });
+    expect(within(picker).getByLabelText("#ops")).toBeChecked();
+    await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(body).toMatchObject({ channelIds: ["c1"] }));
+  });
+
   it("explains a plan-limit refusal and refreshes the usage", async () => {
     let usageCalls = 0;
     mockApi({

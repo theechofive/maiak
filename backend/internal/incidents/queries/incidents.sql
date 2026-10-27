@@ -60,6 +60,17 @@ WHERE c.tenant_id = @tenant_id AND c.deleted_at IS NULL AND c.status = 'active'
   )
 ORDER BY c.created_at, c.id;
 
+-- name: IncidentStillDown :one
+-- A queued reminder is sent only while its incident is open and its monitor notifies and is
+-- neither paused nor deleted (ADR-0100).
+SELECT EXISTS (
+    SELECT 1
+    FROM incidents AS i
+    JOIN monitors AS m ON m.tenant_id = i.tenant_id AND m.id = i.monitor_id
+    WHERE i.tenant_id = @tenant_id AND i.id = @incident_id AND i.resolved_at IS NULL
+      AND m.notify_slack AND NOT m.paused AND m.deleted_at IS NULL
+)::boolean;
+
 -- name: InsertDelivery :exec
 INSERT INTO notification_deliveries (id, tenant_id, kind, monitor_id, incident_id, channel_id, payload)
 VALUES (@id, @tenant_id, @kind, @monitor_id, @incident_id, @channel_id, @payload);

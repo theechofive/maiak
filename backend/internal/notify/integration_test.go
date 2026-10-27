@@ -7,11 +7,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/theechofive/maiak/backend/internal/notify"
+	"github.com/theechofive/maiak/backend/internal/notify/notifydb"
 	"github.com/theechofive/maiak/backend/internal/plans"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
 	"github.com/theechofive/maiak/backend/internal/platform/db"
@@ -258,6 +260,29 @@ func TestIntegrationChannels(t *testing.T) {
 	}
 	if _, err := selectChannels(tenantA, monitorA, ops.ID); fieldOf(t, err) != "channelIds" {
 		t.Fatalf("select deleted channel: %v", err)
+	}
+	// The row writes skip a deleted channel even without the lock (defence in depth: an api pod of
+	// the previous release replaces the config by id, L-260).
+	var deletedAt time.Time
+	if err := admin.QueryRow(ctx, `SELECT deleted_at FROM notification_channels WHERE id = $1`, ops.ID).Scan(&deletedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.WithTenantTx(ctx, pool, a.TenantID, func(tx pgx.Tx) error {
+		q := notifydb.New(tx)
+		if err := q.ReplaceChannelConfig(ctx, notifydb.ReplaceChannelConfigParams{TenantID: a.TenantID, ID: ops.ID, ConfigEncrypted: []byte{1}}); err != nil {
+			return err
+		}
+		if err := q.UpdateChannel(ctx, notifydb.UpdateChannelParams{TenantID: a.TenantID, ID: ops.ID, Name: "revived", Events: []string{"down"}, Mention: []string{}}); err != nil {
+			return err
+		}
+		return q.SoftDeleteChannel(ctx, notifydb.SoftDeleteChannelParams{TenantID: a.TenantID, ID: ops.ID})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var untouched bool
+	if err := admin.QueryRow(ctx, `SELECT config_encrypted IS NULL AND status = 'failed' AND name = 'ops-2' AND deleted_at = $2 FROM notification_channels WHERE id = $1`,
+		ops.ID, deletedAt).Scan(&untouched); err != nil || !untouched {
+		t.Fatalf("deleted channel changed by a direct write: %v %v", untouched, err)
 	}
 	bOnly := bList[0]
 	if err := svc.Delete(ctx, b, bOnly.ID); err != nil {

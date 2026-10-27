@@ -979,7 +979,7 @@ export interface components {
     ChannelEvent: "down" | "recovered" | "tls_expiring";
     ChannelEvents: components["schemas"]["ChannelEvent"][];
     /**
-     * @description Slack mentions put in front of `down` and reminder messages; each is `@here`, `@channel`, `<!subteam^ID>` or `<@UID>` (422 otherwise)
+     * @description Slack mentions put in front of `down` and reminder messages; each is `@here`, `@channel`, `<!subteam^ID>` or `<@UID>` (400 otherwise)
      * @example [
      *       "@here"
      *     ]

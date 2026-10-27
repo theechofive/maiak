@@ -152,7 +152,13 @@ func (e *env) deliver(tenant string, monitor uuid.UUID, kind string, payload map
 	if kind != notify.DeliveryTLSExpiring {
 		inc := uuid.New()
 		incident = &inc
-		pgtest.MustExec(e.t, e.admin, fmt.Sprintf(`INSERT INTO incidents (id, tenant_id, started_at) VALUES ('%s', '%s', now())`, inc, tenant))
+		// A reminder is checked against its open incident and monitor (ADR-0100); the other kinds
+		// get incidents without a monitor, so several can be open for one monitor.
+		monitorCol := "NULL"
+		if kind == notify.DeliveryReminder {
+			monitorCol = "'" + monitor.String() + "'"
+		}
+		pgtest.MustExec(e.t, e.admin, fmt.Sprintf(`INSERT INTO incidents (id, tenant_id, monitor_id, started_at) VALUES ('%s', '%s', %s, now())`, inc, tenant, monitorCol))
 	}
 	payload["monitorId"] = monitor
 	raw, _ := json.Marshal(payload)
@@ -430,6 +436,24 @@ func TestIntegrationDeliveryMentionReminderDeleted(t *testing.T) {
 	if len(p) != 3 || !strings.HasPrefix(p[0].text, "<!here> <@U0ABC> :red_circle: *Web* is down\n") ||
 		p[1].text != "<!here> <@U0ABC> :bell: *Web* is still down (30m)" || p[2].text != ":large_green_circle: *Web* is back up after 31m" {
 		t.Fatalf("posts = %+v", p)
+	}
+
+	// A reminder whose incident resolved, or whose monitor was paused, after it was queued is not
+	// sent.
+	resolvedMon, pausedMon := e.monitor(tenantA, "Resolved"), e.monitor(tenantA, "Paused")
+	late := e.deliver(tenantA, resolvedMon, notify.DeliveryReminder, map[string]any{"monitorName": "Resolved", "durationSeconds": 600})
+	paused := e.deliver(tenantA, pausedMon, notify.DeliveryReminder, map[string]any{"monitorName": "Paused", "durationSeconds": 600})
+	pgtest.MustExec(t, e.admin,
+		`UPDATE incidents SET resolved_at = now(), resolve_reason = 'recovered' WHERE monitor_id = '`+resolvedMon.String()+`'`,
+		`UPDATE monitors SET paused = true WHERE id = '`+pausedMon.String()+`'`)
+	d.RunOnce(e.ctx)
+	for _, id := range []uuid.UUID{late, paused} {
+		if r := e.row(id); r.status != "failed" || r.lastError == nil || *r.lastError != "incident_resolved" {
+			t.Fatalf("stale reminder %s: %+v", id, r)
+		}
+	}
+	if len(e.slack.sent()) != 3 {
+		t.Fatalf("stale reminders were sent: %d posts", len(e.slack.sent()))
 	}
 
 	pgtest.MustExec(t, e.admin, `UPDATE notification_channels SET deleted_at = now(), config_encrypted = NULL, status = 'failed' WHERE tenant_id = '`+tenantB+`'`)

@@ -259,7 +259,7 @@ const lockChannel = `-- name: LockChannel :one
 SELECT id, config_encrypted, status
 FROM notification_channels
 WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
-FOR UPDATE
+FOR NO KEY UPDATE
 `
 
 type LockChannelParams struct {
@@ -273,7 +273,9 @@ type LockChannelRow struct {
 	Status          string
 }
 
-// Serialises changes of one channel (patch, delete, test outcome).
+// Serialises changes of one channel (patch, delete, test outcome). NO KEY UPDATE: the key never
+// changes, so inserts into monitor_channels and notification_deliveries (FOR KEY SHARE on the
+// referenced row) are not blocked by it.
 func (q *Queries) LockChannel(ctx context.Context, arg LockChannelParams) (LockChannelRow, error) {
 	row := q.db.QueryRow(ctx, lockChannel, arg.TenantID, arg.ID)
 	var i LockChannelRow
@@ -337,7 +339,7 @@ func (q *Queries) MarkChannelFailed(ctx context.Context, arg MarkChannelFailedPa
 const replaceChannelConfig = `-- name: ReplaceChannelConfig :exec
 UPDATE notification_channels
 SET config_encrypted = $1, status = 'active', updated_at = now()
-WHERE tenant_id = $2 AND id = $3
+WHERE tenant_id = $2 AND id = $3 AND deleted_at IS NULL
 `
 
 type ReplaceChannelConfigParams struct {
@@ -356,7 +358,7 @@ func (q *Queries) ReplaceChannelConfig(ctx context.Context, arg ReplaceChannelCo
 const softDeleteChannel = `-- name: SoftDeleteChannel :exec
 UPDATE notification_channels
 SET deleted_at = now(), config_encrypted = NULL, status = 'failed', updated_at = now()
-WHERE tenant_id = $1 AND id = $2
+WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
 `
 
 type SoftDeleteChannelParams struct {
@@ -374,7 +376,7 @@ func (q *Queries) SoftDeleteChannel(ctx context.Context, arg SoftDeleteChannelPa
 const updateChannel = `-- name: UpdateChannel :exec
 UPDATE notification_channels
 SET name = $1, events = $2, mention = $3, reminder_minutes = $4, updated_at = now()
-WHERE tenant_id = $5 AND id = $6
+WHERE tenant_id = $5 AND id = $6 AND deleted_at IS NULL
 `
 
 type UpdateChannelParams struct {
