@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Maiak API
-  version: 0.4.0
+  version: 0.5.0
   description: |
     REST API of Maiak, the multi-tenant uptime-monitoring service. This file is the source of
     truth: the Go server and the TypeScript client are generated from it (ADR-0008).
@@ -17,7 +17,7 @@ info:
     request that breaks a business rule (for example a URL with a private IP literal) gets 422.
     Both carry `fieldErrors` when the problem can be attributed to request body fields.
 
-    Field names of the monitor, check, incident and settings resources are camelCase. The auth
+    Field names of the monitor, check, incident and channel resources are camelCase. The auth
     resources predate that convention and keep their snake_case names (ADR-0017).
   contact:
     name: Maiak maintainers
@@ -34,8 +34,8 @@ tags:
     description: HTTPS and heartbeat (watchdog) monitors, their status, statistics, checks and incidents
   - name: heartbeat
     description: The public ping endpoint of heartbeat monitors
-  - name: settings
-    description: Tenant settings such as the Slack webhook
+  - name: channels
+    description: Notification channels (Slack Incoming Webhooks) and their test message
   - name: plan
     description: The tenant's plan, its limits and the current usage
   - name: admin
@@ -260,6 +260,10 @@ paths:
         `unknown` until its first ping (then `up`) or until its first deadline passes (then
         `down`).
 
+        `channelIds` selects the notification channels of the monitor (at most 10, each a channel
+        of the tenant, 422 otherwise); with no selection, `notifySlack` sends to every active
+        channel of the tenant.
+
         Fails with 409 `urn:maiak:problem:plan-limit-reached` (`limit` is `monitors` or
         `heartbeats`) when the tenant already has as many monitors of that type as its plan allows
         (deleted monitors do not count, see `GET /api/v1/usage`), and with 503 when the probe
@@ -328,7 +332,8 @@ paths:
         MVP: sending them with a different value fails with 422. A heartbeat may change `name`,
         `expectedIntervalSeconds`, `graceSeconds` and `notifySlack` (its deadline follows the new
         values); `failureThreshold` is ignored and the http fields fail with 422, as do the
-        heartbeat fields on an http monitor.
+        heartbeat fields on an http monitor. `channelIds` replaces the monitor's channel selection
+        (an empty list selects none, which means every active channel).
       tags: [monitors]
       security:
         - cookieAuth: []
@@ -621,63 +626,6 @@ paths:
           $ref: "#/components/responses/NotFound"
         default:
           $ref: "#/components/responses/Error"
-  /api/v1/settings/slack:
-    get:
-      operationId: getSlackSettings
-      summary: Slack notification settings
-      description: Whether a Slack webhook is configured. The webhook URL is a secret and is never returned.
-      tags: [settings]
-      responses:
-        "200":
-          description: Current settings
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SlackSettings"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        default:
-          $ref: "#/components/responses/Error"
-    put:
-      operationId: putSlackSettings
-      summary: Set the Slack webhook
-      description: |
-        Stores the Incoming Webhook URL encrypted. It must match
-        `https://hooks.slack.com/services/...` (422 otherwise). Replacing the URL of the existing
-        channel is always allowed; creating the channel fails with 409
-        `urn:maiak:problem:plan-limit-reached` (`limit` is `channels`) when the tenant already has
-        as many notification channels as its plan allows.
-      tags: [settings]
-      security:
-        - cookieAuth: []
-          csrfToken: []
-      parameters:
-        - $ref: "#/components/parameters/CsrfToken"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/SlackSettingsUpdate"
-      responses:
-        "200":
-          description: Settings after the change
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SlackSettings"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "409":
-          $ref: "#/components/responses/PlanLimitReached"
-        "422":
-          $ref: "#/components/responses/UnprocessableEntity"
-        default:
-          $ref: "#/components/responses/Error"
   /api/v1/usage:
     get:
       operationId: getUsage
@@ -697,12 +645,161 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         default:
           $ref: "#/components/responses/Error"
-  /api/v1/settings/slack/test:
+  /api/v1/channels:
+    get:
+      operationId: listChannels
+      summary: List notification channels
+      description: The tenant's notification channels that are not deleted, oldest first. The webhook URL is a secret and is never returned.
+      tags: [channels]
+      responses:
+        "200":
+          description: The channels of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChannelList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        default:
+          $ref: "#/components/responses/Error"
     post:
-      operationId: testSlack
-      summary: Send a Slack test message
-      description: Sends a test message to the configured webhook. Fails with 409 when no webhook is configured, 429 when called again within 5 seconds for the same tenant or when Slack rate-limits the webhook (both with Retry-After), and 502 when Slack does not accept the message (Slack's answer is never returned).
-      tags: [settings]
+      operationId: createChannel
+      summary: Create a notification channel
+      description: |
+        Creates a Slack channel. `webhookUrl` must match `https://hooks.slack.com/services/...`
+        and is stored encrypted; it is write-only. `events` defaults to every event. `mention`
+        holds at most three of `@here`, `@channel`, `<!subteam^ID>` (a user group) and `<@UID>` (a
+        user), case-sensitive, and is used only in `down` and reminder messages.
+        `reminderMinutes` is 0 (no reminders, the default) or 5 to 1440: while an incident stays
+        open, the channel gets a reminder every that many minutes. Business-rule failures are 422
+        with `fieldErrors`. Fails with 409 `urn:maiak:problem:plan-limit-reached` (`limit` is
+        `channels`) when the tenant already has as many channels as its plan allows (deleted
+        channels do not count).
+      tags: [channels]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChannelCreate"
+      responses:
+        "201":
+          description: The created channel
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Channel"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/PlanLimitReached"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/channels/{channelId}:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+    get:
+      operationId: getChannel
+      summary: One notification channel
+      tags: [channels]
+      responses:
+        "200":
+          description: The channel
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Channel"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+    patch:
+      operationId: updateChannel
+      summary: Edit a notification channel
+      description: |
+        Changes the given fields, with the rules of create. A new `webhookUrl` replaces the stored
+        one and makes a `failed` channel `active` again; deliveries already queued for the channel
+        go to the new URL.
+      tags: [channels]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChannelUpdate"
+      responses:
+        "200":
+          description: The updated channel
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Channel"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteChannel
+      summary: Delete a notification channel
+      description: |
+        Deletes the channel and its stored webhook URL. Monitors that selected it lose it from
+        their selection (a monitor left with no selection then notifies every active channel), and
+        its deliveries that are still queued are not sent (they end as failed, `channel_deleted`).
+      tags: [channels]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "204":
+          description: Deleted
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/channels/{channelId}/test:
+    parameters:
+      - $ref: "#/components/parameters/ChannelId"
+    post:
+      operationId: testChannel
+      summary: Send a test message to a channel
+      description: Sends a test message to the channel's webhook. Fails with 404 for an unknown channel, 429 when the tenant tested a channel within the last 5 seconds or when Slack rate-limits the webhook (both with Retry-After), and 502 when Slack does not accept the message (Slack's answer is never returned). A removed or revoked webhook (Slack answers 404 or 410) marks the channel `failed`.
+      tags: [channels]
       security:
         - cookieAuth: []
           csrfToken: []
@@ -711,12 +808,14 @@ paths:
       responses:
         "204":
           description: Slack accepted the message
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         default:
@@ -969,6 +1068,14 @@ components:
       schema:
         type: string
         format: uuid
+    ChannelId:
+      name: channelId
+      in: path
+      required: true
+      description: Notification channel id; a value that is not a UUID is answered with 400
+      schema:
+        type: string
+        format: uuid
     TenantId:
       name: tenantId
       in: path
@@ -1040,7 +1147,7 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
     Conflict:
-      description: The request conflicts with the current state (for example Slack is not configured)
+      description: The request conflicts with the current state (for example the monitor is not a heartbeat)
       content:
         application/problem+json:
           schema:
@@ -1270,6 +1377,13 @@ components:
         notifySlack:
           type: boolean
           default: true
+        channelIds:
+          type: array
+          description: The notification channels of the monitor; empty or omitted means every active channel of the tenant
+          maxItems: 10
+          items:
+            type: string
+            format: uuid
     MonitorUpdate:
       type: object
       additionalProperties: false
@@ -1303,6 +1417,13 @@ components:
           type: integer
           minimum: 0
           maximum: 3600
+        channelIds:
+          type: array
+          description: The notification channels of the monitor; replaces the selection; an empty list means every active channel of the tenant
+          maxItems: 10
+          items:
+            type: string
+            format: uuid
     Incident:
       type: object
       additionalProperties: false
@@ -1496,6 +1617,7 @@ components:
         - expectedIntervalSeconds
         - graceSeconds
         - uptime
+        - channelIds
         - createdAt
         - updatedAt
       properties:
@@ -1554,6 +1676,12 @@ components:
           description: Heartbeat only (null for http monitors)
         uptime:
           $ref: "#/components/schemas/Uptime"
+        channelIds:
+          type: array
+          description: The selected notification channels; empty means every active channel of the tenant
+          items:
+            type: string
+            format: uuid
         createdAt:
           type: string
           format: date-time
@@ -1649,29 +1777,118 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Incident"
-    SlackSettings:
+    ChannelType:
+      type: string
+      description: "`slack_webhook`: a Slack Incoming Webhook"
+      enum: [slack_webhook]
+    ChannelEvent:
+      type: string
+      description: "`down`: a monitor went down (and reminders while it stays down); `recovered`: it is back up; `tls_expiring`: its TLS certificate expires within 14 days"
+      enum: [down, recovered, tls_expiring]
+    ChannelEvents:
+      type: array
+      minItems: 1
+      maxItems: 3
+      uniqueItems: true
+      items:
+        $ref: "#/components/schemas/ChannelEvent"
+    ChannelMention:
+      type: array
+      description: Slack mentions put in front of `down` and reminder messages; each is `@here`, `@channel`, `<!subteam^ID>` or `<@UID>` (422 otherwise)
+      maxItems: 3
+      items:
+        type: string
+        maxLength: 32
+      example: ["@here"]
+    ReminderMinutes:
+      type: integer
+      description: 0 for no reminders, otherwise 5 to 1440 minutes between reminders while an incident stays open (1 to 4 is answered with 422)
+      minimum: 0
+      maximum: 1440
+    Channel:
       type: object
       additionalProperties: false
-      required: [configured]
+      required: [id, name, type, events, mention, reminderMinutes, status, createdAt, updatedAt]
+      description: A notification channel. Its webhook URL is a secret and is never returned.
       properties:
-        configured:
-          type: boolean
-          description: Whether a webhook is stored (the URL itself is never returned)
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: "#ops-alerts"
+        type:
+          $ref: "#/components/schemas/ChannelType"
+        events:
+          $ref: "#/components/schemas/ChannelEvents"
+        mention:
+          $ref: "#/components/schemas/ChannelMention"
+        reminderMinutes:
+          $ref: "#/components/schemas/ReminderMinutes"
         status:
           type: string
           enum: [active, failed]
-          description: Present when configured. `failed` means Slack answered 404 or 410 (the webhook was revoked); alerts are not sent until a new URL is stored.
-    SlackSettingsUpdate:
+          description: "`failed` means Slack answered 404 or 410 (the webhook was revoked); nothing is sent until a new webhook URL is stored."
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ChannelList:
       type: object
       additionalProperties: false
-      required: [webhookUrl]
+      required: [items]
       properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Channel"
+    ChannelCreate:
+      type: object
+      additionalProperties: false
+      required: [name, webhookUrl]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 60
+          example: "#ops-alerts"
+        type:
+          $ref: "#/components/schemas/ChannelType"
         webhookUrl:
           type: string
           format: password
           description: Slack Incoming Webhook URL, `https://hooks.slack.com/services/...`; write-only
           minLength: 1
           maxLength: 2048
+        events:
+          $ref: "#/components/schemas/ChannelEvents"
+        mention:
+          $ref: "#/components/schemas/ChannelMention"
+        reminderMinutes:
+          $ref: "#/components/schemas/ReminderMinutes"
+    ChannelUpdate:
+      type: object
+      additionalProperties: false
+      description: Only the given fields change.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 60
+        webhookUrl:
+          type: string
+          format: password
+          description: A new Slack Incoming Webhook URL; write-only
+          minLength: 1
+          maxLength: 2048
+        events:
+          $ref: "#/components/schemas/ChannelEvents"
+        mention:
+          $ref: "#/components/schemas/ChannelMention"
+        reminderMinutes:
+          $ref: "#/components/schemas/ReminderMinutes"
     Usage:
       type: object
       additionalProperties: false
@@ -1710,7 +1927,7 @@ components:
         channels:
           type: integer
           minimum: 0
-          description: Notification channels (the Slack webhook)
+          description: Notification channels (deleted channels do not count)
     TenantStatus:
       type: string
       description: "`suspended`: the tenant's users cannot log in and nothing of it is checked. A deleted tenant is also `suspended` and has `deletedAt`."

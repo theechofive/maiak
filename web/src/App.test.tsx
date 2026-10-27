@@ -14,7 +14,7 @@ describe("auth guard", () => {
         loggedIn = true;
         return json(session);
       },
-      "GET /api/v1/settings/slack": () => json({ configured: false }),
+      "GET /api/v1/channels": () => json({ items: [] }),
     });
     renderApp("/settings");
 
@@ -65,7 +65,7 @@ describe("auth guard", () => {
   });
 
   it("renders protected pages with a session", async () => {
-    mockApi({ ...signedIn, "GET /api/v1/settings/slack": () => json({ configured: true }) });
+    mockApi({ ...signedIn, "GET /api/v1/channels": () => json({ items: [] }) });
     renderApp("/settings");
     expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
     expect(getCsrfToken()).toBe("csrf-1");
@@ -76,7 +76,7 @@ describe("auth guard", () => {
   it("goes back to login when any request answers 401", async () => {
     mockApi({
       ...signedIn,
-      "GET /api/v1/settings/slack": () => json({ configured: true }),
+      "GET /api/v1/channels": () => json({ items: [] }),
       "GET /api/v1/monitors": () => problem(401, "Session expired"),
     });
     renderApp("/settings");
@@ -101,7 +101,7 @@ describe("auth guard", () => {
         loggedIn = false;
         return new Response(null, { status: 204 });
       },
-      "GET /api/v1/settings/slack": () => json({ configured: true }),
+      "GET /api/v1/channels": () => json({ items: [] }),
     });
     renderApp("/settings");
     await userEvent.click(await screen.findByRole("button", { name: "Log out" }));

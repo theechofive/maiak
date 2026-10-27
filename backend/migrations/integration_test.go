@@ -78,6 +78,10 @@ var definerAllowList = map[string][]string{
 	// jobs lists the heartbeats to evaluate across tenants (ADR-0094).
 	"heartbeat_ping":      {"maiak_api"},
 	"list_due_heartbeats": {"maiak_worker"},
+	// Notification channels (S-01, ADR-0100): deleting a channel fails its pending deliveries in
+	// the caller's tenant, and jobs queues reminders of open incidents across tenants.
+	"fail_deleted_channel_deliveries": {"maiak_api"},
+	"enqueue_incident_reminders":      {"maiak_worker"},
 }
 
 // extraPolicies are the permissive policies on tenant tables that are not tenant isolation
@@ -103,6 +107,11 @@ var extraPolicies = map[string]struct {
 	// heartbeat_ping and list_due_heartbeats (ADR-0094).
 	"heartbeat_tokens.owner_heartbeat_read": {cmd: "r", roles: []string{"maiak_owner"}},
 	"heartbeat_tokens.owner_heartbeat_ping": {cmd: "w", roles: []string{"maiak_owner"}},
+	// enqueue_incident_reminders (S-01, ADR-0100).
+	"incidents.owner_reminder_read":                 {cmd: "r", roles: []string{"maiak_owner"}},
+	"notification_channels.owner_reminder_read":     {cmd: "r", roles: []string{"maiak_owner"}},
+	"monitor_channels.owner_reminder_read":          {cmd: "r", roles: []string{"maiak_owner"}},
+	"notification_deliveries.owner_reminder_insert": {cmd: "a", roles: []string{"maiak_owner"}},
 }
 
 var runtimeRoles = []string{"maiak_api", "maiak_worker"}

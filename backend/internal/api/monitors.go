@@ -59,7 +59,7 @@ func (s *server) CreateMonitor(ctx context.Context, req gen.CreateMonitorRequest
 	in := monitors.CreateInput{
 		Name: b.Name, URL: b.Url, IntervalSeconds: b.IntervalSeconds, TimeoutSeconds: b.TimeoutSeconds,
 		ExpectedStatus: b.ExpectedStatus, FailureThreshold: b.FailureThreshold, NotifySlack: b.NotifySlack,
-		ExpectedIntervalSeconds: b.ExpectedIntervalSeconds, GraceSeconds: b.GraceSeconds,
+		ExpectedIntervalSeconds: b.ExpectedIntervalSeconds, GraceSeconds: b.GraceSeconds, ChannelIDs: b.ChannelIds,
 	}
 	if b.Type != nil {
 		in.Type = string(*b.Type)
@@ -100,7 +100,7 @@ func (s *server) UpdateMonitor(ctx context.Context, req gen.UpdateMonitorRequest
 	if _, err := s.monitors.Update(ctx, a, req.MonitorId, monitors.UpdateInput{
 		Name: b.Name, URL: b.Url, IntervalSeconds: b.IntervalSeconds, TimeoutSeconds: b.TimeoutSeconds,
 		ExpectedStatus: b.ExpectedStatus, FailureThreshold: b.FailureThreshold, NotifySlack: b.NotifySlack,
-		ExpectedIntervalSeconds: b.ExpectedIntervalSeconds, GraceSeconds: b.GraceSeconds,
+		ExpectedIntervalSeconds: b.ExpectedIntervalSeconds, GraceSeconds: b.GraceSeconds, ChannelIDs: b.ChannelIds,
 	}); err != nil {
 		return nil, err
 	}
@@ -225,8 +225,9 @@ func (s *server) detail(ctx context.Context, tenantID, id uuid.UUID) (gen.Monito
 		Status: gen.MonitorStatus(m.Status), StatusSince: m.StatusSince, LastErrorKind: m.LastErrorKind,
 		LastCheckedAt: m.LastCheckedAt, TlsExpiresAt: m.TLSExpiresAt, OngoingIncident: toOngoing(m.Ongoing),
 		LastPingAt: m.LastPingAt, ExpectedIntervalSeconds: expectedInterval(m), GraceSeconds: m.GraceSeconds,
-		Uptime:    gen.Uptime{H24: m.Uptime24h, D7: d.Uptime7d, D30: d.Uptime30d},
-		CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
+		Uptime:     gen.Uptime{H24: m.Uptime24h, D7: d.Uptime7d, D30: d.Uptime30d},
+		ChannelIds: d.ChannelIDs,
+		CreatedAt:  m.CreatedAt, UpdatedAt: m.UpdatedAt,
 	}, nil
 }
 

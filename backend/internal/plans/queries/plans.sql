@@ -16,7 +16,8 @@ FROM monitors
 WHERE tenant_id = @tenant_id AND deleted_at IS NULL AND type = 'heartbeat';
 
 -- name: CountChannels :one
--- Read-only count for the quota (channels are owned by internal/notify).
+-- Read-only count for the quota (channels are owned by internal/notify). Deleted channels free
+-- their slot.
 SELECT count(*)
 FROM notification_channels
-WHERE tenant_id = @tenant_id;
+WHERE tenant_id = @tenant_id AND deleted_at IS NULL;

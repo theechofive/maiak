@@ -325,11 +325,11 @@ func TestIntegrationEndToEnd(t *testing.T) {
 	})
 
 	// Slack channel through the real URL validation.
-	if r := c.do(http.MethodPut, "/api/v1/settings/slack", `{"webhookUrl":"https://hooks.slack.com.evil.test/services/x"}`, unsafe); r.code != http.StatusUnprocessableEntity {
+	if r := c.do(http.MethodPost, "/api/v1/channels", `{"name":"ops","webhookUrl":"https://hooks.slack.com.evil.test/services/x"}`, unsafe); r.code != http.StatusUnprocessableEntity {
 		t.Fatalf("foreign webhook host: %d %s", r.code, r.raw)
 	}
-	if s := c.mustDo(http.StatusOK, http.MethodPut, "/api/v1/settings/slack", `{"webhookUrl":"`+webhookURL+`"}`, unsafe); s["configured"] != true || s["status"] != "active" {
-		t.Fatalf("slack settings: %v", s)
+	if s := c.mustDo(http.StatusCreated, http.MethodPost, "/api/v1/channels", `{"name":"ops","webhookUrl":"`+webhookURL+`"}`, unsafe); s["status"] != "active" {
+		t.Fatalf("channel: %v", s)
 	}
 
 	// Monitor through the api.
@@ -452,8 +452,8 @@ func TestIntegrationEndToEnd(t *testing.T) {
 				t.Errorf("other tenant GET %s: %d %s", p, r.code, r.raw)
 			}
 		}
-		if s := c.mustDo(http.StatusOK, http.MethodGet, "/api/v1/settings/slack", "", other); s["configured"] != false {
-			t.Fatalf("other tenant slack settings: %v", s)
+		if s := c.mustDo(http.StatusOK, http.MethodGet, "/api/v1/channels", "", other); len(s["items"].([]any)) != 0 {
+			t.Fatalf("other tenant channels: %v", s)
 		}
 	})
 

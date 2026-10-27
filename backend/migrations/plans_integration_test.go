@@ -28,6 +28,7 @@ func TestIntegrationPlans(t *testing.T) {
 
 	// Replay the migration over a database of the previous release that already has tenants. The
 	// later migrations are rolled back too, since goose refuses to apply a missing older version.
+	pgtest.MustExec(t, admin, rollbackNotificationChannels...)
 	pgtest.MustExec(t, admin, rollbackAdminReviewFixes...)
 	pgtest.MustExec(t, admin, rollbackPlatformAdmin...)
 	pgtest.MustExec(t, admin,
@@ -51,8 +52,8 @@ func TestIntegrationPlans(t *testing.T) {
 		`DROP TABLE plans`,
 		`DELETE FROM goose_db_version WHERE version_id = 20261021090000`,
 		`INSERT INTO tenants (id, slug, name, limits) VALUES ('`+tenantA+`', 'default', 'Default', '{}'), ('`+tenantB+`', 'b', 'B', '{"max_monitors": 4}')`)
-	if n, err := env.Migrate(ctx); err != nil || n != 7 {
-		t.Fatalf("re-applied %d migrations, err=%v; want 7 (plans and the later registration, heartbeat, P-07, P-08, P-04 and P-09 migrations)", n, err)
+	if n, err := env.Migrate(ctx); err != nil || n != 9 {
+		t.Fatalf("re-applied %d migrations, err=%v; want 9 (plans and the later registration, heartbeat, P-07, P-08, P-04, P-09 and two S-01 migrations)", n, err)
 	}
 	// Existing rows satisfy the P-07 limits check, which is validated.
 	var validated bool

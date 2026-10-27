@@ -1,6 +1,6 @@
 # ADR-0050: Slack channel settings and the Slack notifier
 
-- Status: Accepted
+- Status: Accepted; the `/settings/slack` endpoints and the one-channel model are superseded by ADR-0100
 - Date: 2026-10-20
 
 ## Context

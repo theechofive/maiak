@@ -8,10 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/theechofive/maiak/backend/internal/notify"
 )
 
-func TestWriteErrorSlack(t *testing.T) {
+func TestWriteErrorChannels(t *testing.T) {
 	cases := []struct {
 		err        error
 		status     int
@@ -19,7 +21,7 @@ func TestWriteErrorSlack(t *testing.T) {
 		retryAfter string
 		detail     string
 	}{
-		{notify.ErrNotConfigured, 409, problemSlackNotConfigured, "", ""},
+		{notify.ErrChannelNotFound, 404, problemNotFound, "", ""},
 		{&notify.SendError{Kind: notify.KindRateLimited, Status: 429, RetryAfter: 2500 * time.Millisecond}, 429, problemRateLimited, "3", ""},
 		{&notify.SendError{Kind: notify.KindRateLimited, Status: 429}, 429, problemRateLimited, "1", ""},
 		{&notify.SendError{Kind: notify.KindNotFound, Status: 404, Permanent: true}, 502, problemSlackFailed, "", "removed or revoked"},
@@ -29,7 +31,7 @@ func TestWriteErrorSlack(t *testing.T) {
 	}
 	for _, c := range cases {
 		rec := httptest.NewRecorder()
-		writeError(rec, httptest.NewRequest(http.MethodPost, "/api/v1/settings/slack/test", nil), discard(), c.err)
+		writeError(rec, httptest.NewRequest(http.MethodPost, "/api/v1/channels/x/test", nil), discard(), c.err)
 		var p problem
 		if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
 			t.Fatal(err)
@@ -40,13 +42,17 @@ func TestWriteErrorSlack(t *testing.T) {
 	}
 }
 
-func TestToSlackSettingsOmitsStatusWhenUnconfigured(t *testing.T) {
-	b, _ := json.Marshal(toSlackSettings(notify.Settings{}))
-	if string(b) != `{"configured":false}` {
-		t.Fatalf("got %s", b)
+// The channel resource never has a webhook field, and empty lists are [] rather than null.
+func TestToChannelShape(t *testing.T) {
+	b, _ := json.Marshal(toChannel(notify.Channel{ID: uuid.Nil, Name: "ops", Type: notify.TypeSlack, Events: []string{"down"},
+		Mention: []string{}, Status: notify.StatusActive}))
+	got := string(b)
+	for _, want := range []string{`"events":["down"]`, `"mention":[]`, `"reminderMinutes":0`, `"status":"active"`, `"type":"slack_webhook"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %s in %s", want, got)
+		}
 	}
-	b, _ = json.Marshal(toSlackSettings(notify.Settings{Configured: true, Status: notify.StatusFailed}))
-	if string(b) != `{"configured":true,"status":"failed"}` {
-		t.Fatalf("got %s", b)
+	if strings.Contains(got, "webhookUrl") || strings.Contains(got, "hooks.slack.com") {
+		t.Fatalf("webhook in %s", got)
 	}
 }

@@ -45,10 +45,20 @@ SET resolved_at = greatest(coalesce(sqlc.narg('resolved_at')::timestamptz, now()
 WHERE tenant_id = @tenant_id AND id = @id AND resolved_at IS NULL
 RETURNING started_at, resolved_at;
 
--- name: GetActiveSlackChannel :one
-SELECT id
-FROM notification_channels
-WHERE tenant_id = @tenant_id AND type = 'slack_webhook' AND status = 'active';
+-- name: ListDeliveryChannels :many
+-- Read-only (channels are owned by internal/notify): the active channels of a monitor with the
+-- events they receive. A monitor without a selection in monitor_channels notifies every active
+-- channel of its tenant (ADR-0100).
+SELECT c.id, c.events
+FROM notification_channels AS c
+WHERE c.tenant_id = @tenant_id AND c.deleted_at IS NULL AND c.status = 'active'
+  AND (
+      EXISTS (SELECT 1 FROM monitor_channels AS mc
+              WHERE mc.tenant_id = c.tenant_id AND mc.monitor_id = @monitor_id AND mc.channel_id = c.id)
+      OR NOT EXISTS (SELECT 1 FROM monitor_channels AS mc
+                     WHERE mc.tenant_id = c.tenant_id AND mc.monitor_id = @monitor_id)
+  )
+ORDER BY c.created_at, c.id;
 
 -- name: InsertDelivery :exec
 INSERT INTO notification_deliveries (id, tenant_id, kind, monitor_id, incident_id, channel_id, payload)

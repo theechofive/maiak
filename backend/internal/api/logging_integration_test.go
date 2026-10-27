@@ -27,7 +27,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
 )
 
-// The request logs of a login, a monitor create and a Slack PUT carry request_id, tenant_id,
+// The request logs of a login, a monitor create and a channel create carry request_id, tenant_id,
 // method, route template, status and duration, and none of the secrets those requests carry.
 func TestIntegrationRequestLogsCarryNoSecrets(t *testing.T) {
 	env := pgtest.New(t, pgtest.DBName("apilogs"))
@@ -77,12 +77,12 @@ func TestIntegrationRequestLogsCarryNoSecrets(t *testing.T) {
 	if m.code != http.StatusCreated || m.header.Get("X-Request-Id") == "" {
 		t.Fatalf("create: %d %s", m.code, m.raw)
 	}
-	if s := c.do(http.MethodPut, "/api/v1/settings/slack", `{"webhookUrl":"`+slackURL+`"}`, unsafe); s.code != http.StatusOK {
-		t.Fatalf("slack put: %d %s", s.code, s.raw)
+	if s := c.do(http.MethodPost, "/api/v1/channels", `{"name":"ops","webhookUrl":"`+slackURL+`"}`, unsafe); s.code != http.StatusCreated {
+		t.Fatalf("channel create: %d %s", s.code, s.raw)
 	}
 	// A rejected value must not be echoed into the logs either.
-	if s := c.do(http.MethodPut, "/api/v1/settings/slack", `{"webhookUrl":"https://evil.example.com/rejected-webhook-secret"}`, unsafe); s.code != http.StatusUnprocessableEntity {
-		t.Fatalf("bad slack put: %d %s", s.code, s.raw)
+	if s := c.do(http.MethodPost, "/api/v1/channels", `{"name":"ops","webhookUrl":"https://evil.example.com/rejected-webhook-secret"}`, unsafe); s.code != http.StatusUnprocessableEntity {
+		t.Fatalf("bad channel create: %d %s", s.code, s.raw)
 	}
 	if g := c.do(http.MethodGet, "/api/v1/monitors/"+m.body["id"].(string), "", unsafe); g.code != http.StatusOK {
 		t.Fatalf("get: %d", g.code)
@@ -103,8 +103,8 @@ func TestIntegrationRequestLogsCarryNoSecrets(t *testing.T) {
 	want := map[string]bool{
 		"POST /api/v1/auth/login 200":          false,
 		"POST /api/v1/monitors 201":            false,
-		"PUT /api/v1/settings/slack 200":       false,
-		"PUT /api/v1/settings/slack 422":       false,
+		"POST /api/v1/channels 201":            false,
+		"POST /api/v1/channels 422":            false,
 		"GET /api/v1/monitors/{monitorId} 200": false,
 	}
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {

@@ -19,6 +19,8 @@ export interface MonitorFormValues {
   expectedCode: string;
   failureThreshold: number;
   notifySlack: boolean;
+  /** Selected notification channels; none means every active channel (ADR-0100). */
+  channelIds: string[];
   /** Heartbeat fields, as typed (seconds). */
   expectedIntervalSeconds: string;
   graceSeconds: string;
@@ -31,6 +33,7 @@ export const formFields = [
   "expectedStatus",
   "failureThreshold",
   "notifySlack",
+  "channelIds",
   "expectedIntervalSeconds",
   "graceSeconds",
 ] as const;
@@ -52,6 +55,7 @@ export const emptyMonitorForm: MonitorFormValues = {
   expectedCode: "200",
   failureThreshold: 2,
   notifySlack: true,
+  channelIds: [],
   expectedIntervalSeconds: String(DEFAULT_INTERVAL),
   graceSeconds: String(DEFAULT_GRACE),
 };
@@ -66,6 +70,7 @@ export function valuesFromMonitor(m: MonitorDetail): MonitorFormValues {
     expectedCode: exact ? m.expectedStatus : "200",
     failureThreshold: m.failureThreshold,
     notifySlack: m.notifySlack,
+    channelIds: m.channelIds,
     expectedIntervalSeconds: String(m.expectedIntervalSeconds ?? DEFAULT_INTERVAL),
     graceSeconds: String(m.graceSeconds ?? DEFAULT_GRACE),
   };
@@ -131,6 +136,7 @@ export function toMonitorRequest(v: MonitorFormValues): MonitorUpdate {
       expectedIntervalSeconds: Number(v.expectedIntervalSeconds.trim()),
       graceSeconds: Number(v.graceSeconds.trim()),
       notifySlack: v.notifySlack,
+      channelIds: v.channelIds,
     };
   }
   return {
@@ -139,6 +145,7 @@ export function toMonitorRequest(v: MonitorFormValues): MonitorUpdate {
     expectedStatus: v.expectedMode === "2xx" ? "2xx" : v.expectedCode.trim(),
     failureThreshold: v.failureThreshold,
     notifySlack: v.notifySlack,
+    channelIds: v.channelIds,
   };
 }
 

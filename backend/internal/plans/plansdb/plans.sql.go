@@ -14,10 +14,11 @@ import (
 const countChannels = `-- name: CountChannels :one
 SELECT count(*)
 FROM notification_channels
-WHERE tenant_id = $1
+WHERE tenant_id = $1 AND deleted_at IS NULL
 `
 
-// Read-only count for the quota (channels are owned by internal/notify).
+// Read-only count for the quota (channels are owned by internal/notify). Deleted channels free
+// their slot.
 func (q *Queries) CountChannels(ctx context.Context, tenantID uuid.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countChannels, tenantID)
 	var count int64

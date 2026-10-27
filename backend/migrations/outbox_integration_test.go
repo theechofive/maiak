@@ -244,9 +244,10 @@ func TestIntegrationOutbox(t *testing.T) {
 		if n := countInTenant(t, worker, tenantB, `SELECT count(*) FROM notification_deliveries WHERE tenant_id = '`+tenantA+`'`); n != 0 {
 			t.Errorf("tenant B sees %d deliveries of tenant A", n)
 		}
+		// Several Slack channels per tenant since S-01 (ADR-0100, superseding ADR-0019).
 		if _, err := execInTenant(t, api, tenantA, `INSERT INTO notification_channels (id, tenant_id, type, config_encrypted)
-			VALUES (gen_random_uuid(), '`+tenantA+`', 'slack_webhook', '\x01')`); err == nil || !strings.Contains(err.Error(), "notification_channels_one_slack_idx") {
-			t.Errorf("second Slack channel: err = %v, want the unique index", err)
+			VALUES (gen_random_uuid(), '`+tenantA+`', 'slack_webhook', '\x01')`); err != nil {
+			t.Errorf("second Slack channel: %v", err)
 		}
 	})
 }

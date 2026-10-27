@@ -123,7 +123,7 @@ func TestFormatRejectsBadPayloads(t *testing.T) {
 		raw  string
 	}{
 		"not json":         {DeliveryOpened, "nope"},
-		"unknown kind":     {"reminder", `{"monitorName":"a"}`},
+		"unknown kind":     {"agent_offline", `{"monitorName":"a"}`},
 		"tls without date": {DeliveryTLSExpiring, `{"monitorName":"a","daysLeft":3}`},
 	} {
 		if _, err := Format(c.kind, []byte(c.raw), publicURL); !errors.Is(err, ErrBadPayload) {
@@ -163,4 +163,44 @@ func mustJSON(t *testing.T, v any) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+func TestFormatReminder(t *testing.T) {
+	got, err := Format(DeliveryReminder, mustJSON(t, map[string]any{
+		"monitorId": monitorID, "monitorName": "API <b>", "incidentId": uuid.New(), "durationSeconds": 2*3600 + 5*60,
+	}), publicURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := ":bell: *API &lt;b&gt;* is still down (2h 5m)"; got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+// Mentions go in front of opened and reminder messages only, rendered as Slack special mentions.
+func TestMessageMentions(t *testing.T) {
+	opened := mustJSON(t, map[string]any{"monitorId": monitorID, "monitorName": "API", "reason": "timeout"})
+	mention := []string{"@here", "<!subteam^S0ABC123>", "<@U0ABC>", "@channel"}
+	got, err := Message(DeliveryOpened, opened, publicURL, mention)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got, "<!here> <!subteam^S0ABC123> <@U0ABC> <!channel> :red_circle: *API* is down\n") {
+		t.Fatalf("opened: %q", got)
+	}
+	reminder := mustJSON(t, map[string]any{"monitorName": "API", "durationSeconds": 600})
+	if got, _ := Message(DeliveryReminder, reminder, publicURL, []string{"@here"}); got != "<!here> :bell: *API* is still down (10m)" {
+		t.Fatalf("reminder: %q", got)
+	}
+	resolved := mustJSON(t, map[string]any{"monitorName": "API", "durationSeconds": 60})
+	if got, _ := Message(DeliveryResolved, resolved, publicURL, []string{"@here"}); got != ":large_green_circle: *API* is back up after 1m" {
+		t.Fatalf("resolved mentions: %q", got)
+	}
+	// A stored value that does not pass validation is dropped, never sent raw.
+	if got, _ := Message(DeliveryReminder, reminder, publicURL, []string{"<!everyone>", "<https://evil|x>"}); got != ":bell: *API* is still down (10m)" {
+		t.Fatalf("invalid mention sent: %q", got)
+	}
+	if _, err := Message("nope", reminder, publicURL, nil); !errors.Is(err, ErrBadPayload) {
+		t.Fatalf("bad kind: %v", err)
+	}
 }

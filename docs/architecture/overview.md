@@ -45,7 +45,7 @@ flowchart LR
 | `worker` | the worker loop: limits, batching, result transactions | none |
 | `results` | result inserts and latency buckets; rollups are computed by the `compute_rollups` function | `check_results`, `result_rollups_hourly` |
 | `incidents` | state machine (`incidents/machine`, pure), incident open/resolve, outbox rows | `incidents`, `incident_monitors`, `notification_deliveries` (outcomes are recorded by `jobs` through `finish_delivery`) |
-| `notify` | Slack channel settings (encrypted), message formats, Slack notifier | `notification_channels`, `monitor_channels` |
+| `notify` | notification channels (Slack webhooks, encrypted; events, mention, reminders), the channel selection of monitors, message formats, Slack notifier (ADR-0100) | `notification_channels`, `monitor_channels` |
 | `jobs` | outbox delivery loop (`Notifier` seam) and housekeeping | none |
 | `audit` | audit log rows | `audit_log` |
 | `queries` | read models for the dashboard (cross-table SELECT only) | none |
@@ -67,9 +67,10 @@ worker  -> claim_due_monitors(n, location)   lease on (monitor, location), skips
              results.Insert                  check_results row
              scheduler.Complete              lease check (stale -> discard), next_run_at
              incidents.ApplyResult           location and monitor state; open/resolve incident;
-                                             notification_deliveries row when Slack is active (SAME transaction)
-jobs    -> claim_deliveries(n)               oldest first per monitor, claim token, lease 2 min; skips inactive tenants, fails pending rows of deleted ones (ADR-0098)
-        -> notify.Format + SlackNotifier     guarded client, no redirects
+                                             one notification_deliveries row per eligible channel and event (SAME transaction, ADR-0100)
+jobs    -> claim_deliveries(n)               oldest first per (monitor, channel), claim token, lease 2 min; skips inactive tenants, fails pending rows of deleted ones (ADR-0098)
+        -> notify.Message + SlackNotifier    channel mention on opened/reminder, guarded client, no redirects
+        -> enqueue_incident_reminders(n)     every minute: reminder rows for incidents still open (ADR-0100)
         -> finish_delivery(id, token, ...)   sent / retry with backoff / failed after 5 attempts
 web     -> GET /api/v1/...                   api reads through internal/queries (monitor_state, results, rollups, incidents)
 ```

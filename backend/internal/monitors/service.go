@@ -20,6 +20,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/audit"
 	"github.com/theechofive/maiak/backend/internal/incidents"
 	"github.com/theechofive/maiak/backend/internal/monitors/monitorsdb"
+	"github.com/theechofive/maiak/backend/internal/notify"
 	"github.com/theechofive/maiak/backend/internal/plans"
 	"github.com/theechofive/maiak/backend/internal/platform/db"
 	"github.com/theechofive/maiak/backend/internal/platform/uuidv7"
@@ -108,6 +109,8 @@ type CreateInput struct {
 	NotifySlack             *bool
 	ExpectedIntervalSeconds *int
 	GraceSeconds            *int
+	// ChannelIDs selects notification channels (none: every active channel, ADR-0100).
+	ChannelIDs *[]uuid.UUID
 }
 
 // UpdateInput changes the non-nil fields (the same per-type rules as CreateInput).
@@ -121,6 +124,8 @@ type UpdateInput struct {
 	NotifySlack             *bool
 	ExpectedIntervalSeconds *int
 	GraceSeconds            *int
+	// ChannelIDs replaces the channel selection.
+	ChannelIDs *[]uuid.UUID
 }
 
 // httpConfig is monitors.config for type http.
@@ -251,6 +256,11 @@ func (s *Service) Create(ctx context.Context, a Actor, in CreateInput) (Monitor,
 		if err := q.InsertMonitorState(ctx, monitorsdb.InsertMonitorStateParams{TenantID: a.TenantID, MonitorID: id}); err != nil {
 			return fmt.Errorf("insert monitor state: %w", err)
 		}
+		if in.ChannelIDs != nil {
+			if _, err := notify.SetMonitorChannels(ctx, tx, a.TenantID, id, *in.ChannelIDs); err != nil {
+				return err
+			}
+		}
 		if err := s.audit(ctx, tx, a, ActionCreated, id, map[string]any{"type": row.Type}); err != nil {
 			return err
 		}
@@ -278,7 +288,7 @@ func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateIn
 		if err != nil {
 			return fmt.Errorf("lock monitor: %w", err)
 		}
-		name, interval, threshold, notify := cur.Name, int(cur.IntervalSeconds), int(cur.FailureThreshold), cur.NotifySlack
+		name, interval, threshold, notifySlack := cur.Name, int(cur.IntervalSeconds), int(cur.FailureThreshold), cur.NotifySlack
 
 		var verr validation.Error
 		var changed []string
@@ -290,7 +300,7 @@ func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateIn
 			changed, name = appendIf(changed, "name", v != name), v
 		}
 		if in.NotifySlack != nil {
-			changed, notify = appendIf(changed, "notifySlack", *in.NotifySlack != notify), *in.NotifySlack
+			changed, notifySlack = appendIf(changed, "notifySlack", *in.NotifySlack != notifySlack), *in.NotifySlack
 		}
 		checkFixed(&verr, "intervalSeconds", in.IntervalSeconds, int(cur.IntervalSeconds))
 		checkFixed(&verr, "timeoutSeconds", in.TimeoutSeconds, int(cur.TimeoutSeconds))
@@ -343,6 +353,13 @@ func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateIn
 		if err := verr.Err(); err != nil {
 			return err
 		}
+		if in.ChannelIDs != nil {
+			selected, err := notify.SetMonitorChannels(ctx, tx, a.TenantID, id, *in.ChannelIDs)
+			if err != nil {
+				return err
+			}
+			changed = appendIf(changed, "channelIds", selected)
+		}
 		if slices.Contains(changed, "url") {
 			// A new URL is a new target: its history says nothing about it. Restart like resume
 			// and end an open incident without a notification (ADR-0018).
@@ -360,7 +377,7 @@ func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateIn
 			}
 			if err := q.UpdateMonitor(ctx, monitorsdb.UpdateMonitorParams{
 				TenantID: a.TenantID, ID: id, Name: name, Config: raw, IntervalSeconds: int32(interval), //nolint:gosec // validated
-				FailureThreshold: int32(threshold), NotifySlack: notify, //nolint:gosec // validated 1..3
+				FailureThreshold: int32(threshold), NotifySlack: notifySlack, //nolint:gosec // validated 1..3
 			}); err != nil {
 				return fmt.Errorf("update monitor: %w", err)
 			}

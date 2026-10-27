@@ -1,8 +1,9 @@
 // Package queries holds the read models of the dashboard: monitor list and detail, statistics,
-// recent checks and incidents. They read across tables owned by monitors, scheduler, results
-// and incidents but never write (CLAUDE.md rule 1). Every query runs in a tenant transaction
-// (db.WithTenantTx) and reads raw results only through the (monitor_id, checked_at) key, for
-// bounded windows; longer ranges come from the hourly rollups (ADR-0005, ADR-0016, ADR-0041).
+// recent checks and incidents. They read across tables owned by monitors, scheduler, results,
+// incidents and notify (a monitor's channel selection) but never write (CLAUDE.md rule 1).
+// Every query runs in a tenant transaction (db.WithTenantTx) and reads raw results only through
+// the (monitor_id, checked_at) key, for bounded windows; longer ranges come from the hourly
+// rollups (ADR-0005, ADR-0016, ADR-0041).
 package queries
 
 import (
@@ -98,6 +99,9 @@ type Detail struct {
 	Monitor
 	Uptime7d  *float64
 	Uptime30d *float64
+	// ChannelIDs is the monitor's channel selection (monitor_channels); empty means every active
+	// channel of the tenant (ADR-0100).
+	ChannelIDs []uuid.UUID
 }
 
 // Summary counts monitors by display state; a paused monitor counts only as paused.
@@ -230,6 +234,17 @@ func (s *Service) Monitor(ctx context.Context, tenantID, id uuid.UUID) (Detail, 
 				return err
 			}
 			*w.dst = up[id]
+		}
+		rows, err := tx.Query(ctx, `SELECT channel_id FROM monitor_channels WHERE tenant_id = $1 AND monitor_id = $2 ORDER BY created_at, channel_id`, tenantID, id)
+		if err != nil {
+			return fmt.Errorf("channels: %w", err)
+		}
+		d.ChannelIDs, err = pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+		if err != nil {
+			return fmt.Errorf("channels: %w", err)
+		}
+		if d.ChannelIDs == nil {
+			d.ChannelIDs = []uuid.UUID{}
 		}
 		return nil
 	})

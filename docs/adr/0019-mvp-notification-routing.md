@@ -1,6 +1,6 @@
 # ADR-0019: MVP notification routing: one Slack channel per tenant, monitor_channels unused
 
-- Status: Accepted
+- Status: Superseded by ADR-0100
 - Date: 2026-10-20
 
 ## Context

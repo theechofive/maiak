@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -184,16 +185,28 @@ func (s *Service) ApplyResult(ctx context.Context, tx pgx.Tx, in ResultInput) (m
 	return out, nil
 }
 
-// enqueue writes one outbox row per emitted kind, but only when the tenant has an active Slack
-// channel (ADR-0019): without one there is nobody to deliver to.
+// eventOf is the channel event (notification_channels.events) that receives a kind (ADR-0100).
+func eventOf(kind machine.Kind) string {
+	switch kind {
+	case machine.KindOpened:
+		return "down"
+	case machine.KindResolved:
+		return "recovered"
+	}
+	return "tls_expiring"
+}
+
+// enqueue writes one outbox row per emitted kind and per active channel of the monitor that
+// receives the kind's event (ADR-0100): the channels the monitor selected, or every active
+// channel of the tenant when it selected none. Without such a channel nothing is queued.
 func (s *Service) enqueue(ctx context.Context, q *incidentsdb.Queries, in ResultInput, out machine.Output, base payloadBase,
 	incidentID *uuid.UUID, startedAt time.Time) error {
-	channel, err := q.GetActiveSlackChannel(ctx, in.TenantID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
+	channels, err := q.ListDeliveryChannels(ctx, incidentsdb.ListDeliveryChannelsParams{TenantID: in.TenantID, MonitorID: in.MonitorID})
 	if err != nil {
-		return fmt.Errorf("incidents: slack channel: %w", err)
+		return fmt.Errorf("incidents: delivery channels: %w", err)
+	}
+	if len(channels) == 0 {
+		return nil
 	}
 	for _, kind := range out.Emit {
 		p := payload{payloadBase: base}
@@ -216,11 +229,16 @@ func (s *Service) enqueue(ctx context.Context, q *incidentsdb.Queries, in Result
 		if err != nil {
 			return fmt.Errorf("incidents: payload: %w", err)
 		}
-		if err := q.InsertDelivery(ctx, incidentsdb.InsertDeliveryParams{
-			ID: uuidv7.New(), TenantID: in.TenantID, Kind: string(kind), MonitorID: in.MonitorID,
-			IncidentID: incident, ChannelID: channel, Payload: raw,
-		}); err != nil {
-			return fmt.Errorf("incidents: enqueue %s: %w", kind, err)
+		for _, ch := range channels {
+			if !slices.Contains(ch.Events, eventOf(kind)) {
+				continue
+			}
+			if err := q.InsertDelivery(ctx, incidentsdb.InsertDeliveryParams{
+				ID: uuidv7.New(), TenantID: in.TenantID, Kind: string(kind), MonitorID: in.MonitorID,
+				IncidentID: incident, ChannelID: ch.ID, Payload: raw,
+			}); err != nil {
+				return fmt.Errorf("incidents: enqueue %s: %w", kind, err)
+			}
 		}
 	}
 	return nil

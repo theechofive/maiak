@@ -88,6 +88,7 @@ describe("validateMonitorForm", () => {
       expectedStatus: "204",
       failureThreshold: 2,
       notifySlack: true,
+      channelIds: [],
     });
   });
 });

@@ -28,19 +28,6 @@ func (q *Queries) ClearCurrentIncident(ctx context.Context, arg ClearCurrentInci
 	return err
 }
 
-const getActiveSlackChannel = `-- name: GetActiveSlackChannel :one
-SELECT id
-FROM notification_channels
-WHERE tenant_id = $1 AND type = 'slack_webhook' AND status = 'active'
-`
-
-func (q *Queries) GetActiveSlackChannel(ctx context.Context, tenantID uuid.UUID) (uuid.UUID, error) {
-	row := q.db.QueryRow(ctx, getActiveSlackChannel, tenantID)
-	var id uuid.UUID
-	err := row.Scan(&id)
-	return id, err
-}
-
 const getMonitorForResult = `-- name: GetMonitorForResult :one
 SELECT name, config, failure_threshold, notify_slack, paused, (deleted_at IS NOT NULL)::boolean AS deleted
 FROM monitors
@@ -142,6 +129,52 @@ type InsertIncidentMonitorParams struct {
 func (q *Queries) InsertIncidentMonitor(ctx context.Context, arg InsertIncidentMonitorParams) error {
 	_, err := q.db.Exec(ctx, insertIncidentMonitor, arg.TenantID, arg.IncidentID, arg.MonitorID)
 	return err
+}
+
+const listDeliveryChannels = `-- name: ListDeliveryChannels :many
+SELECT c.id, c.events
+FROM notification_channels AS c
+WHERE c.tenant_id = $1 AND c.deleted_at IS NULL AND c.status = 'active'
+  AND (
+      EXISTS (SELECT 1 FROM monitor_channels AS mc
+              WHERE mc.tenant_id = c.tenant_id AND mc.monitor_id = $2 AND mc.channel_id = c.id)
+      OR NOT EXISTS (SELECT 1 FROM monitor_channels AS mc
+                     WHERE mc.tenant_id = c.tenant_id AND mc.monitor_id = $2)
+  )
+ORDER BY c.created_at, c.id
+`
+
+type ListDeliveryChannelsParams struct {
+	TenantID  uuid.UUID
+	MonitorID uuid.UUID
+}
+
+type ListDeliveryChannelsRow struct {
+	ID     uuid.UUID
+	Events []string
+}
+
+// Read-only (channels are owned by internal/notify): the active channels of a monitor with the
+// events they receive. A monitor without a selection in monitor_channels notifies every active
+// channel of its tenant (ADR-0100).
+func (q *Queries) ListDeliveryChannels(ctx context.Context, arg ListDeliveryChannelsParams) ([]ListDeliveryChannelsRow, error) {
+	rows, err := q.db.Query(ctx, listDeliveryChannels, arg.TenantID, arg.MonitorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListDeliveryChannelsRow
+	for rows.Next() {
+		var i ListDeliveryChannelsRow
+		if err := rows.Scan(&i.ID, &i.Events); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const lockMonitorState = `-- name: LockMonitorState :one

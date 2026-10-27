@@ -105,6 +105,7 @@ describe("watchdog form", () => {
       expectedIntervalSeconds: 300,
       graceSeconds: 60,
       notifySlack: true,
+      channelIds: [],
     });
     expect(toMonitorRequest(valid)).not.toHaveProperty("type");
     expect(

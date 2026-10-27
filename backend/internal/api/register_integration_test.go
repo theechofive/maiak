@@ -397,9 +397,7 @@ func TestIntegrationRegisteredTenantsAreIsolated(t *testing.T) {
 	if p := c.do(http.MethodPost, "/api/v1/monitors/"+hbID+"/pause", "", withCSRF(aCookie, aCSRF)); p.code != http.StatusOK {
 		t.Fatalf("alice pause: %d %s", p.code, p.raw)
 	}
-	if s := c.do(http.MethodPut, "/api/v1/settings/slack", `{"webhookUrl":"`+slackURL+`"}`, withCSRF(aCookie, aCSRF)); s.code != http.StatusOK {
-		t.Fatalf("alice slack: %d %s", s.code, s.raw)
-	}
+	aChannel := createChannel(t, c, withCSRF(aCookie, aCSRF), `{"name":"alice","webhookUrl":"`+slackURL+`"}`)
 	tokenHash := func() string {
 		var h string
 		if err := env.AdminConn(t).QueryRow(context.Background(), `SELECT encode(token_hash, 'hex') FROM heartbeat_tokens WHERE monitor_id = $1`, hbID).Scan(&h); err != nil {
@@ -433,17 +431,21 @@ func TestIntegrationRegisteredTenantsAreIsolated(t *testing.T) {
 		{http.MethodPost, "/api/v1/monitors/" + hbID + "/heartbeat-token", ""},
 		{http.MethodDelete, "/api/v1/monitors/" + id, ""},
 		{http.MethodDelete, "/api/v1/monitors/" + hbID, ""},
+		{http.MethodGet, "/api/v1/channels/" + aChannel, ""},
+		{http.MethodPatch, "/api/v1/channels/" + aChannel, `{"webhookUrl":"https://hooks.slack.com/services/TBOB/BBOB/hijack"}`},
+		{http.MethodPost, "/api/v1/channels/" + aChannel + "/test", ""},
+		{http.MethodDelete, "/api/v1/channels/" + aChannel, ""},
 	} {
 		if r := c.do(rq.method, rq.path, rq.body, withCSRF(bCookie, bCSRF)); r.code != http.StatusNotFound {
 			t.Errorf("bob %s %s: %d %s", rq.method, rq.path, r.code, r.raw)
 		}
 	}
-	if s := c.do(http.MethodGet, "/api/v1/settings/slack", "", bCookie); s.code != http.StatusOK || s.body["configured"] != false {
-		t.Fatalf("bob slack: %d %s", s.code, s.raw)
+	if s := c.do(http.MethodGet, "/api/v1/channels", "", bCookie); s.code != http.StatusOK || s.raw != `{"items":[]}`+"\n" {
+		t.Fatalf("bob channels: %d %s", s.code, s.raw)
 	}
-	// Bob's Slack test has no channel of its own and must not reach Alice's webhook.
-	if s := c.do(http.MethodPost, "/api/v1/settings/slack/test", "", withCSRF(bCookie, bCSRF)); s.code < 400 {
-		t.Fatalf("bob slack test: %d %s", s.code, s.raw)
+	// Bob cannot select Alice's channel for his own monitor.
+	if s := c.do(http.MethodPost, "/api/v1/monitors", `{"name":"Bob","url":"https://bob.example.com","channelIds":["`+aChannel+`"]}`, withCSRF(bCookie, bCSRF)); s.code != http.StatusUnprocessableEntity {
+		t.Fatalf("bob selects alice's channel: %d %s", s.code, s.raw)
 	}
 	sender.mu.Lock()
 	sent := len(sender.urls)
@@ -451,12 +453,10 @@ func TestIntegrationRegisteredTenantsAreIsolated(t *testing.T) {
 	if sent != 0 {
 		t.Fatalf("bob's Slack test sent %d messages", sent)
 	}
-	// Bob's own Slack channel does not replace Alice's.
+	// Bob's own channel does not replace Alice's.
 	const bobSlack = "https://hooks.slack.com/services/TBOB/BBOB/bobsecret"
-	if s := c.do(http.MethodPut, "/api/v1/settings/slack", `{"webhookUrl":"`+bobSlack+`"}`, withCSRF(bCookie, bCSRF)); s.code != http.StatusOK {
-		t.Fatalf("bob slack put: %d %s", s.code, s.raw)
-	}
-	if s := c.do(http.MethodPost, "/api/v1/settings/slack/test", "", withCSRF(aCookie, aCSRF)); s.code >= 300 {
+	createChannel(t, c, withCSRF(bCookie, bCSRF), `{"name":"bob","webhookUrl":"`+bobSlack+`"}`)
+	if s := c.do(http.MethodPost, "/api/v1/channels/"+aChannel+"/test", "", withCSRF(aCookie, aCSRF)); s.code >= 300 {
 		t.Fatalf("alice slack test: %d %s", s.code, s.raw)
 	}
 	sender.mu.Lock()

@@ -1,6 +1,7 @@
 // Package jobs is cmd/jobs: it delivers the notification outbox (claim_deliveries /
 // finish_delivery) through the Slack notifier, and runs the singleton housekeeping tasks
-// (partitions, rollups, retention, session purge) under Postgres advisory locks (ADR-0051).
+// (partitions, rollups, retention, session purge, heartbeat evaluation, incident reminders)
+// under Postgres advisory locks (ADR-0051).
 package jobs
 
 import (
@@ -219,6 +220,8 @@ func (r *Deliverer) deliver(ctx context.Context, dl delivery) {
 	case err != nil:
 		log.ErrorContext(ctx, "reading the delivery channel failed; the lease will expire", "error", err)
 		return
+	case target.Deleted:
+		reason = "channel_deleted"
 	case target.Status != notify.StatusActive:
 		reason = "channel_failed"
 	}
@@ -226,7 +229,7 @@ func (r *Deliverer) deliver(ctx context.Context, dl delivery) {
 		r.finish(ctx, log, dl, outcome{status: statusFailed, errKind: reason})
 		return
 	}
-	text, err := notify.Format(dl.Kind, dl.Payload, r.cfg.PublicURL)
+	text, err := notify.Message(dl.Kind, dl.Payload, r.cfg.PublicURL, target.Mention)
 	if err != nil {
 		r.finish(ctx, log, dl, outcome{status: statusFailed, errKind: "bad_payload"})
 		return

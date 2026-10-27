@@ -75,14 +75,16 @@ describe("apiFetch", () => {
 describe("generated client through the wrapper", () => {
   it("sends the CSRF header on unsafe calls without the caller passing it", async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
-    await unwrap(client.POST("/api/v1/settings/slack/test"));
+    await unwrap(
+      client.POST("/api/v1/channels/{channelId}/test", { params: { path: { channelId: "c1" } } }),
+    );
     expect(lastRequest().method).toBe("POST");
     expect(lastRequest().headers.get("X-CSRF-Token")).toBe("token-123");
   });
 
   it("sends no CSRF header on a GET even with a token", async () => {
-    fetchMock.mockResolvedValue(Response.json({ configured: true }));
-    await unwrap(client.GET("/api/v1/settings/slack"));
+    fetchMock.mockResolvedValue(Response.json({ items: [] }));
+    await unwrap(client.GET("/api/v1/channels"));
     expect(lastRequest().method).toBe("GET");
     expect(lastRequest().headers.has("X-CSRF-Token")).toBe(false);
   });
@@ -99,8 +101,8 @@ describe("generated client through the wrapper", () => {
       }),
     );
     const err = await unwrap(
-      client.PUT("/api/v1/settings/slack", {
-        body: { webhookUrl: "https://hooks.slack.com/services/a" },
+      client.POST("/api/v1/channels", {
+        body: { name: "ops", webhookUrl: "https://hooks.slack.com/services/a" },
       }),
     ).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
@@ -152,10 +154,8 @@ describe("generated client through the wrapper", () => {
   });
 
   it("returns the parsed body on success", async () => {
-    fetchMock.mockResolvedValue(Response.json({ configured: true }));
-    await expect(unwrap(client.GET("/api/v1/settings/slack"))).resolves.toEqual({
-      configured: true,
-    });
+    fetchMock.mockResolvedValue(Response.json({ items: [] }));
+    await expect(unwrap(client.GET("/api/v1/channels"))).resolves.toEqual({ items: [] });
   });
 
   it("turns problem+json with fieldErrors into a typed ApiError", async () => {

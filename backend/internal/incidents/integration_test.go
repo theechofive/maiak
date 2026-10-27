@@ -292,3 +292,83 @@ func TestIntegrationPauseAndDeleteResolveIncidents(t *testing.T) {
 		}
 	})
 }
+
+// Each emitted kind is queued once per active channel of the monitor that receives its event:
+// every live active channel when the monitor selects none, otherwise only the selected ones
+// (ADR-0100).
+func TestIntegrationDeliveryPerChannel(t *testing.T) {
+	f := newFixture(t)
+	channel := func(tenant, name, cols, vals string) uuid.UUID {
+		t.Helper()
+		id := uuid.New()
+		pgtest.MustExec(t, f.admin, `INSERT INTO notification_channels (id, tenant_id, type, config_encrypted, name`+cols+`)
+			VALUES ('`+id.String()+`', '`+tenant+`', 'slack_webhook', '\x01', '`+name+`'`+vals+`)`)
+		return id
+	}
+	all := channel(tenantA, "all", "", "")
+	downOnly := channel(tenantA, "down", ", events", ", '{down}'")
+	recoveredOnly := channel(tenantA, "recovered", ", events", ", '{recovered}'")
+	channel(tenantA, "failed", ", status", ", 'failed'")
+	channel(tenantA, "deleted", ", deleted_at, status", ", now(), 'failed'")
+	other := channel(tenantB, "other tenant", "", "")
+	names := map[uuid.UUID]string{all: "all", downOnly: "down", recoveredOnly: "recovered"}
+	sent := func(monitor uuid.UUID) string {
+		t.Helper()
+		rows, err := f.admin.Query(f.ctx, `SELECT kind, channel_id FROM notification_deliveries WHERE monitor_id = $1 ORDER BY created_at, id`, monitor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for rows.Next() {
+			var kind string
+			var ch uuid.UUID
+			if err := rows.Scan(&kind, &ch); err != nil {
+				t.Fatal(err)
+			}
+			n, ok := names[ch]
+			if !ok {
+				n = ch.String()
+			}
+			out = append(out, kind+":"+n)
+		}
+		return strings.Join(out, " ")
+	}
+	cycle := func(m uuid.UUID) {
+		f.apply(m, failed("timeout"))
+		f.apply(m, machine.Result{OK: true})
+	}
+
+	everyChannel := f.createMonitor(1, true)
+	cycle(everyChannel)
+	if got := sent(everyChannel); got != "opened:all opened:down resolved:all resolved:recovered" {
+		t.Fatalf("no selection: %s", got)
+	}
+
+	url := "https://shop.example.com/selected"
+	sel := []uuid.UUID{recoveredOnly, downOnly}
+	m, err := f.monitors.Create(f.ctx, f.actor, monitors.CreateInput{Name: "Selected", URL: &url, FailureThreshold: ptr(1), ChannelIDs: &sel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cycle(m.ID)
+	if got := sent(m.ID); got != "opened:down resolved:recovered" {
+		t.Fatalf("selection: %s", got)
+	}
+
+	// Another tenant's channel cannot be selected.
+	bad := []uuid.UUID{other}
+	if _, err := f.monitors.Update(f.ctx, f.actor, m.ID, monitors.UpdateInput{ChannelIDs: &bad}); err == nil || !strings.Contains(err.Error(), "channelIds") {
+		t.Fatalf("other tenant's channel: %v", err)
+	}
+	// Clearing the selection goes back to every channel.
+	none := []uuid.UUID{}
+	if _, err := f.monitors.Update(f.ctx, f.actor, m.ID, monitors.UpdateInput{ChannelIDs: &none}); err != nil {
+		t.Fatal(err)
+	}
+	cycle(m.ID)
+	if got := sent(m.ID); got != "opened:down resolved:recovered opened:all opened:down resolved:all resolved:recovered" {
+		t.Fatalf("cleared selection: %s", got)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }

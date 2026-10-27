@@ -119,16 +119,13 @@ func newEnv(t *testing.T, name string) *env {
 		`INSERT INTO tenants (id, slug, name) VALUES ('`+tenantA+`', 'a', 'A'), ('`+tenantB+`', 'b', 'B')`,
 		`INSERT INTO users (id, email) VALUES ('`+userID+`', 'u@example.com')`)
 	// Channels are configured through the owning service, so the stored value is the real envelope.
-	settings := notify.NewService(e.Pool(t, e.APIURL, 2), keys, nil, "")
+	channels := notify.NewService(e.Pool(t, e.APIURL, 2), keys, nil, "")
 	for tenant, hook := range map[string]string{tenantA: webhookA, tenantB: webhookB} {
-		if _, err := settings.Put(e.ctx, notify.Actor{TenantID: uuid.MustParse(tenant), UserID: uuid.MustParse(userID)}, hook); err != nil {
+		c, err := channels.Create(e.ctx, notify.Actor{TenantID: uuid.MustParse(tenant), UserID: uuid.MustParse(userID)}, notify.CreateInput{Name: "alerts", WebhookURL: hook})
+		if err != nil {
 			t.Fatal(err)
 		}
-		var id uuid.UUID
-		if err := e.admin.QueryRow(e.ctx, `SELECT id FROM notification_channels WHERE tenant_id = $1`, tenant).Scan(&id); err != nil {
-			t.Fatal(err)
-		}
-		e.channels[tenant] = id
+		e.channels[tenant] = c.ID
 	}
 	return e
 }
@@ -411,6 +408,38 @@ func TestIntegrationDelivery(t *testing.T) {
 	})
 }
 
+// The channel's mention goes in front of opened and reminder messages only (ADR-0100), and a
+// delivery to a deleted channel fails without sending.
+func TestIntegrationDeliveryMentionReminderDeleted(t *testing.T) {
+	e := newEnv(t, "jobsmention")
+	d := e.deliverer(prometheus.NewRegistry(), nil)
+	pgtest.MustExec(t, e.admin, `UPDATE notification_channels SET mention = '{@here,<@U0ABC>}' WHERE tenant_id = '`+tenantA+`'`)
+	m := e.monitor(tenantA, "Web")
+	opened := e.deliver(tenantA, m, notify.DeliveryOpened, map[string]any{"monitorName": "Web", "reason": "timeout"})
+	d.RunOnce(e.ctx)
+	reminder := e.deliver(tenantA, m, notify.DeliveryReminder, map[string]any{"monitorName": "Web", "durationSeconds": 1800})
+	d.RunOnce(e.ctx)
+	resolved := e.deliver(tenantA, m, notify.DeliveryResolved, map[string]any{"monitorName": "Web", "durationSeconds": 1900})
+	d.RunOnce(e.ctx)
+	for _, id := range []uuid.UUID{opened, reminder, resolved} {
+		if r := e.row(id); r.status != "sent" {
+			t.Fatalf("%s: %+v", id, r)
+		}
+	}
+	p := e.slack.sent()
+	if len(p) != 3 || !strings.HasPrefix(p[0].text, "<!here> <@U0ABC> :red_circle: *Web* is down\n") ||
+		p[1].text != "<!here> <@U0ABC> :bell: *Web* is still down (30m)" || p[2].text != ":large_green_circle: *Web* is back up after 31m" {
+		t.Fatalf("posts = %+v", p)
+	}
+
+	pgtest.MustExec(t, e.admin, `UPDATE notification_channels SET deleted_at = now(), config_encrypted = NULL, status = 'failed' WHERE tenant_id = '`+tenantB+`'`)
+	gone := e.deliver(tenantB, e.monitor(tenantB, "B"), notify.DeliveryResolved, map[string]any{"monitorName": "B", "durationSeconds": 1})
+	d.RunOnce(e.ctx)
+	if r := e.row(gone); r.status != "failed" || r.lastError == nil || *r.lastError != "channel_deleted" || len(e.slack.sent()) != 3 {
+		t.Fatalf("delivery to a deleted channel: %+v, posts %d", r, len(e.slack.sent()))
+	}
+}
+
 // A delivery whose jobs process dies (lease expiry) every time ends as failed after
 // jobs.MaxAttempts claims: claim_deliveries counts the requeue as an attempt, with the same
 // maximum as the Go side. A finish with the claim token of an expired claim is rejected.
@@ -539,6 +568,21 @@ func TestIntegrationHousekeeping(t *testing.T) {
 		}
 		if got := metric(t, reg, "maiak_jobs_housekeeping_runs_total", "purge_expired_sessions", "skipped"); got != 1 {
 			t.Fatalf("skipped metric = %v", got)
+		}
+	})
+
+	t.Run("enqueue_incident_reminders queues due reminders once", func(t *testing.T) {
+		mon := e.monitor(tenantA, "Down")
+		pgtest.MustExec(t, e.admin,
+			`UPDATE notification_channels SET reminder_minutes = 5 WHERE tenant_id = '`+tenantA+`'`,
+			`INSERT INTO incidents (id, tenant_id, monitor_id, started_at) VALUES (gen_random_uuid(), '`+tenantA+`', '`+mon.String()+`', now() - interval '6 minutes')`)
+		for range 2 {
+			if got := h.RunTask(e.ctx, task("enqueue_incident_reminders")); got != "ok" {
+				t.Fatal(got)
+			}
+		}
+		if n := count(`SELECT count(*) FROM notification_deliveries WHERE kind = 'reminder' AND monitor_id = $1 AND channel_id = $2`, mon, e.channels[tenantA]); n != 1 {
+			t.Fatalf("reminders = %d, want 1", n)
 		}
 	})
 

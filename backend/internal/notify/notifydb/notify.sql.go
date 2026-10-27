@@ -7,12 +7,57 @@ package notifydb
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
 
+const deleteMonitorChannels = `-- name: DeleteMonitorChannels :exec
+DELETE FROM monitor_channels
+WHERE tenant_id = $1 AND monitor_id = $2
+`
+
+type DeleteMonitorChannelsParams struct {
+	TenantID  uuid.UUID
+	MonitorID uuid.UUID
+}
+
+func (q *Queries) DeleteMonitorChannels(ctx context.Context, arg DeleteMonitorChannelsParams) error {
+	_, err := q.db.Exec(ctx, deleteMonitorChannels, arg.TenantID, arg.MonitorID)
+	return err
+}
+
+const detachChannel = `-- name: DetachChannel :execrows
+DELETE FROM monitor_channels
+WHERE tenant_id = $1 AND channel_id = $2
+`
+
+type DetachChannelParams struct {
+	TenantID  uuid.UUID
+	ChannelID uuid.UUID
+}
+
+func (q *Queries) DetachChannel(ctx context.Context, arg DetachChannelParams) (int64, error) {
+	result, err := q.db.Exec(ctx, detachChannel, arg.TenantID, arg.ChannelID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const failDeletedChannelDeliveries = `-- name: FailDeletedChannelDeliveries :one
+SELECT fail_deleted_channel_deliveries($1::uuid)::integer
+`
+
+func (q *Queries) FailDeletedChannelDeliveries(ctx context.Context, channelID uuid.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, failDeletedChannelDeliveries, channelID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const getChannel = `-- name: GetChannel :one
-SELECT type, config_encrypted, status
+SELECT type, config_encrypted, status, mention, (deleted_at IS NOT NULL)::boolean AS deleted
 FROM notification_channels
 WHERE tenant_id = $1 AND id = $2
 `
@@ -26,75 +71,254 @@ type GetChannelRow struct {
 	Type            string
 	ConfigEncrypted []byte
 	Status          string
+	Mention         []string
+	Deleted         bool
 }
 
+// Delivery lookup in jobs: deleted channels are returned too, so their deliveries fail with a
+// clear reason.
 func (q *Queries) GetChannel(ctx context.Context, arg GetChannelParams) (GetChannelRow, error) {
 	row := q.db.QueryRow(ctx, getChannel, arg.TenantID, arg.ID)
 	var i GetChannelRow
-	err := row.Scan(&i.Type, &i.ConfigEncrypted, &i.Status)
+	err := row.Scan(
+		&i.Type,
+		&i.ConfigEncrypted,
+		&i.Status,
+		&i.Mention,
+		&i.Deleted,
+	)
 	return i, err
 }
 
-const getSlackChannel = `-- name: GetSlackChannel :one
-SELECT id, config_encrypted, status
+const getChannelInfo = `-- name: GetChannelInfo :one
+SELECT id, name, type, events, mention, reminder_minutes, status, created_at, updated_at
 FROM notification_channels
-WHERE tenant_id = $1 AND type = 'slack_webhook'
+WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
 `
 
-type GetSlackChannelRow struct {
+type GetChannelInfoParams struct {
+	TenantID uuid.UUID
+	ID       uuid.UUID
+}
+
+type GetChannelInfoRow struct {
+	ID              uuid.UUID
+	Name            string
+	Type            string
+	Events          []string
+	Mention         []string
+	ReminderMinutes int32
+	Status          string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+func (q *Queries) GetChannelInfo(ctx context.Context, arg GetChannelInfoParams) (GetChannelInfoRow, error) {
+	row := q.db.QueryRow(ctx, getChannelInfo, arg.TenantID, arg.ID)
+	var i GetChannelInfoRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Type,
+		&i.Events,
+		&i.Mention,
+		&i.ReminderMinutes,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const insertChannel = `-- name: InsertChannel :exec
+INSERT INTO notification_channels (id, tenant_id, type, name, config_encrypted, events, mention, reminder_minutes)
+VALUES ($1, $2, 'slack_webhook', $3, $4, $5, $6, $7)
+`
+
+type InsertChannelParams struct {
+	ID              uuid.UUID
+	TenantID        uuid.UUID
+	Name            string
+	ConfigEncrypted []byte
+	Events          []string
+	Mention         []string
+	ReminderMinutes int32
+}
+
+func (q *Queries) InsertChannel(ctx context.Context, arg InsertChannelParams) error {
+	_, err := q.db.Exec(ctx, insertChannel,
+		arg.ID,
+		arg.TenantID,
+		arg.Name,
+		arg.ConfigEncrypted,
+		arg.Events,
+		arg.Mention,
+		arg.ReminderMinutes,
+	)
+	return err
+}
+
+const insertMonitorChannel = `-- name: InsertMonitorChannel :exec
+INSERT INTO monitor_channels (tenant_id, monitor_id, channel_id)
+VALUES ($1, $2, $3)
+`
+
+type InsertMonitorChannelParams struct {
+	TenantID  uuid.UUID
+	MonitorID uuid.UUID
+	ChannelID uuid.UUID
+}
+
+func (q *Queries) InsertMonitorChannel(ctx context.Context, arg InsertMonitorChannelParams) error {
+	_, err := q.db.Exec(ctx, insertMonitorChannel, arg.TenantID, arg.MonitorID, arg.ChannelID)
+	return err
+}
+
+const listChannels = `-- name: ListChannels :many
+SELECT id, name, type, events, mention, reminder_minutes, status, created_at, updated_at
+FROM notification_channels
+WHERE tenant_id = $1 AND deleted_at IS NULL
+ORDER BY created_at, id
+`
+
+type ListChannelsRow struct {
+	ID              uuid.UUID
+	Name            string
+	Type            string
+	Events          []string
+	Mention         []string
+	ReminderMinutes int32
+	Status          string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+func (q *Queries) ListChannels(ctx context.Context, tenantID uuid.UUID) ([]ListChannelsRow, error) {
+	rows, err := q.db.Query(ctx, listChannels, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListChannelsRow
+	for rows.Next() {
+		var i ListChannelsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Type,
+			&i.Events,
+			&i.Mention,
+			&i.ReminderMinutes,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMonitorChannelIDs = `-- name: ListMonitorChannelIDs :many
+SELECT channel_id
+FROM monitor_channels
+WHERE tenant_id = $1 AND monitor_id = $2
+ORDER BY created_at, channel_id
+`
+
+type ListMonitorChannelIDsParams struct {
+	TenantID  uuid.UUID
+	MonitorID uuid.UUID
+}
+
+func (q *Queries) ListMonitorChannelIDs(ctx context.Context, arg ListMonitorChannelIDsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listMonitorChannelIDs, arg.TenantID, arg.MonitorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var channel_id uuid.UUID
+		if err := rows.Scan(&channel_id); err != nil {
+			return nil, err
+		}
+		items = append(items, channel_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockChannel = `-- name: LockChannel :one
+SELECT id, config_encrypted, status
+FROM notification_channels
+WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
+FOR UPDATE
+`
+
+type LockChannelParams struct {
+	TenantID uuid.UUID
+	ID       uuid.UUID
+}
+
+type LockChannelRow struct {
 	ID              uuid.UUID
 	ConfigEncrypted []byte
 	Status          string
 }
 
-func (q *Queries) GetSlackChannel(ctx context.Context, tenantID uuid.UUID) (GetSlackChannelRow, error) {
-	row := q.db.QueryRow(ctx, getSlackChannel, tenantID)
-	var i GetSlackChannelRow
+// Serialises changes of one channel (patch, delete, test outcome).
+func (q *Queries) LockChannel(ctx context.Context, arg LockChannelParams) (LockChannelRow, error) {
+	row := q.db.QueryRow(ctx, lockChannel, arg.TenantID, arg.ID)
+	var i LockChannelRow
 	err := row.Scan(&i.ID, &i.ConfigEncrypted, &i.Status)
 	return i, err
 }
 
-const insertSlackChannel = `-- name: InsertSlackChannel :execrows
-INSERT INTO notification_channels (id, tenant_id, type, config_encrypted)
-VALUES ($1, $2, 'slack_webhook', $3)
-ON CONFLICT (tenant_id) WHERE type = 'slack_webhook' DO NOTHING
-`
-
-type InsertSlackChannelParams struct {
-	ID              uuid.UUID
-	TenantID        uuid.UUID
-	ConfigEncrypted []byte
-}
-
-// Does nothing when the tenant already has a Slack channel (one per tenant, ADR-0019); the
-// caller then replaces the existing row's config. ON CONFLICT waits for a concurrent insert, so
-// two concurrent PUTs end with one row.
-func (q *Queries) InsertSlackChannel(ctx context.Context, arg InsertSlackChannelParams) (int64, error) {
-	result, err := q.db.Exec(ctx, insertSlackChannel, arg.ID, arg.TenantID, arg.ConfigEncrypted)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const lockSlackChannel = `-- name: LockSlackChannel :one
+const lockLiveChannels = `-- name: LockLiveChannels :many
 SELECT id
 FROM notification_channels
-WHERE tenant_id = $1 AND type = 'slack_webhook'
-FOR UPDATE
+WHERE tenant_id = $1 AND id = ANY($2::uuid[]) AND deleted_at IS NULL
+FOR SHARE
 `
 
-func (q *Queries) LockSlackChannel(ctx context.Context, tenantID uuid.UUID) (uuid.UUID, error) {
-	row := q.db.QueryRow(ctx, lockSlackChannel, tenantID)
-	var id uuid.UUID
-	err := row.Scan(&id)
-	return id, err
+type LockLiveChannelsParams struct {
+	TenantID uuid.UUID
+	Ids      []uuid.UUID
+}
+
+// Channels a monitor may select. FOR SHARE waits for a concurrent delete and then sees it, so a
+// monitor is never linked to a channel deleted meanwhile.
+func (q *Queries) LockLiveChannels(ctx context.Context, arg LockLiveChannelsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, lockLiveChannels, arg.TenantID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const markChannelFailed = `-- name: MarkChannelFailed :execrows
 UPDATE notification_channels
 SET status = 'failed', updated_at = now()
-WHERE tenant_id = $1 AND id = $2 AND status = 'active'
+WHERE tenant_id = $1 AND id = $2 AND status = 'active' AND deleted_at IS NULL
 `
 
 type MarkChannelFailedParams struct {
@@ -126,5 +350,50 @@ type ReplaceChannelConfigParams struct {
 // the new URL.
 func (q *Queries) ReplaceChannelConfig(ctx context.Context, arg ReplaceChannelConfigParams) error {
 	_, err := q.db.Exec(ctx, replaceChannelConfig, arg.ConfigEncrypted, arg.TenantID, arg.ID)
+	return err
+}
+
+const softDeleteChannel = `-- name: SoftDeleteChannel :exec
+UPDATE notification_channels
+SET deleted_at = now(), config_encrypted = NULL, status = 'failed', updated_at = now()
+WHERE tenant_id = $1 AND id = $2
+`
+
+type SoftDeleteChannelParams struct {
+	TenantID uuid.UUID
+	ID       uuid.UUID
+}
+
+// The webhook is wiped. status 'failed' keeps the previous release from using the channel
+// during a rollout (ADR-0100).
+func (q *Queries) SoftDeleteChannel(ctx context.Context, arg SoftDeleteChannelParams) error {
+	_, err := q.db.Exec(ctx, softDeleteChannel, arg.TenantID, arg.ID)
+	return err
+}
+
+const updateChannel = `-- name: UpdateChannel :exec
+UPDATE notification_channels
+SET name = $1, events = $2, mention = $3, reminder_minutes = $4, updated_at = now()
+WHERE tenant_id = $5 AND id = $6
+`
+
+type UpdateChannelParams struct {
+	Name            string
+	Events          []string
+	Mention         []string
+	ReminderMinutes int32
+	TenantID        uuid.UUID
+	ID              uuid.UUID
+}
+
+func (q *Queries) UpdateChannel(ctx context.Context, arg UpdateChannelParams) error {
+	_, err := q.db.Exec(ctx, updateChannel,
+		arg.Name,
+		arg.Events,
+		arg.Mention,
+		arg.ReminderMinutes,
+		arg.TenantID,
+		arg.ID,
+	)
 	return err
 }

@@ -1,6 +1,6 @@
 # Data model
 
-Postgres 15 (RDS), database `maiak`. Migrations are SQL files (goose) in `backend/migrations`, applied by the `migrate` Job as `maiak_owner`; the current list and the lint rules are in the [migrations runbook](../runbooks/migrations.md). This page describes the schema as the migrations up to 2026-10-21 (platform admin, P-04) leave it (checked against a migrated database).
+Postgres 15 (RDS), database `maiak`. Migrations are SQL files (goose) in `backend/migrations`, applied by the `migrate` Job as `maiak_owner`; the current list and the lint rules are in the [migrations runbook](../runbooks/migrations.md). This page describes the schema as the migrations up to 2026-10-27 (notification channels, S-01) leave it (checked against a migrated database).
 
 ## Decisions that are expensive to change later
 
@@ -11,12 +11,12 @@ Postgres 15 (RDS), database `maiak`. Migrations are SQL files (goose) in `backen
 5. **`check_results` is partitioned by month** on `checked_at`; retention detaches and drops whole expired monthly partitions after checking that their rollups are complete (ADR-0016, ADR-0021, ADR-0060). Raw data is kept at least 30 days (up to about 61).
 6. **Check type and parameters are separate:** `monitors.type` (`http` or `heartbeat`, CHECK) + `config jsonb` (`url`, `expectedStatus` for http; `graceSeconds` for heartbeats). TCP, DNS and Kubernetes checks need no schema change.
 7. **Locations:** `probe_locations` + `monitor_locations`. Schedule, lease and counters are kept **per (monitor, location)** in `monitor_location_state`; the aggregated status lives in `monitor_state` (quorum rule in `internal/incidents/machine`: down when every selected location is down).
-8. **Transactional outbox:** `notification_deliveries` rows are written in the same transaction as the incident transition (only when the tenant has an active Slack channel, ADR-0019). `jobs` delivers them with retries and a per-channel rate limit (ADR-0051).
-9. **Secrets in the DB are encrypted** (AES-256-GCM with a `key_id` prefix for rotation): the Slack webhook URL in `notification_channels.config_encrypted`.
+8. **Transactional outbox:** `notification_deliveries` rows are written in the same transaction as the incident transition, one per eligible channel whose events match (the monitor's selected channels, or every active channel when it selected none, ADR-0100). `jobs` delivers them with retries and a per-channel rate limit (ADR-0051) and queues reminders for incidents that stay open.
+9. **Secrets in the DB are encrypted** (AES-256-GCM with a `key_id` prefix for rotation): the Slack webhook URL in `notification_channels.config_encrypted` (wiped when the channel is deleted).
 10. **Audit log** from day one (`audit_log`, insert-only for runtime roles; metadata never contains URLs or secrets).
 11. **Users exist from the start:** `users`, `memberships`, `auth_identities` (unused until OAuth). The single admin from the Secret is upserted at api start, bound to the tenant `default` as `owner` and is the only platform admin (`users.is_platform_admin`, ADR-0097); cross-tenant admin work goes through definer functions that check that flag, never through a role that bypasses RLS.
 12. **Plans and quotas (ADR-0093):** every tenant has a plan (`tenants.plan_key` → `plans.key`, default `free`). Effective limits are the plan's `limits` overridden key by key by `tenants.limits`; `internal/plans` resolves them and checks them under the tenant row lock in the transaction that creates the row.
-13. **Time and enums:** `timestamptz` (UTC); enums as `text` + `CHECK`; soft delete for monitors and tenants (`deleted_at`).
+13. **Time and enums:** `timestamptz` (UTC); enums as `text` + `CHECK`; soft delete for monitors, tenants and notification channels (`deleted_at`).
 
 ## Tables
 
@@ -42,9 +42,9 @@ Owning module in brackets, as declared in the migrations; only the owner writes 
 | `rollup_state` [results] | One row (`singleton` = true): `watermark` (every closed UTC hour before it was rolled up once), `updated_at`. System state, no `tenant_id`; RLS enabled without a policy, no runtime-role privileges. Written only by `compute_rollups_catch_up` (ADR-0090) | none | none |
 | `incidents` [incidents] | `id`, `tenant_id` (unique `(tenant_id, id)`), `monitor_id` (set for automatic incidents, composite FK to `monitors`), `started_at`, `resolved_at` + `resolve_reason` (`recovered`/`paused`/`deleted`/`url_changed`, both or neither), `reason` (error kind), `created_at`. Unique partial index `incidents_one_open_per_monitor_idx` on `monitor_id` where open | S U | S I U |
 | `incident_monitors` [incidents] | PK `(incident_id, monitor_id)`; many-to-many kept for manual incidents spanning monitors (L-004) | S | S I |
-| `notification_channels` [notify] | `id`, `tenant_id`, `type` (`slack_webhook`), `config_encrypted bytea`, `status` (`active`/`failed`), timestamps; at most one Slack channel per tenant (unique partial index) | S I U | S U(status, updated_at) |
-| `monitor_channels` [notify] | PK `(monitor_id, channel_id)`; unused in the MVP (ADR-0019: the tenant's Slack channel plus `monitors.notify_slack`) | S I D | S |
-| `notification_deliveries` [incidents; delivered by jobs] | `id`, `tenant_id`, `kind` (opened/resolved/tls_expiring), `monitor_id`, `incident_id` (required except for tls_expiring), `channel_id`, `payload jsonb` (no secrets), `status` (pending/in_progress/sent/failed), `attempts`, `next_attempt_at`, `lease_until` (set exactly while in_progress), `claim_token` (set exactly while in_progress, fences `finish_delivery`), `last_error` (an error kind), `created_at`, `sent_at` | S | S I |
+| `notification_channels` [notify] | `id`, `tenant_id`, `type` (`slack_webhook`), `name` (1-60), `config_encrypted bytea` (NULL only once deleted), `events text[]` (non-empty subset of `down`/`recovered`/`tls_expiring`), `mention text[]` (at most 3, pattern `CHECK`), `reminder_minutes` (0 or 5-1440), `status` (`active`/`failed`), timestamps, `deleted_at` (soft delete; also sets `failed`). Several per tenant, limited by the plan (ADR-0100) | S I U | S U(status, updated_at) |
+| `monitor_channels` [notify] | PK `(monitor_id, channel_id)`; the monitor's channel selection (at most 10); none means every active channel of the tenant (ADR-0100) | S I D | S |
+| `notification_deliveries` [incidents; delivered by jobs] | `id`, `tenant_id`, `kind` (opened/resolved/tls_expiring/reminder), `monitor_id`, `incident_id` (required except for tls_expiring), `channel_id`, `payload jsonb` (no secrets), `status` (pending/in_progress/sent/failed), `attempts`, `next_attempt_at`, `lease_until` (set exactly while in_progress), `claim_token` (set exactly while in_progress, fences `finish_delivery`), `last_error` (an error kind), `created_at`, `sent_at` | S | S I |
 
 `goose_db_version` belongs to the migration tool.
 
@@ -89,7 +89,9 @@ All are owned by `maiak_owner`, pin `search_path = public, pg_temp`, are not exe
 | `detach_expired_partition(name)` | `maiak_worker` | jobs, daily | Retention step 2 |
 | `drop_detached_partition(name)` | `maiak_worker` | jobs, daily | Retention step 3 |
 | `purge_expired_sessions()` | `maiak_worker` | jobs, hourly | Deletes expired sessions |
-| `claim_deliveries(n)` | `maiak_worker` | jobs, every second | Leases ready outbox rows (oldest first per monitor) of active tenants that are not deleted (P-04), sets `claim_token`, requeues expired claims and counts the attempt; marks pending rows of deleted tenants `failed` (`tenant_deleted`) once (P-09) |
+| `claim_deliveries(n)` | `maiak_worker` | jobs, every second | Leases ready outbox rows (oldest first per monitor and channel since S-01) of active tenants that are not deleted (P-04), sets `claim_token`, requeues expired claims and counts the attempt; marks pending rows of deleted tenants `failed` (`tenant_deleted`) once (P-09) |
+| `enqueue_incident_reminders(limit)` | `maiak_worker` | jobs (`enqueue_incident_reminders`), every minute | Inserts `reminder` deliveries for open incidents per receiving channel every `reminder_minutes` (ADR-0100) |
+| `fail_deleted_channel_deliveries(channel_id)` | `maiak_api` | api (`notify.Service.Delete`) | Marks the pending deliveries of a deleted channel of the caller's tenant `failed` (`channel_deleted`) |
 | `finish_delivery(id, token, status, error, retry_at)` | `maiak_worker` | jobs | Records an outcome only for the holder of the claim token |
 | `outbox_pending()` | `maiak_worker` | jobs, every 15 s | Count for `maiak_jobs_outbox_pending` |
 

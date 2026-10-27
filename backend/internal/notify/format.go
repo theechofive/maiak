@@ -17,10 +17,13 @@ const (
 	DeliveryOpened      = "opened"
 	DeliveryResolved    = "resolved"
 	DeliveryTLSExpiring = "tls_expiring"
+	// DeliveryReminder is queued by enqueue_incident_reminders while an incident stays open
+	// (ADR-0100).
+	DeliveryReminder = "reminder"
 )
 
-// Payload is the outbox payload written by internal/incidents (ADR-0019). It holds what a
-// message needs and no secret.
+// Payload is the outbox payload written by internal/incidents and enqueue_incident_reminders
+// (ADR-0019, ADR-0100). It holds what a message needs and no secret.
 type Payload struct {
 	MonitorID       uuid.UUID  `json:"monitorId"`
 	MonitorName     string     `json:"monitorName"`
@@ -54,8 +57,29 @@ func Format(kind string, raw []byte, publicURL string) (string, error) {
 			return "", ErrBadPayload
 		}
 		return FormatTLSExpiring(p), nil
+	case DeliveryReminder:
+		return FormatReminder(p), nil
 	}
 	return "", ErrBadPayload
+}
+
+// Message is Format with the channel's mention in front of the kinds that call for attention
+// (opened and reminder, ADR-0100); other kinds never mention anybody.
+func Message(kind string, raw []byte, publicURL string, mention []string) (string, error) {
+	text, err := Format(kind, raw, publicURL)
+	if err != nil || (kind != DeliveryOpened && kind != DeliveryReminder) {
+		return text, err
+	}
+	var parts []string
+	for _, m := range mention {
+		if s := slackMention(m); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	if len(parts) == 0 {
+		return text, nil
+	}
+	return strings.Join(parts, " ") + " " + text, nil
 }
 
 // FormatOpened: the headline, then the URL, the reason, the start time in UTC and a link.
@@ -116,7 +140,12 @@ func FormatTLSExpiring(p Payload) string {
 		Escape(p.MonitorName), n, unit, p.TLSNotAfter.UTC().Format("2006-01-02"))
 }
 
-// TestMessage is the text of POST /settings/slack/test.
+// FormatReminder: `:bell: *{name}* is still down ({duration})`.
+func FormatReminder(p Payload) string {
+	return fmt.Sprintf(":bell: *%s* is still down (%s)", Escape(p.MonitorName), HumanDuration(time.Duration(p.DurationSeconds)*time.Second))
+}
+
+// TestMessage is the text of POST /channels/{id}/test.
 func TestMessage(publicURL string) string {
 	return fmt.Sprintf(":white_check_mark: Test message from Maiak: alerts will be posted here. <%s|Open Maiak>", Escape(publicURL))
 }

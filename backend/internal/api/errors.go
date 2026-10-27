@@ -41,7 +41,6 @@ const (
 	problemNotHeartbeat       = "urn:maiak:problem:not-a-heartbeat"
 	problemEmailTaken         = "urn:maiak:problem:email-taken"
 	problemRegistrationOff    = "urn:maiak:problem:registration-disabled"
-	problemSlackNotConfigured = "urn:maiak:problem:slack-not-configured"
 	problemSlackFailed        = "urn:maiak:problem:slack-delivery-failed"
 	problemUnavailable        = "urn:maiak:problem:unavailable"
 	problemForbidden          = "urn:maiak:problem:forbidden"
@@ -132,8 +131,6 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 		p.Limit, p.Max = string(limitErr.Resource), &limitErr.Max
 	case errors.Is(err, monitors.ErrNotHeartbeat):
 		p.Type, p.Title, p.Status = problemNotHeartbeat, "Not a heartbeat monitor", http.StatusConflict
-	case errors.Is(err, notify.ErrNotConfigured):
-		p.Type, p.Title, p.Status = problemSlackNotConfigured, "Slack is not configured", http.StatusConflict
 	case errors.As(err, &sendErr) && sendErr.Kind == notify.KindRateLimited:
 		secs := int(math.Ceil(sendErr.RetryAfter.Seconds()))
 		w.Header().Set("Retry-After", strconv.Itoa(max(secs, 1)))
@@ -146,7 +143,8 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 		// disabled (ADR-0018).
 		log.ErrorContext(r.Context(), "request failed", "error", err)
 		p.Type, p.Title, p.Status = problemUnavailable, "Monitoring location unavailable, try again later", http.StatusServiceUnavailable
-	case errors.Is(err, errNotFound), errors.Is(err, routers.ErrPathNotFound), errors.Is(err, monitors.ErrNotFound), errors.Is(err, queries.ErrNotFound), errors.Is(err, admin.ErrNotFound):
+	case errors.Is(err, errNotFound), errors.Is(err, routers.ErrPathNotFound), errors.Is(err, monitors.ErrNotFound), errors.Is(err, queries.ErrNotFound), errors.Is(err, admin.ErrNotFound),
+		errors.Is(err, notify.ErrChannelNotFound):
 		p.Type, p.Title, p.Status = problemNotFound, "Not found", http.StatusNotFound
 	case errors.Is(err, errMethodNotAllowed), errors.Is(err, routers.ErrMethodNotAllowed):
 		p.Type, p.Title, p.Status = problemMethodNotAllowed, "Method not allowed", http.StatusMethodNotAllowed

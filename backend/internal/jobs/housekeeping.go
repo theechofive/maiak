@@ -37,7 +37,15 @@ const (
 	lockDropPartitions   int64 = 0x6d6a_0003
 	lockPurgeSessions    int64 = 0x6d6a_0004
 	lockHeartbeats       int64 = 0x6d6a_0005
+	lockReminders        int64 = 0x6d6a_0006
 )
+
+// ReminderEvery is how often reminders of open incidents are queued (ADR-0100); a reminder is
+// sent at most this long after it is due.
+const ReminderEvery = time.Minute
+
+// ReminderBatch caps the reminders one run queues; the rest follow at the next run.
+const ReminderBatch = 500
 
 // HeartbeatEvery is how often heartbeats are evaluated (ADR-0094): a missed deadline opens its
 // incident, and a ping resolves it, at most this long after it happened.
@@ -53,9 +61,9 @@ const RollupLookback = 3 * time.Hour
 // transaction.
 const RollupMaxHoursPerRun = 48
 
-// DefaultTasks are the housekeeping tasks of ADR-0016/ADR-0021 and the heartbeat evaluation of
-// ADR-0094 (through mon, a monitors service on the jobs pool). Partitions that retention keeps
-// back are counted in m and logged to log.
+// DefaultTasks are the housekeeping tasks of ADR-0016/ADR-0021, the heartbeat evaluation of
+// ADR-0094 (through mon, a monitors service on the jobs pool) and the incident reminders of
+// ADR-0100. Partitions that retention keeps back are counted in m and logged to log.
 func DefaultTasks(m *Metrics, log *slog.Logger, mon *monitors.Service) []Task {
 	r := retention{metrics: m, log: log}
 	return []Task{
@@ -64,6 +72,7 @@ func DefaultTasks(m *Metrics, log *slog.Logger, mon *monitors.Service) []Task {
 		{Name: "compute_rollups", Every: 5 * time.Minute, LockKey: lockComputeRollups, Run: computeRollups},
 		{Name: "drop_expired_partitions", Every: 24 * time.Hour, LockKey: lockDropPartitions, RunOutsideTx: r.dropExpiredPartitions},
 		{Name: "purge_expired_sessions", Every: time.Hour, LockKey: lockPurgeSessions, Run: scalar(`SELECT purge_expired_sessions()`)},
+		{Name: "enqueue_incident_reminders", Every: ReminderEvery, LockKey: lockReminders, Run: enqueueReminders},
 	}
 }
 
@@ -83,6 +92,13 @@ func scalar(sql string) func(context.Context, pgx.Tx, time.Time) (int, error) {
 		err := tx.QueryRow(ctx, sql).Scan(&n)
 		return int(n), err
 	}
+}
+
+// enqueueReminders queues the reminder deliveries that are due (enqueue_incident_reminders).
+func enqueueReminders(ctx context.Context, tx pgx.Tx, _ time.Time) (int, error) {
+	var n int32
+	err := tx.QueryRow(ctx, `SELECT enqueue_incident_reminders($1)`, ReminderBatch).Scan(&n)
+	return int(n), err
 }
 
 // computeRollups rolls up the closed hours from the database watermark (at most

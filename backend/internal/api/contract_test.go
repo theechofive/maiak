@@ -59,6 +59,7 @@ func concretePath(p string) string {
 		"{monitorId}", "0192b9c4-7c5e-7000-8000-000000000001",
 		"{tenantId}", "0192b9c4-7c5e-7000-8000-000000000002",
 		"{userId}", "0192b9c4-7c5e-7000-8000-000000000003",
+		"{channelId}", "0192b9c4-7c5e-7000-8000-000000000004",
 	).Replace(p)
 }
 

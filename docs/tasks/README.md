@@ -27,6 +27,6 @@
 | `GET /monitors/{id}/stats?range=24h\|7d\|30d` | average and p95 response time and the latency series (buckets) for the range |
 | `GET /monitors/{id}/checks?limit=` | recent checks |
 | `GET /monitors/{id}/incidents` | incidents of the monitor |
-| `GET /settings/slack`, `PUT /settings/slack`, `POST /settings/slack/test` | Slack webhook configuration (write-only secret) and test message |
+| `GET /settings/slack`, `PUT /settings/slack`, `POST /settings/slack/test` | Slack webhook configuration (write-only secret) and test message; replaced by `/channels` in S-01 (ADR-0100) |
 
 Monitor fields: `name`, `url` (https), `intervalSeconds` (60 only in the MVP), `timeoutSeconds` (10 only), the URL must use `https` and port 443, `expectedStatus` (`2xx` or an exact code), `status` is read-only (`unknown`, `up`, `down`) and `paused` is a boolean, `failureThreshold` (1-3, default 2), `notifySlack` (bool), `paused`.

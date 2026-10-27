@@ -1,8 +1,8 @@
-// Package notify owns notification channels (notification_channels; monitor_channels is unused
-// in the MVP, ADR-0019) and sends Slack messages. The webhook URL is a secret: it is stored
-// encrypted (AES-256-GCM, platform/crypto), never returned by the api, never logged, and errors
-// from sending it are reduced to kinds, because raw errors of the guarded client carry resolved
-// addresses and the URL itself (ADR-0016, ADR-0018).
+// Package notify owns notification channels (notification_channels) and the channel selection
+// of monitors (monitor_channels, ADR-0100), and sends Slack messages. The webhook URL is a
+// secret: it is stored encrypted (AES-256-GCM, platform/crypto), never returned by the api,
+// never logged, and errors from sending it are reduced to kinds, because raw errors of the
+// guarded client carry resolved addresses and the URL itself (ADR-0016, ADR-0018).
 package notify
 
 import (

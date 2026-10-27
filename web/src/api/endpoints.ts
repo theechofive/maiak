@@ -11,7 +11,10 @@ export type StatsRange = Schemas["StatsRange"];
 export type LatencyPoint = Schemas["LatencyPoint"];
 export type Check = Schemas["Check"];
 export type Incident = Schemas["Incident"];
-export type SlackSettings = Schemas["SlackSettings"];
+export type Channel = Schemas["Channel"];
+export type ChannelCreate = Schemas["ChannelCreate"];
+export type ChannelUpdate = Schemas["ChannelUpdate"];
+export type ChannelEvent = Schemas["ChannelEvent"];
 export type Usage = Schemas["Usage"];
 export type PublicConfig = Schemas["PublicConfig"];
 export type AdminStats = Schemas["AdminStats"];
@@ -34,7 +37,7 @@ export const queryKeys = {
   stats: (id: string, range: StatsRange) => ["monitors", id, "stats", range] as const,
   checks: (id: string) => ["monitors", id, "checks"] as const,
   incidents: (id: string) => ["monitors", id, "incidents"] as const,
-  slack: ["settings", "slack"] as const,
+  channels: ["channels"] as const,
   usage: ["usage"] as const,
   publicConfig: ["public-config"] as const,
   adminStats: ["admin", "stats"] as const,
@@ -126,12 +129,21 @@ export const listChecks = (monitorId: string, limit = 20) =>
 export const listIncidents = (monitorId: string) =>
   unwrap(client.GET("/api/v1/monitors/{monitorId}/incidents", monitorPath(monitorId)));
 
-export const getSlackSettings = () => unwrap(client.GET("/api/v1/settings/slack"));
+export const listChannels = () => unwrap(client.GET("/api/v1/channels"));
 
-export const putSlackSettings = (webhookUrl: string) =>
-  unwrap(client.PUT("/api/v1/settings/slack", { body: { webhookUrl } }));
+const channelPath = (channelId: string) => ({ params: { path: { channelId } } });
 
-export const testSlack = () => unwrap(client.POST("/api/v1/settings/slack/test"));
+export const createChannel = (body: ChannelCreate) =>
+  unwrap(client.POST("/api/v1/channels", { body }));
+
+export const updateChannel = (channelId: string, body: ChannelUpdate) =>
+  unwrap(client.PATCH("/api/v1/channels/{channelId}", { ...channelPath(channelId), body }));
+
+export const deleteChannel = (channelId: string) =>
+  unwrap(client.DELETE("/api/v1/channels/{channelId}", channelPath(channelId)));
+
+export const testChannel = (channelId: string) =>
+  unwrap(client.POST("/api/v1/channels/{channelId}/test", channelPath(channelId)));
 
 export const getUsage = () => unwrap(client.GET("/api/v1/usage"));
 

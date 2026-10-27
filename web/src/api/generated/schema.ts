@@ -171,6 +171,10 @@ export interface paths {
      *     `unknown` until its first ping (then `up`) or until its first deadline passes (then
      *     `down`).
      *
+     *     `channelIds` selects the notification channels of the monitor (at most 10, each a channel
+     *     of the tenant, 422 otherwise); with no selection, `notifySlack` sends to every active
+     *     channel of the tenant.
+     *
      *     Fails with 409 `urn:maiak:problem:plan-limit-reached` (`limit` is `monitors` or
      *     `heartbeats`) when the tenant already has as many monitors of that type as its plan allows
      *     (deleted monitors do not count, see `GET /api/v1/usage`), and with 503 when the probe
@@ -215,7 +219,8 @@ export interface paths {
      *     MVP: sending them with a different value fails with 422. A heartbeat may change `name`,
      *     `expectedIntervalSeconds`, `graceSeconds` and `notifySlack` (its deadline follows the new
      *     values); `failureThreshold` is ignored and the http fields fail with 422, as do the
-     *     heartbeat fields on an http monitor.
+     *     heartbeat fields on an http monitor. `channelIds` replaces the monitor's channel selection
+     *     (an empty list selects none, which means every active channel).
      */
     patch: operations["updateMonitor"];
     trace?: never;
@@ -400,34 +405,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/v1/settings/slack": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /**
-     * Slack notification settings
-     * @description Whether a Slack webhook is configured. The webhook URL is a secret and is never returned.
-     */
-    get: operations["getSlackSettings"];
-    /**
-     * Set the Slack webhook
-     * @description Stores the Incoming Webhook URL encrypted. It must match
-     *     `https://hooks.slack.com/services/...` (422 otherwise). Replacing the URL of the existing
-     *     channel is always allowed; creating the channel fails with 409
-     *     `urn:maiak:problem:plan-limit-reached` (`limit` is `channels`) when the tenant already has
-     *     as many notification channels as its plan allows.
-     */
-    put: operations["putSlackSettings"];
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   "/api/v1/usage": {
     parameters: {
       query?: never;
@@ -449,20 +426,87 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/v1/settings/slack/test": {
+  "/api/v1/channels": {
     parameters: {
       query?: never;
       header?: never;
       path?: never;
       cookie?: never;
     };
+    /**
+     * List notification channels
+     * @description The tenant's notification channels that are not deleted, oldest first. The webhook URL is a secret and is never returned.
+     */
+    get: operations["listChannels"];
+    put?: never;
+    /**
+     * Create a notification channel
+     * @description Creates a Slack channel. `webhookUrl` must match `https://hooks.slack.com/services/...`
+     *     and is stored encrypted; it is write-only. `events` defaults to every event. `mention`
+     *     holds at most three of `@here`, `@channel`, `<!subteam^ID>` (a user group) and `<@UID>` (a
+     *     user), case-sensitive, and is used only in `down` and reminder messages.
+     *     `reminderMinutes` is 0 (no reminders, the default) or 5 to 1440: while an incident stays
+     *     open, the channel gets a reminder every that many minutes. Business-rule failures are 422
+     *     with `fieldErrors`. Fails with 409 `urn:maiak:problem:plan-limit-reached` (`limit` is
+     *     `channels`) when the tenant already has as many channels as its plan allows (deleted
+     *     channels do not count).
+     */
+    post: operations["createChannel"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/channels/{channelId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Notification channel id; a value that is not a UUID is answered with 400 */
+        channelId: components["parameters"]["ChannelId"];
+      };
+      cookie?: never;
+    };
+    /** One notification channel */
+    get: operations["getChannel"];
+    put?: never;
+    post?: never;
+    /**
+     * Delete a notification channel
+     * @description Deletes the channel and its stored webhook URL. Monitors that selected it lose it from
+     *     their selection (a monitor left with no selection then notifies every active channel), and
+     *     its deliveries that are still queued are not sent (they end as failed, `channel_deleted`).
+     */
+    delete: operations["deleteChannel"];
+    options?: never;
+    head?: never;
+    /**
+     * Edit a notification channel
+     * @description Changes the given fields, with the rules of create. A new `webhookUrl` replaces the stored
+     *     one and makes a `failed` channel `active` again; deliveries already queued for the channel
+     *     go to the new URL.
+     */
+    patch: operations["updateChannel"];
+    trace?: never;
+  };
+  "/api/v1/channels/{channelId}/test": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Notification channel id; a value that is not a UUID is answered with 400 */
+        channelId: components["parameters"]["ChannelId"];
+      };
+      cookie?: never;
+    };
     get?: never;
     put?: never;
     /**
-     * Send a Slack test message
-     * @description Sends a test message to the configured webhook. Fails with 409 when no webhook is configured, 429 when called again within 5 seconds for the same tenant or when Slack rate-limits the webhook (both with Retry-After), and 502 when Slack does not accept the message (Slack's answer is never returned).
+     * Send a test message to a channel
+     * @description Sends a test message to the channel's webhook. Fails with 404 for an unknown channel, 429 when the tenant tested a channel within the last 5 seconds or when Slack rate-limits the webhook (both with Retry-After), and 502 when Slack does not accept the message (Slack's answer is never returned). A removed or revoked webhook (Slack answers 404 or 410) marks the channel `failed`.
      */
-    post: operations["testSlack"];
+    post: operations["testChannel"];
     delete?: never;
     options?: never;
     head?: never;
@@ -729,6 +773,8 @@ export interface components {
       failureThreshold?: number;
       /** @default true */
       notifySlack?: boolean;
+      /** @description The notification channels of the monitor; empty or omitted means every active channel of the tenant */
+      channelIds?: string[];
     };
     /** @description Only the given fields change. `intervalSeconds` and `timeoutSeconds` are accepted only with their current value. */
     MonitorUpdate: {
@@ -741,6 +787,8 @@ export interface components {
       notifySlack?: boolean;
       expectedIntervalSeconds?: number;
       graceSeconds?: number;
+      /** @description The notification channels of the monitor; replaces the selection; an empty list means every active channel of the tenant */
+      channelIds?: string[];
     };
     Incident: {
       /** Format: uuid */
@@ -858,6 +906,8 @@ export interface components {
       /** @description Heartbeat only (null for http monitors) */
       graceSeconds: number | null;
       uptime: components["schemas"]["Uptime"];
+      /** @description The selected notification channels; empty means every active channel of the tenant */
+      channelIds: string[];
       /** Format: date-time */
       createdAt: string;
       /** Format: date-time */
@@ -917,21 +967,73 @@ export interface components {
     IncidentList: {
       items: components["schemas"]["Incident"][];
     };
-    SlackSettings: {
-      /** @description Whether a webhook is stored (the URL itself is never returned) */
-      configured: boolean;
+    /**
+     * @description `slack_webhook`: a Slack Incoming Webhook
+     * @enum {string}
+     */
+    ChannelType: "slack_webhook";
+    /**
+     * @description `down`: a monitor went down (and reminders while it stays down); `recovered`: it is back up; `tls_expiring`: its TLS certificate expires within 14 days
+     * @enum {string}
+     */
+    ChannelEvent: "down" | "recovered" | "tls_expiring";
+    ChannelEvents: components["schemas"]["ChannelEvent"][];
+    /**
+     * @description Slack mentions put in front of `down` and reminder messages; each is `@here`, `@channel`, `<!subteam^ID>` or `<@UID>` (422 otherwise)
+     * @example [
+     *       "@here"
+     *     ]
+     */
+    ChannelMention: string[];
+    /** @description 0 for no reminders, otherwise 5 to 1440 minutes between reminders while an incident stays open (1 to 4 is answered with 422) */
+    ReminderMinutes: number;
+    /** @description A notification channel. Its webhook URL is a secret and is never returned. */
+    Channel: {
+      /** Format: uuid */
+      id: string;
+      /** @example #ops-alerts */
+      name: string;
+      type: components["schemas"]["ChannelType"];
+      events: components["schemas"]["ChannelEvents"];
+      mention: components["schemas"]["ChannelMention"];
+      reminderMinutes: components["schemas"]["ReminderMinutes"];
       /**
-       * @description Present when configured. `failed` means Slack answered 404 or 410 (the webhook was revoked); alerts are not sent until a new URL is stored.
+       * @description `failed` means Slack answered 404 or 410 (the webhook was revoked); nothing is sent until a new webhook URL is stored.
        * @enum {string}
        */
-      status?: "active" | "failed";
+      status: "active" | "failed";
+      /** Format: date-time */
+      createdAt: string;
+      /** Format: date-time */
+      updatedAt: string;
     };
-    SlackSettingsUpdate: {
+    ChannelList: {
+      items: components["schemas"]["Channel"][];
+    };
+    ChannelCreate: {
+      /** @example #ops-alerts */
+      name: string;
+      type?: components["schemas"]["ChannelType"];
       /**
        * Format: password
        * @description Slack Incoming Webhook URL, `https://hooks.slack.com/services/...`; write-only
        */
       webhookUrl: string;
+      events?: components["schemas"]["ChannelEvents"];
+      mention?: components["schemas"]["ChannelMention"];
+      reminderMinutes?: components["schemas"]["ReminderMinutes"];
+    };
+    /** @description Only the given fields change. */
+    ChannelUpdate: {
+      name?: string;
+      /**
+       * Format: password
+       * @description A new Slack Incoming Webhook URL; write-only
+       */
+      webhookUrl?: string;
+      events?: components["schemas"]["ChannelEvents"];
+      mention?: components["schemas"]["ChannelMention"];
+      reminderMinutes?: components["schemas"]["ReminderMinutes"];
     };
     Usage: {
       plan: components["schemas"]["PlanRef"];
@@ -949,7 +1051,7 @@ export interface components {
       monitors: number;
       /** @description Heartbeat (watchdog) monitors */
       heartbeats: number;
-      /** @description Notification channels (the Slack webhook) */
+      /** @description Notification channels (deleted channels do not count) */
       channels: number;
     };
     /**
@@ -1115,7 +1217,7 @@ export interface components {
         "application/problem+json": components["schemas"]["Problem"];
       };
     };
-    /** @description The request conflicts with the current state (for example Slack is not configured) */
+    /** @description The request conflicts with the current state (for example the monitor is not a heartbeat) */
     Conflict: {
       headers: {
         [name: string]: unknown;
@@ -1188,6 +1290,8 @@ export interface components {
   parameters: {
     /** @description Monitor id; a value that is not a UUID is answered with 400 */
     MonitorId: string;
+    /** @description Notification channel id; a value that is not a UUID is answered with 400 */
+    ChannelId: string;
     /** @description Tenant id; a value that is not a UUID is answered with 400 */
     TenantId: string;
     /** @description Case-insensitive substring to search for; empty lists everything */
@@ -1759,61 +1863,6 @@ export interface operations {
       default: components["responses"]["Error"];
     };
   };
-  getSlackSettings: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Current settings */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["SlackSettings"];
-        };
-      };
-      401: components["responses"]["Unauthorized"];
-      default: components["responses"]["Error"];
-    };
-  };
-  putSlackSettings: {
-    parameters: {
-      query?: never;
-      header: {
-        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
-        "X-CSRF-Token": components["parameters"]["CsrfToken"];
-      };
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        "application/json": components["schemas"]["SlackSettingsUpdate"];
-      };
-    };
-    responses: {
-      /** @description Settings after the change */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["SlackSettings"];
-        };
-      };
-      400: components["responses"]["BadRequest"];
-      401: components["responses"]["Unauthorized"];
-      403: components["responses"]["Forbidden"];
-      409: components["responses"]["PlanLimitReached"];
-      422: components["responses"]["UnprocessableEntity"];
-      default: components["responses"]["Error"];
-    };
-  };
   getUsage: {
     parameters: {
       query?: never;
@@ -1836,7 +1885,29 @@ export interface operations {
       default: components["responses"]["Error"];
     };
   };
-  testSlack: {
+  listChannels: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The channels of the tenant */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ChannelList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      default: components["responses"]["Error"];
+    };
+  };
+  createChannel: {
     parameters: {
       query?: never;
       header: {
@@ -1844,6 +1915,134 @@ export interface operations {
         "X-CSRF-Token": components["parameters"]["CsrfToken"];
       };
       path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ChannelCreate"];
+      };
+    };
+    responses: {
+      /** @description The created channel */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Channel"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      409: components["responses"]["PlanLimitReached"];
+      422: components["responses"]["UnprocessableEntity"];
+      default: components["responses"]["Error"];
+    };
+  };
+  getChannel: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Notification channel id; a value that is not a UUID is answered with 400 */
+        channelId: components["parameters"]["ChannelId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The channel */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Channel"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      default: components["responses"]["Error"];
+    };
+  };
+  deleteChannel: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description Notification channel id; a value that is not a UUID is answered with 400 */
+        channelId: components["parameters"]["ChannelId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Deleted */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      default: components["responses"]["Error"];
+    };
+  };
+  updateChannel: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description Notification channel id; a value that is not a UUID is answered with 400 */
+        channelId: components["parameters"]["ChannelId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ChannelUpdate"];
+      };
+    };
+    responses: {
+      /** @description The updated channel */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Channel"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      422: components["responses"]["UnprocessableEntity"];
+      default: components["responses"]["Error"];
+    };
+  };
+  testChannel: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description Notification channel id; a value that is not a UUID is answered with 400 */
+        channelId: components["parameters"]["ChannelId"];
+      };
       cookie?: never;
     };
     requestBody?: never;
@@ -1855,9 +2054,10 @@ export interface operations {
         };
         content?: never;
       };
+      400: components["responses"]["BadRequest"];
       401: components["responses"]["Unauthorized"];
       403: components["responses"]["Forbidden"];
-      409: components["responses"]["Conflict"];
+      404: components["responses"]["NotFound"];
       429: components["responses"]["TooManyRequests"];
       default: components["responses"]["Error"];
     };
