@@ -8,6 +8,7 @@ import {
   heartbeatStatusLine,
   repeatInterval,
   secretCommand,
+  heartbeatDeadline,
 } from "./heartbeat";
 import {
   emptyMonitorForm,
@@ -109,5 +110,21 @@ describe("watchdog form", () => {
     expect(
       toCreateRequest({ ...emptyMonitorForm, name: "S", url: "https://e.com" }),
     ).not.toHaveProperty("type");
+  });
+});
+
+describe("heartbeatDeadline", () => {
+  const base = { expectedIntervalSeconds: 300, graceSeconds: 60, paused: false };
+  it("adds the interval and grace to the last ping", () => {
+    expect(heartbeatDeadline({ ...base, lastPingAt: "2026-11-02T10:00:00Z" })).toBe(
+      Date.parse("2026-11-02T10:06:00Z"),
+    );
+  });
+
+  it("is unknown before the first ping and while paused", () => {
+    expect(heartbeatDeadline({ ...base, lastPingAt: null })).toBeNull();
+    expect(
+      heartbeatDeadline({ ...base, paused: true, lastPingAt: "2026-11-02T10:00:00Z" }),
+    ).toBeNull();
   });
 });

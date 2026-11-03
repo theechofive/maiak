@@ -1,6 +1,19 @@
 import type { MonitorListItem } from "../api/endpoints";
 import { formatAgo, formatDuration, formatSince, secondsBetween } from "./format";
 
+/**
+ * When the watchdog goes down without another ping: the last ping plus interval and grace
+ * (ADR-0094). Null before the first ping, since the start of the wait is not in the API.
+ */
+export function heartbeatDeadline(
+  m: Pick<MonitorListItem, "lastPingAt" | "expectedIntervalSeconds" | "graceSeconds" | "paused">,
+): number | null {
+  if (m.paused || !m.lastPingAt) return null;
+  return (
+    Date.parse(m.lastPingAt) + ((m.expectedIntervalSeconds ?? 0) + (m.graceSeconds ?? 0)) * 1000
+  );
+}
+
 /** Bounds of a heartbeat (ADR-0094); the server checks them too. */
 export const INTERVAL_MIN = 60;
 export const INTERVAL_MAX = 86_400;

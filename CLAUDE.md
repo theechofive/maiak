@@ -5,7 +5,7 @@ Maiak is a multi-tenant uptime-monitoring SaaS starter: external HTTPS checks, i
 ## Repository layout
 - `backend/` Go modular monolith. One module, several processes: `cmd/api`, `cmd/worker`, `cmd/jobs`, `cmd/migrate`, `cmd/maiakctl` (later `cmd/probe`, `cmd/agent`).
 - `api/openapi.yaml` the API contract and source of truth (spec-first). Server code and the TypeScript client are generated from it.
-- `web/` React SPA (minimal React + Vite, ADR-0015).
+- `web/` React SPA (React + Vite, ADR-0015; design system and component library, ADR-0099). Read `web/CLAUDE.md` before changing it.
 - `deploy/helm/maiak/` our own Helm chart (not the company `helm-app`).
 - `docs/` architecture, ADRs, ledger, runbooks.
 

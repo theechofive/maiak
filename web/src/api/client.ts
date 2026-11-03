@@ -196,6 +196,12 @@ export async function unwrap<T>(call: Promise<Result<T>>): Promise<T> {
 }
 
 /** A short, user-facing message for any error. */
+/** "HTTP 502 · req_7c1e" for an error state, so a support question can quote it. */
+export function errorMeta(err: unknown): string | undefined {
+  if (!(err instanceof ApiError) || err.status === 0) return undefined;
+  return [`HTTP ${err.status}`, err.requestId].filter(Boolean).join(" · ");
+}
+
 export function errorMessage(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.status === 0) return "Cannot reach the server. Check your connection and try again.";

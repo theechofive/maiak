@@ -1,5 +1,6 @@
 import { ApiError, errorMessage } from "../api/client";
 import type { MonitorCreate, MonitorDetail, MonitorUpdate } from "../api/endpoints";
+import { formatDuration } from "./format";
 import {
   DEFAULT_GRACE,
   DEFAULT_INTERVAL,
@@ -171,3 +172,62 @@ export function mapServerErrors(err: unknown): {
 }
 
 const capitalize = (s: string) => (s ? s[0]!.toUpperCase() + s.slice(1) : s);
+
+/** "https://" plus what the user typed, unless they typed a scheme of their own. */
+export function withHttps(typed: string): string {
+  const value = typed.trim();
+  if (!value) return "";
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `https://${value}`;
+}
+
+/** The URL as the field shows it, next to its fixed "https://". */
+export const withoutHttps = (url: string) => url.replace(/^https:\/\//i, "");
+
+/**
+ * The setup in one plain sentence, as the user fills in the form. Parts not filled in yet are
+ * `blank`, so the page can show them as placeholders.
+ */
+export function describeSetup(v: MonitorFormValues): { text: string; blank?: boolean }[] {
+  const slack = v.notifySlack;
+  if (v.type === "heartbeat") {
+    const interval = Number(v.expectedIntervalSeconds);
+    const grace = Number(v.graceSeconds);
+    const intervalOk = /^[0-9]+$/.test(v.expectedIntervalSeconds.trim()) && interval > 0;
+    const graceOk = /^[0-9]+$/.test(v.graceSeconds.trim());
+    return [
+      { text: "Expects a ping every " },
+      intervalOk ? { text: formatDuration(interval) } : { text: "…", blank: true },
+      { text: slack ? " and alerts Slack " : " and marks it down " },
+      ...(graceOk && grace === 0
+        ? [{ text: "the moment one is late." }]
+        : [
+            { text: "if one is more than " },
+            graceOk ? { text: formatDuration(grace) } : { text: "…", blank: true },
+            { text: " late." },
+          ]),
+    ];
+  }
+  const host = withoutHttps(v.url.trim()).replace(/\/$/, "");
+  const exact = v.expectedMode === "exact";
+  return [
+    { text: "Checks " },
+    host ? { text: host } : { text: "your URL", blank: true },
+    { text: " every minute" },
+    ...(exact
+      ? [
+          { text: ", expects " },
+          EXPECTED_STATUS_PATTERN.test(v.expectedCode.trim())
+            ? { text: `HTTP ${v.expectedCode.trim()}` }
+            : { text: "a status code", blank: true },
+          { text: "," },
+        ]
+      : []),
+    { text: slack ? " and alerts Slack after " : " and marks it down after " },
+    {
+      text:
+        v.failureThreshold === 1
+          ? "the first failure."
+          : `${v.failureThreshold} failures in a row.`,
+    },
+  ];
+}

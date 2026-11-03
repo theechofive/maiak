@@ -89,6 +89,29 @@ describe("monitors list", () => {
     expect(screen.getByText("No monitors match “zzz”.")).toBeInTheDocument();
   });
 
+  it("puts the newest outage first and works from the keyboard", async () => {
+    mockApi({ ...signedIn, "GET /api/v1/monitors": () => json(list) });
+    renderApp("/");
+    const filter = await screen.findByLabelText("Filter by name or URL");
+    const links = within(screen.getByRole("table")).getAllByRole("link");
+    expect(links.map((l) => l.textContent)).toEqual(["API", "Website", "Billing"]);
+    expect(document.title).toBe("▲ 1 down · Maiak");
+
+    await userEvent.keyboard("/");
+    expect(filter).toHaveFocus();
+    await userEvent.keyboard("{ArrowDown}");
+    expect(links[0]).toHaveFocus();
+    await userEvent.keyboard("{ArrowDown}");
+    expect(links[1]).toHaveFocus();
+    await userEvent.keyboard("{ArrowUp}{ArrowUp}");
+    expect(filter).toHaveFocus();
+
+    await userEvent.keyboard("web");
+    expect(screen.getByText("API is down and hidden by this filter.")).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    expect(filter).toHaveValue("");
+  });
+
   it("opens the details when a row is clicked", async () => {
     mockApi({
       ...signedIn,
@@ -96,7 +119,7 @@ describe("monitors list", () => {
       "GET /api/v1/monitors/a": () => json(detail({ id: "a", name: "Website" })),
     });
     renderApp("/");
-    await userEvent.click(await screen.findByText("https://example.com/"));
+    await userEvent.click(await screen.findByText("example.com/"));
     expect(await screen.findByRole("heading", { name: "Website", level: 1 })).toBeInTheDocument();
   });
 
@@ -108,7 +131,7 @@ describe("monitors list", () => {
     });
     renderApp("/");
     expect(await screen.findByRole("heading", { name: "Start your first monitor" }));
-    expect(screen.getByRole("button", { name: "Add monitor" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Add monitor" })).toHaveAttribute(
       "href",
       "/monitors/new",
     );
@@ -141,7 +164,7 @@ describe("monitors list", () => {
     const { unmount } = renderApp("/");
     expect(await screen.findByText("3 monitors · 1 up · 1 down · 1 paused")).toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Add monitor" })).toHaveAttribute(
+      expect(screen.getByRole("link", { name: "Add monitor" })).toHaveAttribute(
         "href",
         "/monitors/new",
       ),
@@ -151,7 +174,7 @@ describe("monitors list", () => {
     usage = undefined;
     renderApp("/");
     expect(await screen.findByText("3 monitors · 1 up · 1 down · 1 paused")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Add monitor" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Add monitor" })).toHaveAttribute(
       "href",
       "/monitors/new",
     );
@@ -194,9 +217,7 @@ describe("monitor form", () => {
 
     expect(screen.getByLabelText("Name")).toHaveAttribute("aria-invalid", "true");
     expect(screen.getByLabelText("Name")).toHaveAccessibleDescription("Enter a name.");
-    expect(screen.getByLabelText("URL")).toHaveAccessibleDescription(
-      "Use an https:// URL. HTTPS only. Private and internal addresses are not allowed.",
-    );
+    expect(screen.getByLabelText("URL")).toHaveAccessibleDescription("Use an https:// URL.");
     expect(fetchMock.mock.calls.some(([r]) => (r as Request).method === "POST")).toBe(false);
   });
 
@@ -237,7 +258,16 @@ describe("monitor form", () => {
     await userEvent.click(screen.getByLabelText("Exact code"));
     await userEvent.clear(screen.getByLabelText("Status code"));
     await userEvent.type(screen.getByLabelText("Status code"), "204");
-    await userEvent.selectOptions(screen.getByLabelText("Alert after"), "3");
+    await userEvent.click(screen.getByRole("radio", { name: "3" }));
+    // The plain-English summary is split into spans; match its whole paragraph.
+    expect(
+      screen.getByText(
+        (_, el) =>
+          el?.tagName === "P" &&
+          el.textContent ===
+            "Checks example.com every minute, expects HTTP 204, and alerts Slack after 3 failures in a row.",
+      ),
+    ).toBeInTheDocument();
     await userEvent.click(screen.getByLabelText("Notify Slack"));
     await userEvent.click(screen.getByRole("button", { name: "Create monitor" }));
 
@@ -250,6 +280,25 @@ describe("monitor form", () => {
       notifySlack: false,
     });
     expect(screen.getByRole("status")).toHaveTextContent("Monitor created");
+  });
+
+  it("shows a server error about Slack under the Notify Slack choice", async () => {
+    mockApi({
+      ...signedIn,
+      "POST /api/v1/monitors": () =>
+        problem(422, "Validation failed", {
+          fieldErrors: [{ field: "notifySlack", message: "no Slack webhook is configured" }],
+        }),
+    });
+    renderApp("/monitors/new");
+    await userEvent.type(await screen.findByLabelText("Name"), "Website");
+    await userEvent.type(screen.getByLabelText("URL"), "example.com");
+    await userEvent.click(screen.getByRole("button", { name: "Create monitor" }));
+    const checkbox = await screen.findByLabelText("Notify Slack");
+    await waitFor(() => expect(checkbox).toHaveAttribute("aria-invalid", "true"));
+    expect(checkbox).toHaveAccessibleDescription(
+      expect.stringContaining("No Slack webhook is configured"),
+    );
   });
 
   it("explains a plan-limit refusal and refreshes the usage", async () => {
@@ -374,18 +423,98 @@ describe("monitor details", () => {
     });
     renderApp("/monitors/m1");
     expect(
-      await screen.findByRole("img", { name: /Response time, last 24 hours/ }),
+      await screen.findByRole("group", { name: /Response time, last 24 hours/ }),
     ).toBeInTheDocument();
     expect(screen.getByText("Average 120 ms · p95 300 ms")).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "12 min" })).toBeInTheDocument();
-    expect(screen.getByRole("cell", { name: "Failed: Unexpected status" })).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "Unexpected status" })).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "Failed" })).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: "7 d" }));
+    await userEvent.click(screen.getByRole("radio", { name: "7d" }));
     expect(
-      await screen.findByRole("img", { name: /Response time, last 7 days/ }),
+      await screen.findByRole("group", { name: /Response time, last 7 days/ }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "7 d" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("radio", { name: "7d" })).toBeChecked();
     expect(ranges).toEqual(["24h", "7d"]);
+  });
+
+  it("explains an outage from the latest checks and warns about the TLS certificate", async () => {
+    const at = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
+    const check = (min: number, ok: boolean) => ({
+      checkedAt: at(min),
+      location: "home",
+      ok,
+      httpStatus: null,
+      responseMs: ok ? 120 : null,
+      errorKind: ok ? null : "timeout",
+    });
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/monitors/m1": () =>
+        json(
+          detail({
+            status: "down",
+            statusSince: at(3),
+            lastErrorKind: "timeout",
+            tlsExpiresAt: new Date(Date.now() + 9.5 * 86_400_000).toISOString(),
+          }),
+        ),
+      "GET /api/v1/monitors/m1/checks": () =>
+        json({ items: [check(1, false), check(2, false), check(3, false), check(4, true)] }),
+    });
+    renderApp("/monitors/m1");
+    const brief = await screen.findByRole("region", { name: "Ongoing incident" });
+    expect(brief).toHaveTextContent("Timed out after 10 s");
+    expect(
+      await within(brief).findByText(/3 failed checks in a row\. Last success at/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/The TLS certificate expires in 9 days/)).toBeInTheDocument();
+  });
+
+  it("says a paused monitor is paused, not new, when its range is empty", async () => {
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/monitors/m1": () => json(detail({ paused: true, status: "unknown" })),
+      "GET /api/v1/monitors/m1/stats": () =>
+        json({
+          range: "24h",
+          avgMs: null,
+          p95Ms: null,
+          series: [{ t: "2026-10-20T10:00:00Z", avgMs: null, okRatio: null }],
+        }),
+    });
+    renderApp("/monitors/m1");
+    expect(await screen.findByText("Paused: no checks ran in this range.")).toBeInTheDocument();
+    expect(screen.queryByText(/No checks yet/)).not.toBeInTheDocument();
+  });
+
+  it("keeps the labels of the shown range until the new range arrives", async () => {
+    let release: (() => void) | undefined;
+    const stats = (range: string) => ({
+      range,
+      avgMs: 120,
+      p95Ms: 300,
+      series: [{ t: "2026-10-20T10:00:00Z", avgMs: 100, okRatio: 1 }],
+    });
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/monitors/m1": () => json(detail()),
+      "GET /api/v1/monitors/m1/stats": (req) => {
+        const range = new URL(req.url).searchParams.get("range") ?? "24h";
+        if (range === "24h") return json(stats(range));
+        return new Promise<Response>((resolve) => (release = () => resolve(json(stats(range)))));
+      },
+    });
+    renderApp("/monitors/m1");
+    await screen.findByRole("group", { name: /last 24 hours/ });
+    await userEvent.click(screen.getByRole("radio", { name: "7d" }));
+    expect(screen.getByRole("radio", { name: "7d" })).toBeChecked();
+    expect(screen.getByRole("group", { name: /last 24 hours/ })).toBeInTheDocument();
+    expect(screen.getByText("average per 15 min bucket")).toBeInTheDocument();
+    await waitFor(() => expect(release).toBeDefined());
+    act(() => release!());
+    expect(await screen.findByRole("group", { name: /last 7 days/ })).toBeInTheDocument();
+    expect(screen.getByText("average per hour bucket")).toBeInTheDocument();
   });
 
   it("deletes only after confirmation", async () => {
@@ -486,7 +615,7 @@ describe("monitor details", () => {
       ).length;
     renderApp("/");
     expect(await screen.findByText("1 monitor · 1 up · 0 down · 0 paused")).toBeInTheDocument();
-    await userEvent.click(screen.getByText("https://example.com/"));
+    await userEvent.click(screen.getByText("example.com/"));
     await userEvent.click(await screen.findByRole("button", { name: "Pause" }));
     expect(await screen.findByRole("button", { name: "Resume" })).toBeInTheDocument();
 
@@ -514,16 +643,19 @@ describe("settings", () => {
     expect(await screen.findByText(/Your tenant is on the/)).toHaveTextContent(
       "Your tenant is on the Free plan.",
     );
-    const table = screen.getByRole("table");
-    const rows = within(table)
-      .getAllByRole("row")
-      .map((r) => r.textContent);
-    expect(rows).toEqual([
-      "ResourceUsedLimit",
-      "Monitors23",
-      "Heartbeat monitors01",
-      "Notification channels11 (limit reached)",
+    const meters = screen.getAllByRole("meter");
+    expect(
+      meters.map((m) => [
+        m.getAttribute("aria-label"),
+        m.getAttribute("aria-valuenow"),
+        m.getAttribute("aria-valuemax"),
+      ]),
+    ).toEqual([
+      ["Monitors", "2", "3"],
+      ["Heartbeat monitors", "0", "1"],
+      ["Notification channels", "1", "1"],
     ]);
+    expect(screen.getByText("Limit reached")).toBeInTheDocument();
   });
 
   it("shows an error for the plan without hiding the other settings", async () => {
@@ -557,10 +689,40 @@ describe("settings", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
     expect(await screen.findByText(/A webhook is configured/)).toBeInTheDocument();
-    expect(input).toHaveValue("");
+    // The URL is gone for good: the field is replaced by the write-only value.
+    expect(screen.queryByLabelText("Slack webhook URL")).not.toBeInTheDocument();
+    expect(screen.getByText("Configured, hidden")).toBeInTheDocument();
     expect(sent).toEqual({ webhookUrl: "https://hooks.slack.com/services/T0/B0/secret" });
     expect(screen.getByRole("button", { name: "Send test message" })).toBeEnabled();
     expect(screen.getByRole("status")).toHaveTextContent("Webhook saved");
+  });
+
+  it("switches the theme and remembers it in this browser", async () => {
+    mockApi({ ...signedIn, "GET /api/v1/settings/slack": () => json({ configured: false }) });
+    renderApp("/settings");
+    await userEvent.click(await screen.findByRole("radio", { name: "Dark" }));
+    expect(document.documentElement).toHaveClass("theme-dark");
+    expect(localStorage.getItem("maiak-theme")).toBe("dark");
+    await userEvent.click(screen.getByRole("radio", { name: "System" }));
+    expect(document.documentElement).not.toHaveClass("theme-dark");
+    expect(localStorage.getItem("maiak-theme")).toBeNull();
+  });
+
+  it("switches the theme from the top bar, in step with Settings", async () => {
+    mockApi({ ...signedIn, "GET /api/v1/settings/slack": () => json({ configured: false }) });
+    renderApp("/settings");
+    const bar = within(await screen.findByRole("banner"));
+    await userEvent.click(bar.getByRole("button", { name: "Light theme" }));
+    expect(document.documentElement).toHaveClass("theme-light");
+    expect(bar.getByRole("button", { name: "Light theme" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("radio", { name: "Light" })).toBeChecked();
+    // Pressed again: back to the system setting.
+    await userEvent.click(bar.getByRole("button", { name: "Light theme" }));
+    expect(document.documentElement).not.toHaveClass("theme-light");
+    expect(screen.getByRole("radio", { name: "System" })).toBeChecked();
   });
 
   it("rejects a URL that is not a Slack webhook before sending it", async () => {
@@ -590,7 +752,7 @@ describe("settings", () => {
     expect(input).toHaveAttribute("type", "text");
     expect(input).toHaveAttribute("autocomplete", "off");
     expect(input).toHaveAttribute("spellcheck", "false");
-    expect(input).toHaveClass("secret-input");
+    expect(input).toHaveClass("secret-text");
   });
 
   it("shows an error toast when the Slack test answers 409", async () => {
@@ -602,12 +764,35 @@ describe("settings", () => {
     });
     renderApp("/settings");
     await userEvent.click(await screen.findByRole("button", { name: "Send test message" }));
-    expect(await screen.findByText(/Test message failed/)).toHaveTextContent(
-      "No Slack webhook is configured.",
-    );
+    const alert = (await screen.findByText("Test message failed.")).closest("[role=alert]")!;
+    expect(alert).toHaveTextContent("No Slack webhook is configured.");
   });
 
-  it("reports a failed test message in a toast", async () => {
+  it("shows a delivered test next to the button", async () => {
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/settings/slack": () => json({ configured: true, status: "active" }),
+      "POST /api/v1/settings/slack/test": () => new Response(null, { status: 204 }),
+    });
+    renderApp("/settings");
+    await userEvent.click(await screen.findByRole("button", { name: "Send test message" }));
+    expect(await screen.findByText(/Test message sent at/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send another test" })).toBeInTheDocument();
+  });
+
+  it("says when Slack refused the stored webhook", async () => {
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/settings/slack": () => json({ configured: true, status: "failed" }),
+    });
+    renderApp("/settings");
+    expect(await screen.findByText(/Slack refused it/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Replace" }));
+    expect(screen.getByLabelText("New Slack webhook URL")).toHaveValue("");
+    expect(screen.getByLabelText("New Slack webhook URL")).toHaveFocus();
+  });
+
+  it("reports a failed test message", async () => {
     mockApi({ ...signedIn, "GET /api/v1/settings/slack": () => json({ configured: true }) });
     renderApp("/settings");
     await userEvent.click(await screen.findByRole("button", { name: "Send test message" }));
@@ -661,7 +846,8 @@ describe("watchdogs", () => {
     const row = (await screen.findByRole("link", { name: "Alertmanager" })).closest("tr")!;
     expect(within(row).getByText("Watchdog")).toBeInTheDocument();
     expect(within(row).getByText("Ping every 5 min, grace 1 min")).toBeInTheDocument();
-    expect(within(row).getByText("2 min ago")).toBeInTheDocument();
+    // Twice in the DOM: the column on wide screens, the row's second line on phones.
+    expect(within(row).getAllByText("2 min ago")).toHaveLength(2);
   });
 
   it("creates a watchdog and shows its URL once with the Alertmanager snippet", async () => {
@@ -712,9 +898,7 @@ describe("watchdogs", () => {
     expect(secret).toHaveTextContent("--from-file=url=/dev/stdin");
     expect(secret).not.toHaveTextContent(url);
 
-    await userEvent.click(
-      screen.getByRole("button", { name: "I saved the URL, open the monitor" }),
-    );
+    await userEvent.click(screen.getByRole("link", { name: "I saved the URL, open the monitor" }));
     expect(
       await screen.findByRole("heading", { name: "Alertmanager", level: 1 }),
     ).toBeInTheDocument();

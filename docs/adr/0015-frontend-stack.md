@@ -1,6 +1,6 @@
 # ADR-0015: Frontend: minimal React + Vite, no design system
 
-- Status: Accepted
+- Status: Accepted; the styling decision is superseded by [ADR-0099](0099-design-system.md)
 - Date: 2026-10-20
 
 ## Context

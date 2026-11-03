@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { Button, ErrorState } from "./ui";
 
 interface State {
   error: Error | null;
@@ -19,13 +20,17 @@ export default class ErrorBoundary extends Component<{ children: ReactNode }, St
   render() {
     if (!this.state.error) return this.props.children;
     return (
-      <section role="alert">
-        <h1>Something went wrong</h1>
-        <p>The page failed to display. Reload it to try again.</p>
-        <button type="button" onClick={() => window.location.reload()}>
-          Reload the page
-        </button>
-      </section>
+      <div className="flex flex-col gap-3 py-10">
+        <ErrorState
+          title="Something went wrong"
+          detail="The page failed to display. Reload it to try again."
+        />
+        <div>
+          <Button variant="secondary" onClick={() => window.location.reload()}>
+            Reload the page
+          </Button>
+        </div>
+      </div>
     );
   }
 }

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ApiError, errorMessage } from "../../api/client";
+import { ApiError, errorMessage, errorMeta } from "../../api/client";
 import {
   deleteAdminTenant,
   getAdminStats,
@@ -14,10 +14,28 @@ import {
   type AdminTenantUpdate,
   type AdminUser,
 } from "../../api/endpoints";
-import ConfirmDialog from "../../components/ConfirmDialog";
-import { ErrorState, Loading } from "../../components/QueryState";
 import TemporaryPasswordPanel from "../../components/TemporaryPasswordPanel";
+import { useAuth } from "../../auth/AuthProvider";
 import { useToast } from "../../components/Toasts";
+import {
+  Alert,
+  Badge,
+  Button,
+  buttonClass,
+  ConfirmDialog,
+  ErrorState,
+  Field,
+  Metric,
+  MetricStrip,
+  Select,
+  Skeleton,
+  Table,
+  Td,
+  Th,
+  Tr,
+  Loading,
+  EmptyNote,
+} from "../../components/ui";
 import { formatDate, formatDateTime } from "../../lib/format";
 import { TenantStatusBadge } from "./TenantStatusBadge";
 
@@ -30,6 +48,15 @@ function changeError(err: unknown): string {
   }
   return errorMessage(err);
 }
+
+const back = (
+  <Link
+    to="/admin/tenants"
+    className="self-start py-2.5 text-[13px] text-muted-foreground hover:text-foreground sm:py-0"
+  >
+    ← Tenants
+  </Link>
+);
 
 export default function AdminTenantDetails() {
   const { id = "" } = useParams();
@@ -44,31 +71,40 @@ function TenantDetails({ id }: { id: string }) {
     queryFn: () => getAdminTenant(id),
   });
 
-  if (tenant.isPending) return <Loading label="Loading tenant…" />;
+  if (tenant.isPending) {
+    return (
+      <Loading label="Loading tenant…" className="pt-9">
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="w-80 max-w-full" />
+      </Loading>
+    );
+  }
   if (tenant.isError) {
     if (tenant.error instanceof ApiError && tenant.error.status === 404) {
       return (
-        <section>
-          <h1>Tenant not found</h1>
-          <p>
-            <Link to="/admin/tenants">Back to tenants</Link>
-          </p>
+        <section className="flex flex-col items-start gap-4 py-10">
+          <h1 className="text-headline font-semibold tracking-[-0.02em] sm:text-display">
+            Tenant not found
+          </h1>
+          <Link to="/admin/tenants" className={buttonClass("secondary")}>
+            Back to tenants
+          </Link>
         </section>
       );
     }
     return (
-      <ErrorState
-        title="Cannot load the tenant"
-        error={tenant.error}
-        onRetry={() => void tenant.refetch()}
-      />
+      <div className="pt-9">
+        <ErrorState
+          title="Cannot load the tenant"
+          detail={errorMessage(tenant.error)}
+          meta={errorMeta(tenant.error)}
+          onRetry={() => void tenant.refetch()}
+        />
+      </div>
     );
   }
   return (
-    <section>
-      <p>
-        <Link to="/admin/tenants">← Tenants</Link>
-      </p>
+    <section className="flex flex-col gap-8 pt-4">
       <TenantInfo tenant={tenant.data} />
       <TenantUsers tenant={tenant.data} />
     </section>
@@ -80,10 +116,18 @@ function TenantInfo({ tenant }: { tenant: AdminTenant }) {
   const toast = useToast();
   const plans = useQuery({ queryKey: queryKeys.adminStats, queryFn: getAdminStats });
   const [plan, setPlan] = useState(tenant.planKey);
-  const [planError, setPlanError] = useState<string | null>(null);
+  const [planError, setPlanError] = useState<string | undefined>();
   const [confirm, setConfirm] = useState<"suspend" | "unsuspend" | "delete" | null>(null);
+  const auth = useAuth();
   const deleted = tenant.deletedAt !== null;
   const suspended = tenant.status === "suspended";
+  // ADR-0097 guard rails: the backend refuses these with 409 protected-tenant.
+  const protectedReason =
+    tenant.slug === "default"
+      ? "The platform's own tenant: it cannot be suspended or deleted."
+      : tenant.id === auth.session?.tenant.id
+        ? "Your own tenant: you cannot suspend or delete it."
+        : undefined;
 
   function refresh(updated?: AdminTenant) {
     if (updated) queryClient.setQueryData(queryKeys.adminTenant(tenant.id), updated);
@@ -123,7 +167,7 @@ function TenantInfo({ tenant }: { tenant: AdminTenant }) {
 
   function onSavePlan(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setPlanError(null);
+    setPlanError(undefined);
     update.mutate({ planKey: plan });
   }
 
@@ -133,94 +177,98 @@ function TenantInfo({ tenant }: { tenant: AdminTenant }) {
 
   return (
     <>
-      <div className="page-heading">
-        <hgroup>
-          <h1>{tenant.name}</h1>
-          <p>
-            {tenant.slug} · <TenantStatusBadge tenant={tenant} />
-          </p>
-        </hgroup>
-        {!deleted && (
-          <div className="actions">
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => setConfirm(suspended ? "unsuspend" : "suspend")}
-            >
-              {suspended ? "Unsuspend" : "Suspend"}
-            </button>
-            <button
-              type="button"
-              className="secondary outline"
-              onClick={() => setConfirm("delete")}
-            >
-              Delete
-            </button>
+      <div className="flex flex-col gap-3">
+        {back}
+        <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-4">
+          <div className="flex min-w-0 flex-col gap-2">
+            <h1 className="text-headline leading-[1.1] font-semibold tracking-[-0.02em] break-words sm:text-display">
+              {tenant.name}
+            </h1>
+            <div className="flex flex-wrap items-center gap-3">
+              <TenantStatusBadge tenant={tenant} />
+              <span className="font-mono text-[13px] text-muted-foreground">{tenant.slug}</span>
+            </div>
           </div>
-        )}
+          {!deleted && protectedReason && (
+            <p className="max-w-[280px] text-caption text-muted-foreground">{protectedReason}</p>
+          )}
+          {!deleted && !protectedReason && (
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => setConfirm(suspended ? "unsuspend" : "suspend")}
+              >
+                {suspended ? "Unsuspend" : "Suspend"}
+              </Button>
+              <Button variant="ghost-destructive" onClick={() => setConfirm("delete")}>
+                Delete
+              </Button>
+            </div>
+          )}
+        </div>
       </div>
-      <dl>
-        <dt>Tenant id</dt>
-        <dd>
-          <code>{tenant.id}</code>
-        </dd>
-        <dt>Created</dt>
-        <dd>{formatDate(tenant.createdAt)}</dd>
-        {tenant.deletedAt && (
-          <>
-            <dt>Deleted</dt>
-            <dd>{formatDateTime(tenant.deletedAt)}</dd>
-          </>
-        )}
-        <dt>Usage</dt>
-        <dd>
-          {tenant.users} users · {tenant.monitors} monitors · {tenant.heartbeats} watchdogs
-        </dd>
+
+      <MetricStrip>
+        <Metric label="Users" value={tenant.users} />
+        <Metric label="Monitors" value={tenant.monitors} />
+        <Metric label="Watchdogs" value={tenant.heartbeats} />
+        <Metric
+          label="Created"
+          value={formatDate(tenant.createdAt)}
+          note={tenant.deletedAt ? `Deleted ${formatDateTime(tenant.deletedAt)}` : undefined}
+        />
+      </MetricStrip>
+
+      <dl className="grid gap-x-6 gap-y-1 sm:grid-cols-[140px_minmax(0,1fr)]">
+        <dt className="text-caption text-muted-foreground">Tenant id</dt>
+        <dd className="font-mono text-[13px] break-all">{tenant.id}</dd>
       </dl>
 
       {deleted ? (
-        <p>
-          Plan: {tenant.planName}. A deleted tenant cannot be changed; its data is kept (see the
-          admin runbook to restore it).
-        </p>
+        <Alert tone="neutral" title={`Plan: ${tenant.planName}.`}>
+          A deleted tenant cannot be changed; its data is kept (see the admin runbook to restore
+          it).
+        </Alert>
       ) : (
-        <form onSubmit={onSavePlan}>
-          <label htmlFor="tenant-plan">Plan</label>
-          <fieldset role="group">
-            <select
-              id="tenant-plan"
-              value={plan}
-              aria-invalid={planError ? true : undefined}
-              aria-describedby="tenant-plan-help"
-              onChange={(e) => {
-                setPlan(e.target.value);
-                setPlanError(null);
-              }}
-            >
-              {planOptions.map((p) => (
-                <option key={p.key} value={p.key}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-            <button
-              type="submit"
-              aria-busy={update.isPending && plan !== tenant.planKey}
-              disabled={update.isPending || plan === tenant.planKey}
-            >
-              Save
-            </button>
-          </fieldset>
-          <small id="tenant-plan-help" className={planError ? "error" : undefined}>
-            {planError ??
-              "Existing monitors are kept when the new plan allows fewer; only new ones are refused."}
-          </small>
+        <form onSubmit={onSavePlan} className="flex max-w-[560px] flex-col gap-2">
+          <Field
+            label="Plan"
+            hint="Existing monitors are kept when the new plan allows fewer; only new ones are refused."
+            error={planError}
+          >
+            {(c) => (
+              <div className="flex gap-2">
+                <Select
+                  {...c}
+                  className="flex-1"
+                  value={plan}
+                  onChange={(e) => {
+                    setPlan(e.target.value);
+                    setPlanError(undefined);
+                  }}
+                >
+                  {planOptions.map((p) => (
+                    <option key={p.key} value={p.key}>
+                      {p.name}
+                    </option>
+                  ))}
+                </Select>
+                <Button
+                  type="submit"
+                  variant="secondary"
+                  busy={update.isPending && plan !== tenant.planKey}
+                  disabled={update.isPending || plan === tenant.planKey}
+                >
+                  Save
+                </Button>
+              </div>
+            )}
+          </Field>
         </form>
       )}
 
       {confirm === "suspend" && (
         <ConfirmDialog
-          id="suspend"
           title={`Suspend ${tenant.name}?`}
           confirmLabel="Suspend tenant"
           busy={update.isPending}
@@ -236,9 +284,9 @@ function TenantInfo({ tenant }: { tenant: AdminTenant }) {
       )}
       {confirm === "unsuspend" && (
         <ConfirmDialog
-          id="unsuspend"
           title={`Unsuspend ${tenant.name}?`}
           confirmLabel="Unsuspend tenant"
+          confirmVariant="primary"
           busy={update.isPending}
           onCancel={() => setConfirm(null)}
           onConfirm={() => update.mutate({ status: "active" })}
@@ -252,7 +300,6 @@ function TenantInfo({ tenant }: { tenant: AdminTenant }) {
       )}
       {confirm === "delete" && (
         <ConfirmDialog
-          id="delete"
           title={`Delete ${tenant.name}?`}
           confirmLabel="Delete tenant"
           busy={remove.isPending}
@@ -260,7 +307,8 @@ function TenantInfo({ tenant }: { tenant: AdminTenant }) {
           onConfirm={() => remove.mutate()}
         >
           <p>
-            The tenant is marked deleted: its users cannot sign in, nothing of it is checked and it
+            The tenant is marked deleted: its {tenant.users} users cannot sign in, its{" "}
+            {tenant.monitors} monitors and {tenant.heartbeats} watchdogs are not checked and it
             leaves the tenant list. Its data is kept, but the panel cannot undo this.
           </p>
         </ConfirmDialog>
@@ -295,88 +343,99 @@ function TenantUsers({ tenant }: { tenant: AdminTenant }) {
   });
 
   return (
-    <>
-      <h2>Users</h2>
+    <section aria-labelledby="users-heading" className="flex flex-col gap-3">
+      <h2 id="users-heading" className="text-lead font-semibold">
+        Users
+      </h2>
       {temporary && (
         <TemporaryPasswordPanel login={temporary.login} password={temporary.password}>
-          <button
-            type="button"
-            className="secondary"
+          <Button
+            variant="secondary"
             onClick={() => {
               setTemporary(null);
               reset.reset();
             }}
           >
             I handed it over, hide it
-          </button>
+          </Button>
         </TemporaryPasswordPanel>
       )}
-      {users.isPending && <Loading label="Loading users…" />}
+      {users.isPending && (
+        <Loading label="Loading users…">
+          <Skeleton className="w-1/2" />
+        </Loading>
+      )}
       {users.isError && (
         <ErrorState
+          variant="section"
           title="Cannot load the users"
-          error={users.error}
           onRetry={() => void users.refetch()}
         />
       )}
-      {users.data && users.data.items.length === 0 && <p>This tenant has no users.</p>}
+      {users.data && users.data.items.length === 0 && (
+        <EmptyNote>This tenant has no users.</EmptyNote>
+      )}
       {users.data && users.data.items.length > 0 && (
-        <table>
+        <Table>
           <thead>
             <tr>
-              <th scope="col">Login</th>
-              <th scope="col">Role</th>
-              <th scope="col">Status</th>
-              <th scope="col">Created</th>
-              <th scope="col">
-                <span className="visually-hidden">Actions</span>
-              </th>
+              <Th>Login</Th>
+              <Th>Role</Th>
+              <Th>Status</Th>
+              <Th numeric>Created</Th>
+              <Th numeric>
+                <span className="sr-only">Actions</span>
+              </Th>
             </tr>
           </thead>
           <tbody>
             {users.data.items.map((u) => (
-              <tr key={u.id}>
-                <td>
-                  {u.login}
-                  {u.isPlatformAdmin && <span className="badge">system admin</span>}
-                </td>
-                <td>{u.role}</td>
-                <td>{u.status}</td>
-                <td>{formatDate(u.createdAt)}</td>
-                <td>
-                  <button
-                    type="button"
-                    className="secondary outline"
+              <Tr key={u.id}>
+                <Td>
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-[13px] break-all">{u.login}</span>
+                    {u.isPlatformAdmin && <Badge tone="inverse">System admin</Badge>}
+                  </span>
+                </Td>
+                <Td>{u.role}</Td>
+                <Td className={u.status === "disabled" ? "text-subtle-foreground" : undefined}>
+                  {u.status}
+                </Td>
+                <Td numeric>{formatDate(u.createdAt)}</Td>
+                <Td numeric>
+                  <Button
+                    variant="secondary"
+                    size="small"
                     disabled={u.isPlatformAdmin}
                     aria-describedby={u.isPlatformAdmin ? `system-admin-note-${u.id}` : undefined}
                     onClick={() => setConfirmUser(u)}
                   >
                     Reset password
-                  </button>
+                  </Button>
                   {u.isPlatformAdmin && (
-                    <small id={`system-admin-note-${u.id}`}>
-                      <br />
+                    <span
+                      id={`system-admin-note-${u.id}`}
+                      className="mt-1 block font-sans text-caption text-muted-foreground"
+                    >
                       Managed by the maiak-admin Secret, not here.
-                    </small>
+                    </span>
                   )}
-                </td>
-              </tr>
+                </Td>
+              </Tr>
             ))}
           </tbody>
-        </table>
+        </Table>
       )}
       {users.data && users.data.total > users.data.items.length && (
-        <p>
-          <small>
-            Showing the first {users.data.items.length} of {users.data.total} users.
-          </small>
+        <p className="text-caption text-muted-foreground">
+          Showing the first {users.data.items.length} of {users.data.total} users.
         </p>
       )}
       {confirmUser && (
         <ConfirmDialog
-          id="reset"
           title={`Reset the password of ${confirmUser.login}?`}
           confirmLabel="Reset password"
+          confirmVariant="primary"
           busy={reset.isPending}
           onCancel={() => setConfirmUser(null)}
           onConfirm={() => reset.mutate(confirmUser)}
@@ -387,6 +446,6 @@ function TenantUsers({ tenant }: { tenant: AdminTenant }) {
           </p>
         </ConfirmDialog>
       )}
-    </>
+    </section>
   );
 }
