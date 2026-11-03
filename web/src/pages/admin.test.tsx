@@ -282,6 +282,14 @@ describe("admin tenant details", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("offers no suspension or deletion of the platform's own tenant", async () => {
+    details({ "GET /api/v1/admin/tenants/t-1": () => json(tenant({ slug: "default" })) });
+    renderApp("/admin/tenants/t-1");
+    expect(await screen.findByText(/platform's own tenant/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Suspend" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+  });
+
   it("shows not found for an unknown tenant", async () => {
     details({ "GET /api/v1/admin/tenants/t-1": () => problem(404, "Not found") });
     renderApp("/admin/tenants/t-1");
@@ -319,7 +327,7 @@ describe("admin tenant details", () => {
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     await userEvent.click(screen.getByRole("button", { name: "Copy password" }));
     expect(writeText).toHaveBeenCalledWith("abcdefghijkmnpqrstuvwxyz");
-    expect(await screen.findByText("Password copied")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Copied ✓" })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "I handed it over, hide it" }));
     expect(screen.queryByLabelText("Temporary password")).toBeNull();

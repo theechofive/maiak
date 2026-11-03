@@ -1,10 +1,25 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { errorMessage, errorMeta } from "../../api/client";
 import { ADMIN_PAGE_SIZE, listAdminTenants, queryKeys } from "../../api/endpoints";
-import { ErrorState, Loading } from "../../components/QueryState";
+import {
+  Button,
+  Checkbox,
+  ErrorState,
+  Input,
+  Pagination,
+  Skeleton,
+  Table,
+  Td,
+  Th,
+  Tr,
+  Loading,
+  EmptyNote,
+} from "../../components/ui";
 import { formatDate } from "../../lib/format";
-import { TenantStatusBadge } from "./TenantStatusBadge";
+import { adminTitle } from "./AdminOverview";
+import { TenantStatusBadge, tenantTone } from "./TenantStatusBadge";
 
 /** The list of tenants with search and pagination; the state lives in the URL. */
 export default function AdminTenants() {
@@ -42,16 +57,15 @@ export default function AdminTenants() {
   const to = data ? offset + data.items.length : 0;
 
   return (
-    <section>
-      <div className="page-heading">
-        <h1>Tenants</h1>
-        <Link to="/admin" className="secondary">
-          Admin overview
-        </Link>
-      </div>
-      <form role="search" onSubmit={onSearch}>
-        <fieldset role="group">
-          <input
+    <section className="flex flex-col">
+      <h1 className={adminTitle}>Tenants</h1>
+      <form
+        role="search"
+        onSubmit={onSearch}
+        className="flex flex-wrap items-center gap-x-5 gap-y-3 pb-5"
+      >
+        <div className="flex min-w-0 flex-1 gap-2 sm:max-w-[480px]">
+          <Input
             type="search"
             name="query"
             aria-label="Search tenants"
@@ -60,90 +74,89 @@ export default function AdminTenants() {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
           />
-          <button type="submit">Search</button>
-        </fieldset>
-        <label>
-          <input
-            type="checkbox"
-            checked={includeDeleted}
-            onChange={(e) => update({ includeDeleted: e.target.checked, offset: 0 })}
-          />
-          Show deleted tenants
-        </label>
+          <Button type="submit" variant="secondary">
+            Search
+          </Button>
+        </div>
+        <Checkbox
+          label="Show deleted tenants"
+          checked={includeDeleted}
+          onChange={(e) => update({ includeDeleted: e.target.checked, offset: 0 })}
+        />
       </form>
 
-      {tenants.isPending && <Loading label="Loading tenants…" />}
+      {tenants.isPending && (
+        <Loading label="Loading tenants…" className="border-t border-border pt-3">
+          {["60%", "45%", "70%"].map((w) => (
+            <span key={w} className="block" style={{ width: w }}>
+              <Skeleton />
+            </span>
+          ))}
+        </Loading>
+      )}
       {tenants.isError && !data && (
         <ErrorState
           title="Cannot load tenants"
-          error={tenants.error}
+          detail={errorMessage(tenants.error)}
+          meta={errorMeta(tenants.error)}
           onRetry={() => void tenants.refetch()}
         />
       )}
       {data && data.items.length === 0 && (
-        <p>{query ? `No tenants match “${query}”.` : "No tenants."}</p>
+        <EmptyNote>{query ? `No tenants match “${query}”.` : "No tenants."}</EmptyNote>
       )}
       {data && data.items.length > 0 && (
         <>
-          <table>
+          <Table>
             <thead>
               <tr>
-                <th scope="col">Name</th>
-                <th scope="col">Plan</th>
-                <th scope="col">Status</th>
-                <th scope="col">Users</th>
-                <th scope="col">Monitors</th>
-                <th scope="col">Watchdogs</th>
-                <th scope="col">Created</th>
+                <Th>Name</Th>
+                <Th>Plan</Th>
+                <Th>Status</Th>
+                <Th numeric>Users</Th>
+                <Th numeric>Monitors</Th>
+                <Th numeric>Watchdogs</Th>
+                <Th numeric>Created</Th>
               </tr>
             </thead>
             <tbody>
               {data.items.map((t) => (
-                <tr
+                <Tr
                   key={t.id}
-                  className="clickable"
+                  tone={tenantTone(t)}
+                  interactive
                   onClick={() => navigate(`/admin/tenants/${t.id}`)}
                 >
-                  <td>
-                    <Link to={`/admin/tenants/${t.id}`} onClick={(e) => e.stopPropagation()}>
+                  <Td>
+                    <Link
+                      to={`/admin/tenants/${t.id}`}
+                      className="font-medium hover:underline"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       {t.name}
                     </Link>
-                    <br />
-                    <small>{t.slug}</small>
-                  </td>
-                  <td>{t.planName}</td>
-                  <td>
+                    <span className="block font-mono text-mono text-subtle-foreground">
+                      {t.slug}
+                    </span>
+                  </Td>
+                  <Td>{t.planName}</Td>
+                  <Td>
                     <TenantStatusBadge tenant={t} />
-                  </td>
-                  <td>{t.users}</td>
-                  <td>{t.monitors}</td>
-                  <td>{t.heartbeats}</td>
-                  <td>{formatDate(t.createdAt)}</td>
-                </tr>
+                  </Td>
+                  <Td numeric>{t.users}</Td>
+                  <Td numeric>{t.monitors}</Td>
+                  <Td numeric>{t.heartbeats}</Td>
+                  <Td numeric>{formatDate(t.createdAt)}</Td>
+                </Tr>
               ))}
             </tbody>
-          </table>
-          <nav aria-label="Pages" className="actions">
-            <small>
-              {from}–{to} of {data.total}
-            </small>
-            <button
-              type="button"
-              className="secondary"
-              disabled={offset === 0}
-              onClick={() => update({ offset: Math.max(0, offset - ADMIN_PAGE_SIZE) })}
-            >
-              Previous
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              disabled={to >= data.total}
-              onClick={() => update({ offset: offset + ADMIN_PAGE_SIZE })}
-            >
-              Next
-            </button>
-          </nav>
+          </Table>
+          <Pagination
+            page={Math.floor(offset / ADMIN_PAGE_SIZE) + 1}
+            pageCount={Math.max(1, Math.ceil(data.total / ADMIN_PAGE_SIZE))}
+            label={`${from}–${to} of ${data.total}`}
+            onPage={(page) => update({ offset: (page - 1) * ADMIN_PAGE_SIZE })}
+          />
         </>
       )}
     </section>

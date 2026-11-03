@@ -82,10 +82,13 @@ export function formatPercent(value: number | null | undefined): string {
   return `${Number(value.toFixed(2))}%`;
 }
 
-/** "245 ms", or a dash when there is no data. */
+/** "230 ms" below a second, "1.8 s" from there, or a dash when there is no data. */
 export function formatMs(value: number | null | undefined): string {
   if (value == null) return "—";
-  return `${Math.round(value)} ms`;
+  // Round first, so 999.7 is "1.0 s" and not "1000 ms".
+  const ms = Math.round(value);
+  if (ms >= 1000) return `${(value / 1000).toFixed(1)} s`;
+  return `${ms} ms`;
 }
 
 /** Whole days from now until the given time (negative when it is in the past). */

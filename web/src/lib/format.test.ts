@@ -81,6 +81,10 @@ describe("numbers", () => {
   it.each([
     [null, "—"],
     [245.4, "245 ms"],
+    [999.4, "999 ms"],
+    [999.7, "1.0 s"],
+    [1840, "1.8 s"],
+    [10000, "10.0 s"],
   ])("formats ms %s as %s", (input, expected) => {
     expect(formatMs(input)).toBe(expected);
   });

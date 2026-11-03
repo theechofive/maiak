@@ -5,6 +5,10 @@ import {
   toMonitorRequest,
   validateMonitorForm,
   validateMonitorUrl,
+  describeSetup,
+  withHttps,
+  withoutHttps,
+  type MonitorFormValues,
 } from "./monitorForm";
 import { validateSlackUrl } from "./slack";
 
@@ -148,5 +152,50 @@ describe("validateSlackUrl", () => {
     ["https://example.com/services/x", expect.stringContaining("Incoming Webhook")],
   ])("%s", (url, expected) => {
     expect(validateSlackUrl(url)).toEqual(expected);
+  });
+});
+
+describe("withHttps and withoutHttps", () => {
+  it("adds https:// unless the user typed a scheme", () => {
+    expect(withHttps("example.com/health")).toBe("https://example.com/health");
+    expect(withHttps(" https://example.com ")).toBe("https://example.com");
+    expect(withHttps("http://example.com")).toBe("http://example.com");
+    expect(withHttps("  ")).toBe("");
+    expect(withoutHttps("https://example.com/")).toBe("example.com/");
+    expect(withoutHttps("http://example.com/")).toBe("http://example.com/");
+  });
+});
+
+describe("describeSetup", () => {
+  const sentence = (v: Partial<MonitorFormValues>) =>
+    describeSetup({ ...emptyMonitorForm, ...v })
+      .map((p) => p.text)
+      .join("");
+
+  it("describes an HTTP check, with placeholders until it is filled in", () => {
+    expect(sentence({})).toBe(
+      "Checks your URL every minute and alerts Slack after 2 failures in a row.",
+    );
+    expect(
+      sentence({
+        url: "https://example.com/health",
+        expectedMode: "exact",
+        expectedCode: "204",
+        failureThreshold: 1,
+        notifySlack: false,
+      }),
+    ).toBe(
+      "Checks example.com/health every minute, expects HTTP 204, and marks it down after the first failure.",
+    );
+    expect(describeSetup(emptyMonitorForm).some((p) => p.blank)).toBe(true);
+  });
+
+  it("describes a watchdog", () => {
+    expect(
+      sentence({ type: "heartbeat", expectedIntervalSeconds: "900", graceSeconds: "120" }),
+    ).toBe("Expects a ping every 15 min and alerts Slack if one is more than 2 min late.");
+    expect(sentence({ type: "heartbeat", expectedIntervalSeconds: "60", graceSeconds: "0" })).toBe(
+      "Expects a ping every 1 min and alerts Slack the moment one is late.",
+    );
   });
 });

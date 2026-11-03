@@ -47,6 +47,21 @@ describe("auth guard", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Wrong login or password. Try again.",
     );
+    // The login stays, the password is cleared and gets the focus for the next try.
+    expect(screen.getByLabelText("Email or login")).toHaveValue("nobody");
+    expect(screen.getByLabelText("Password")).toHaveValue("");
+    expect(screen.getByLabelText("Password")).toHaveFocus();
+  });
+
+  it("shows and hides the password", async () => {
+    mockApi({ "GET /api/v1/auth/me": () => problem(401, "Unauthenticated") });
+    renderApp("/login");
+    const password = await screen.findByLabelText("Password");
+    expect(password).toHaveAttribute("type", "password");
+    await userEvent.click(screen.getByRole("button", { name: "Show password" }));
+    expect(password).toHaveAttribute("type", "text");
+    await userEvent.click(screen.getByRole("button", { name: "Hide password" }));
+    expect(password).toHaveAttribute("type", "password");
   });
 
   it("renders protected pages with a session", async () => {
@@ -75,7 +90,7 @@ describe("auth guard", () => {
     mockApi({ "GET /api/v1/auth/me": () => problem(500, "Internal error") });
     renderApp("/");
     expect(await screen.findByRole("alert")).toHaveTextContent("Cannot load your session");
-    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
 
   it("logs out and returns to login", async () => {
@@ -137,6 +152,8 @@ describe("login rate limit", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Too many attempts. Try again in 45 s.",
     );
+    // Not a wrong password: it stays, so the next try needs no retyping.
+    expect(screen.getByLabelText("Password")).toHaveValue("wrong");
   });
 
   it("falls back to a generic message without a usable Retry-After", async () => {

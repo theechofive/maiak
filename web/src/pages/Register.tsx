@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useId, useState, type FormEvent } from "react";
 import { Link, Navigate } from "react-router-dom";
 import {
   ApiError,
@@ -7,9 +7,22 @@ import {
   REGISTRATION_DISABLED_PROBLEM_TYPE,
 } from "../api/client";
 import { useAuth } from "../auth/AuthProvider";
+import AuthScreen, { AuthHeading, authLink, ShowPassword } from "../components/AuthScreen";
+import {
+  Alert,
+  Button,
+  buttonClass,
+  cx,
+  DotShape,
+  Field,
+  HollowDotShape,
+  Input,
+  TriangleShape,
+} from "../components/ui";
 import { formatDuration } from "../lib/format";
 import { useRegistrationEnabled } from "../lib/publicConfig";
 import {
+  codePoints,
   EMAIL_MAX,
   normalizeEmail,
   PASSWORD_MAX,
@@ -20,16 +33,14 @@ import {
   type RegisterFormValues,
 } from "../lib/registerForm";
 
-const DISABLED_MESSAGE = "Registration is turned off. Ask the administrator for an account.";
+const DISABLED_TITLE = "Registration is turned off.";
+const DISABLED_TEXT = "Ask the administrator for an account.";
 
 /** Maps a failed registration to field errors and a general message. */
 function registerErrors(err: unknown): { fields: RegisterFormErrors; general?: string } {
   if (err instanceof ApiError) {
     if (err.type === EMAIL_TAKEN_PROBLEM_TYPE) {
       return { fields: { email: "This email is already registered. Sign in instead." } };
-    }
-    if (err.type === REGISTRATION_DISABLED_PROBLEM_TYPE) {
-      return { fields: {}, general: DISABLED_MESSAGE };
     }
     if (err.status === 429) {
       return {
@@ -61,8 +72,9 @@ export default function Register() {
   const [errors, setErrors] = useState<RegisterFormErrors>({});
   const [general, setGeneral] = useState<string | undefined>();
   const [refused, setRefused] = useState(false);
-  const disabled = refused || registrationEnabled === false;
   const [submitting, setSubmitting] = useState(false);
+  const [shown, setShown] = useState(false);
+  const disabled = refused || registrationEnabled === false;
 
   // After registration the session is set: land on the monitors page (empty state).
   if (auth.session) return <Navigate to="/" replace />;
@@ -74,106 +86,212 @@ export default function Register() {
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const form = event.currentTarget;
     const found = validateRegisterForm(values);
     setErrors(found);
     setGeneral(undefined);
-    if (Object.keys(found).length > 0) return;
+    const first = (["email", "password", "confirm"] as const).find((f) => found[f]);
+    if (first) {
+      form.querySelector<HTMLInputElement>(`input[name=${first}]`)?.focus();
+      return;
+    }
     setSubmitting(true);
     try {
       await auth.register(normalizeEmail(values.email), values.password);
     } catch (err) {
-      const mapped = registerErrors(err);
-      setErrors(mapped.fields);
-      setGeneral(mapped.general);
-      setRefused(err instanceof ApiError && err.type === REGISTRATION_DISABLED_PROBLEM_TYPE);
+      if (err instanceof ApiError && err.type === REGISTRATION_DISABLED_PROBLEM_TYPE) {
+        setRefused(true);
+      } else {
+        const mapped = registerErrors(err);
+        setErrors(mapped.fields);
+        setGeneral(mapped.general);
+      }
       setSubmitting(false);
     }
   }
 
-  const invalid = (field: RegisterField) => (errors[field] ? true : undefined);
-  const describedBy = (field: RegisterField, hint?: string) =>
-    [errors[field] ? `${field}-error` : null, hint].filter(Boolean).join(" ") || undefined;
-  const fieldError = (field: RegisterField) =>
-    errors[field] ? <small id={`${field}-error`}>{errors[field]}</small> : null;
+  if (disabled) {
+    return (
+      <AuthScreen>
+        <AuthHeading>Create account</AuthHeading>
+        <Alert tone="neutral" title={DISABLED_TITLE}>
+          {DISABLED_TEXT}
+        </Alert>
+        <Link to="/login" className={cx(buttonClass(), "mt-1.5")}>
+          Go to sign in
+        </Link>
+      </AuthScreen>
+    );
+  }
+
   const hasErrors = Object.values(errors).some(Boolean);
+  const confirmMatches =
+    values.confirm !== "" && values.confirm === values.password && !errors.confirm;
 
   return (
-    <article className="login">
-      <h1>Create account</h1>
-      {disabled ? (
-        <>
-          <p role="alert" className="error">
-            {DISABLED_MESSAGE}
-          </p>
-          <p>
-            <Link to="/login">Go to sign in</Link>
-          </p>
-        </>
-      ) : (
-        <form onSubmit={onSubmit} noValidate>
-          {(general || hasErrors) && (
-            <p role="alert" className="error">
-              {general ?? "Check the highlighted fields."}
-            </p>
+    <AuthScreen
+      footer={
+        registrationEnabled === true && (
+          <>
+            Already have an account?{" "}
+            <Link to="/login" className={authLink}>
+              Sign in
+            </Link>
+          </>
+        )
+      }
+    >
+      <AuthHeading>Create account</AuthHeading>
+      <form onSubmit={onSubmit} noValidate className="flex flex-col gap-[18px]">
+        {(general || hasErrors) && <Alert>{general ?? "Check the highlighted fields."}</Alert>}
+        <Field label="Email" error={errors.email}>
+          {(c) => (
+            <Input
+              {...c}
+              name="email"
+              type="email"
+              inputMode="email"
+              autoComplete="email"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              maxLength={EMAIL_MAX + 10}
+              required
+              readOnly={submitting}
+              value={values.email}
+              onChange={(e) => set("email", e.target.value)}
+            />
           )}
-          <label htmlFor="email">Email</label>
-          <input
-            id="email"
-            name="email"
-            type="email"
-            autoComplete="email"
-            autoCapitalize="none"
-            spellCheck={false}
-            maxLength={EMAIL_MAX + 10}
-            required
-            value={values.email}
-            onChange={(e) => set("email", e.target.value)}
-            aria-invalid={invalid("email")}
-            aria-describedby={describedBy("email")}
-          />
-          {fieldError("email")}
+        </Field>
+        <PasswordField
+          values={values}
+          error={errors.password}
+          shown={shown}
+          readOnly={submitting}
+          onChange={(v) => set("password", v)}
+          onToggle={() => setShown((s) => !s)}
+        />
+        <Field
+          label="Confirm password"
+          error={errors.confirm}
+          hint={confirmMatches ? "Matches" : undefined}
+        >
+          {(c) => (
+            <Input
+              {...c}
+              name="confirm"
+              type={shown ? "text" : "password"}
+              autoComplete="new-password"
+              required
+              readOnly={submitting}
+              value={values.confirm}
+              onChange={(e) => set("confirm", e.target.value)}
+            />
+          )}
+        </Field>
+        <Button type="submit" busy={submitting} className="mt-1.5">
+          {submitting ? "Creating account…" : "Create account"}
+        </Button>
+      </form>
+    </AuthScreen>
+  );
+}
 
-          <label htmlFor="password">Password</label>
-          <input
-            id="password"
+/** The password with the server's two rules checked as you type. */
+function PasswordField({
+  values,
+  error,
+  shown,
+  readOnly,
+  onChange,
+  onToggle,
+}: {
+  values: RegisterFormValues;
+  error?: string;
+  shown: boolean;
+  readOnly: boolean;
+  onChange: (value: string) => void;
+  onToggle: () => void;
+}) {
+  const policyId = useId();
+  const length = codePoints(values.password);
+  const email = normalizeEmail(values.email);
+  const sameAsEmail =
+    values.password !== "" && email !== "" && values.password.toLowerCase() === email;
+  const rules: { label: string; state: "todo" | "ok" | "fail"; count?: string }[] = [
+    {
+      label: `${PASSWORD_MIN} to ${PASSWORD_MAX} characters`,
+      state:
+        length >= PASSWORD_MIN && length <= PASSWORD_MAX
+          ? "ok"
+          : length > PASSWORD_MAX || (error && length < PASSWORD_MIN)
+            ? "fail"
+            : "todo",
+      count:
+        length === 0
+          ? undefined
+          : length < PASSWORD_MIN
+            ? `${length} / ${PASSWORD_MIN}`
+            : String(length),
+    },
+    { label: "Not your email", state: sameAsEmail ? "fail" : values.password ? "ok" : "todo" },
+  ];
+
+  return (
+    <Field label="Password" error={error}>
+      {(c) => (
+        <>
+          <Input
+            {...c}
+            aria-describedby={[c["aria-describedby"], policyId].filter(Boolean).join(" ")}
             name="password"
-            type="password"
+            type={shown ? "text" : "password"}
             autoComplete="new-password"
             required
+            readOnly={readOnly}
             value={values.password}
-            onChange={(e) => set("password", e.target.value)}
-            aria-invalid={invalid("password")}
-            aria-describedby={describedBy("password", "password-hint")}
+            onChange={(e) => onChange(e.target.value)}
+            action={<ShowPassword shown={shown} plural controls={c.id} onToggle={onToggle} />}
           />
-          {fieldError("password")}
-          <small id="password-hint">
-            {PASSWORD_MIN} to {PASSWORD_MAX} characters, not your email. A passphrase works well.
-          </small>
-
-          <label htmlFor="confirm">Confirm password</label>
-          <input
-            id="confirm"
-            name="confirm"
-            type="password"
-            autoComplete="new-password"
-            required
-            value={values.confirm}
-            onChange={(e) => set("confirm", e.target.value)}
-            aria-invalid={invalid("confirm")}
-            aria-describedby={describedBy("confirm")}
-          />
-          {fieldError("confirm")}
-
-          <button type="submit" aria-busy={submitting} disabled={submitting}>
-            Create account
-          </button>
-        </form>
+          <div id={policyId} className="flex flex-col gap-1.5 pt-1">
+            <ul className="flex flex-col gap-[5px]">
+              {rules.map((r) => (
+                <li
+                  key={r.label}
+                  className={cx(
+                    "flex items-center gap-2.5 text-caption",
+                    r.state === "ok"
+                      ? "text-foreground"
+                      : r.state === "fail"
+                        ? "text-down"
+                        : "text-muted-foreground",
+                  )}
+                >
+                  {r.state === "ok" ? (
+                    <DotShape className="text-success" />
+                  ) : r.state === "fail" ? (
+                    <TriangleShape size="small" />
+                  ) : (
+                    <HollowDotShape />
+                  )}
+                  <span className="min-w-0 flex-1">
+                    {r.label}
+                    <span className="sr-only">
+                      : {r.state === "ok" ? "met" : r.state === "fail" ? "not met" : "not met yet"}
+                    </span>
+                  </span>
+                  {r.count && (
+                    <span aria-hidden="true" className="font-mono text-mono">
+                      {r.count}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <span className="text-caption text-muted-foreground">A passphrase works well.</span>
+          </div>
+        </>
       )}
-      {registrationEnabled === true && !disabled && (
-        <p>
-          Already have an account? <Link to="/login">Sign in</Link>
-        </p>
-      )}
-    </article>
+    </Field>
   );
 }

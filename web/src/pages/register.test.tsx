@@ -65,9 +65,9 @@ describe("registration links", () => {
 
     mockApi({ ...noSession, ...config(false) });
     renderApp("/register");
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Registration is turned off. Ask the administrator for an account.",
-    );
+    expect(
+      (await screen.findByText("Registration is turned off.")).closest("[role=status]"),
+    ).toHaveTextContent("Registration is turned off. Ask the administrator for an account.");
     expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Sign in" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Go to sign in" })).toHaveAttribute("href", "/login");
@@ -75,6 +75,25 @@ describe("registration links", () => {
 });
 
 describe("register page", () => {
+  it("checks the password rules as you type", async () => {
+    mockApi({ ...noSession, ...config(true) });
+    renderApp("/register");
+    await userEvent.type(await screen.findByLabelText("Email"), "owner@example.com");
+    await userEvent.type(screen.getByLabelText("Password"), "short");
+    expect(screen.getByLabelText("Password")).toHaveAccessibleDescription(
+      "12 to 128 characters: not met yet Not your email: met A passphrase works well.",
+    );
+    await userEvent.clear(screen.getByLabelText("Password"));
+    await userEvent.type(screen.getByLabelText("Password"), "owner@example.com");
+    expect(screen.getByLabelText("Password")).toHaveAccessibleDescription(
+      expect.stringContaining("Not your email: not met"),
+    );
+    await userEvent.clear(screen.getByLabelText("Password"));
+    await userEvent.type(screen.getByLabelText("Password"), PASSWORD);
+    await userEvent.type(screen.getByLabelText("Confirm password"), PASSWORD);
+    expect(screen.getByLabelText("Confirm password")).toHaveAccessibleDescription("Matches");
+  });
+
   it("checks the fields on the client and does not call the server", async () => {
     const fetchMock = mockApi({ ...noSession, ...config(true) });
     renderApp("/register");
@@ -84,8 +103,11 @@ describe("register page", () => {
     const email = screen.getByLabelText("Email");
     expect(email).toHaveAttribute("aria-invalid", "true");
     expect(email).toHaveAccessibleDescription("Enter your email address");
+    // The error first, then the live password rules.
     expect(screen.getByLabelText("Password")).toHaveAccessibleDescription(
-      "Use at least 12 characters 12 to 128 characters, not your email. A passphrase works well.",
+      expect.stringMatching(
+        /^Use at least 12 characters 12 to 128 characters: not met.*Not your email/,
+      ),
     );
 
     await fill("jörg@example.com", "short");
@@ -126,7 +148,7 @@ describe("register page", () => {
 
     expect(await screen.findByRole("heading", { name: "Start your first monitor" })).toBeVisible();
     expect(await screen.findByText("Your Free plan includes 3 monitors.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Add monitor" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Add monitor" })).toHaveAttribute(
       "href",
       "/monitors/new",
     );
@@ -165,8 +187,7 @@ describe("register page", () => {
     await fill("owner@example.com", PASSWORD);
     const field = await screen.findByLabelText(label);
     await waitFor(() => expect(field).toHaveAttribute("aria-invalid", "true"));
-    expect(field.getAttribute("aria-describedby")).toContain(`${label.toLowerCase()}-error`);
-    expect(screen.getByText(message)).toBeInTheDocument();
+    expect(field).toHaveAccessibleDescription(expect.stringContaining(message));
     expect(screen.getByRole("button", { name: "Create account" })).toBeEnabled();
   });
 
@@ -181,9 +202,9 @@ describe("register page", () => {
     });
     renderApp("/register");
     await fill("owner@example.com", PASSWORD);
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Registration is turned off. Ask the administrator for an account.",
-    );
+    expect(
+      (await screen.findByText("Registration is turned off.")).closest("[role=status]"),
+    ).toHaveTextContent("Registration is turned off. Ask the administrator for an account.");
     expect(screen.queryByRole("button", { name: "Create account" })).not.toBeInTheDocument();
   });
 

@@ -1,5 +1,17 @@
 import type { MonitorList, MonitorListItem } from "../api/endpoints";
-import { filterMonitors, statusLine, statusText, summaryLine } from "./monitors";
+import {
+  checkSettings,
+  downReason,
+  failureStreak,
+  filterMonitors,
+  monitorState,
+  quietState,
+  sortMonitors,
+  statusLine,
+  statusText,
+  summaryLine,
+  summaryParts,
+} from "./monitors";
 
 const now = Date.parse("2026-10-20T14:30:00Z");
 
@@ -112,5 +124,113 @@ describe("statusLine", () => {
       "Waiting for the first check",
     );
     expect(statusLine({ ...down, paused: true }, undefined, now)).toMatch(/^Paused/);
+  });
+});
+
+describe("monitorState", () => {
+  it("prefers paused, maps unknown to pending", () => {
+    expect(monitorState(item({ paused: true, status: "down" }))).toBe("paused");
+    expect(monitorState(item({ status: "unknown" }))).toBe("pending");
+    expect(monitorState(item({ status: "down" }))).toBe("down");
+  });
+});
+
+describe("summaryParts", () => {
+  it("marks the down part only when something is down", () => {
+    const list = (down: number): MonitorList => ({
+      summary: { up: 1, down, paused: 0, unknown: 0 },
+      items: [item({})],
+    });
+    expect(summaryParts(list(0)).some((p) => p.down)).toBe(false);
+    expect(summaryParts(list(2)).filter((p) => p.down)).toEqual([{ text: "2 down", down: true }]);
+  });
+});
+
+describe("sortMonitors", () => {
+  it("puts the newest failure first, paused last and the rest by name", () => {
+    const sorted = sortMonitors([
+      item({ name: "Zeta" }),
+      item({ name: "Old outage", status: "down", statusSince: "2026-10-20T10:00:00Z" }),
+      item({ name: "Alpha", paused: true }),
+      item({ name: "Beta", status: "unknown" }),
+      item({ name: "New outage", status: "down", statusSince: "2026-10-20T14:00:00Z" }),
+      item({ name: "Paused while down", paused: true, status: "down" }),
+    ]);
+    expect(sorted.map((m) => m.name)).toEqual([
+      "New outage",
+      "Old outage",
+      "Beta",
+      "Zeta",
+      "Alpha",
+      "Paused while down",
+    ]);
+  });
+});
+
+describe("quietState", () => {
+  const list = (items: MonitorListItem[], down = 0, unknown = 0): MonitorList => ({
+    summary: { up: items.length, down, paused: 0, unknown },
+    items,
+  });
+
+  it("is quiet only when nothing is down", () => {
+    expect(quietState(list([item({ status: "down" })], 1))).toBeNull();
+    expect(quietState(list([item({})]))?.title).toBe("Everything is up.");
+  });
+
+  it("does not claim everything is up while some are pending, or when all are paused", () => {
+    expect(quietState(list([item({ status: "unknown" })], 0, 1))?.title).toBe("Nothing is down.");
+    expect(quietState(list([item({ paused: true })]))).toBeNull();
+  });
+
+  it("names the lowest uptime when some checks failed", () => {
+    expect(quietState(list([item({ uptime24h: 100 }), item({ uptime24h: null })]))?.detail).toBe(
+      "No failed checks in the last 24 hours.",
+    );
+    expect(
+      quietState(list([item({ name: "API", uptime24h: 99.2 }), item({ uptime24h: 99.9 })]))?.detail,
+    ).toBe("Lowest uptime in the last 24 hours: 99.2%, API.");
+  });
+});
+
+describe("downReason", () => {
+  it("states the timeout and falls back to the error kind", () => {
+    expect(downReason(item({ lastErrorKind: "timeout", timeoutSeconds: 10 }))).toBe(
+      "Timed out after 10 s",
+    );
+    expect(downReason(item({ lastErrorKind: "dns" }))).toBe("DNS lookup failed");
+  });
+});
+
+describe("failureStreak", () => {
+  const check = (ok: boolean, at: string) => ({
+    checkedAt: at,
+    location: "home",
+    ok,
+    httpStatus: ok ? 200 : 503,
+    responseMs: 100,
+    errorKind: ok ? null : "unexpected_status",
+  });
+
+  it("counts failures before the newest success", () => {
+    const streak = failureStreak([check(false, "3"), check(false, "2"), check(true, "1")]);
+    expect(streak.count).toBe(2);
+    expect(streak.all).toBe(false);
+    expect(streak.lastSuccess?.checkedAt).toBe("1");
+  });
+
+  it("says when every loaded check failed", () => {
+    expect(failureStreak([check(false, "2"), check(false, "1")])).toEqual({ count: 2, all: true });
+  });
+});
+
+describe("checkSettings", () => {
+  it("describes the HTTP check", () => {
+    expect(checkSettings(item({}))).toBe(
+      "every 60 s · 10 s timeout · expects 2xx · alerts after 2 failed checks",
+    );
+    expect(checkSettings(item({ expectedStatus: "204", failureThreshold: 1 }))).toBe(
+      "every 60 s · 10 s timeout · expects HTTP 204 · alerts on the first failure",
+    );
   });
 });

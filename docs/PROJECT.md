@@ -35,7 +35,7 @@ Monitor the availability of websites (and later internal services in client Kube
 | Migrations | goose, embedded, forward-only, expand/contract, RLS schema-lint | [ADR-0013](adr/0013-migrations.md) |
 | DB bootstrap | Automatic hook Job, enabled for the first deploy | [ADR-0014](adr/0014-db-bootstrap-automation.md) |
 
-Stack: Go (`chi`, `pgx`, `sqlc`, `goose`, `oapi-codegen`, `slog`), PostgreSQL 15 (RDS, database `maiak` on the shared instance `grafana` for now), React + TypeScript with Vite for the web app ([ADR-0015](adr/0015-frontend-stack.md)), Helm, ArgoCD, GitHub Actions, `ghcr.io/theechofive/maiak-*`.
+Stack: Go (`chi`, `pgx`, `sqlc`, `goose`, `oapi-codegen`, `slog`), PostgreSQL 15 (RDS, database `maiak` on the shared instance `grafana` for now), React + TypeScript with Vite for the web app ([ADR-0015](adr/0015-frontend-stack.md)), Tailwind v4 and our own [design system](design-system.md) ([ADR-0099](adr/0099-design-system.md)), Helm, ArgoCD, GitHub Actions, `ghcr.io/theechofive/maiak-*`.
 
 Environment: a single environment on `klr-platform` (EKS, arm64), internal host `maiak.klr-ops.net`.
 

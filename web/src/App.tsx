@@ -16,22 +16,8 @@ import AdminTenants from "./pages/admin/AdminTenants";
 export default function App() {
   return (
     <Routes>
-      <Route
-        path="/login"
-        element={
-          <main className="container">
-            <Login />
-          </main>
-        }
-      />
-      <Route
-        path="/register"
-        element={
-          <main className="container">
-            <Register />
-          </main>
-        }
-      />
+      <Route path="/login" element={<Login />} />
+      <Route path="/register" element={<Register />} />
       <Route element={<RequireAuth />}>
         <Route element={<Layout />}>
           <Route path="/" element={<Monitors />} />

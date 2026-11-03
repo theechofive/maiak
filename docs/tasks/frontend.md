@@ -16,6 +16,14 @@ Stack and scope: [ADR-0015](../adr/0015-frontend-stack.md). Pages follow the agr
 | F-10 | Production packaging: multi-stage Dockerfile (build, then nginx unprivileged, SPA fallback, cache headers, runs as non-root, read-only root filesystem friendly), multi-arch; CI job (lint, typecheck, test, build, client up to date); enable the web image job in `release.yml` | F-01 | doing |
 | F-12 | Fixes from the frontend review: (M1) expected-status rule per ADR-0018 (`2xx`, 200-299, 400-599) with tests; (M2) details page: show a 'last update failed' note when a refetch errors and switch to the not-found view on 404 even when data exists; (M3) Slack webhook input as `type="text"` with `autocomplete="off"` and `-webkit-text-security` masking, reset the mutation after success; minors: not-found view on the edit page, TLS card under one day, single-point chart axis, keepPreviousData on range switch, labels for `recovered` and `url_changed`, 403 message from `detail` unless it is the CSRF problem, reject `/\` in the redirect target, honour `Retry-After` on 429, count name length in code points; test gaps (no CSRF header on GET, no PUT on rejected Slack URL, 1xx/3xx rejected, 409 from the Slack test, details 404 after data, list cache invalidation after pause) | F-09 | done |
 | F-11 | Docs: `web/README.md` (run, build, regenerate client), ledger sync | all | done |
+| F-20 | Design system and component library: tokens, fonts, Tailwind, `components/ui`, gallery, docs and agent rules ([ADR-0099](../adr/0099-design-system.md)) | none | done |
+| F-21 | Migrate the app shell and the monitors list; switch to `pico.conditional`, keep unmigrated pages in `.pico`; toasts on the kit | F-20 | done |
+| F-22 | Migrate monitor details: Signal Ribbon, incident lane, section states | F-21 | done |
+| F-23 | Migrate the add and edit monitor form | F-21 | done |
+| F-24 | Migrate settings | F-21 | done |
+| F-25 | Migrate login and registration | F-21 | done |
+| F-26 | Migrate the admin area with its own layout | F-21 | done |
+| F-27 | Remove Pico and `styles.css`, ESLint rule against raw elements in pages, close L-051 and L-241 | F-22 to F-26 | done |
 
 ## Acceptance notes
 - Every page works with the keyboard and uses semantic elements (labels tied to inputs, buttons for actions, tables for tabular data).

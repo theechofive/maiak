@@ -1,5 +1,6 @@
 import { Navigate, Outlet, useLocation } from "react-router-dom";
-import { ErrorState, Loading } from "../components/QueryState";
+import { errorMessage, errorMeta } from "../api/client";
+import { ErrorState } from "../components/ui";
 import { useAuth } from "./AuthProvider";
 
 /** Renders the child routes only with a session; otherwise redirects to /login keeping the target. */
@@ -9,15 +10,20 @@ export default function RequireAuth() {
 
   if (auth.status === "loading") {
     return (
-      <main className="container">
-        <Loading label="Checking your session…" />
+      <main className="mx-auto max-w-[560px] px-4 py-16 text-muted-foreground">
+        <p role="status">Checking your session…</p>
       </main>
     );
   }
   if (auth.status === "error") {
     return (
-      <main className="container">
-        <ErrorState title="Cannot load your session" error={auth.error} onRetry={auth.retry} />
+      <main className="mx-auto max-w-[560px] px-4 py-16">
+        <ErrorState
+          title="Cannot load your session"
+          detail={errorMessage(auth.error)}
+          meta={errorMeta(auth.error)}
+          onRetry={auth.retry}
+        />
       </main>
     );
   }
