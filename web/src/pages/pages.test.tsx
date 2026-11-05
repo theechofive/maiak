@@ -1,6 +1,6 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { MonitorDetail, MonitorListItem } from "../api/endpoints";
+import type { Channel, MonitorDetail, MonitorListItem } from "../api/endpoints";
 import { json, mockApi, problem, renderApp, signedIn } from "../test/utils";
 
 const listItem = (over: Partial<MonitorListItem>): MonitorListItem => ({
@@ -35,12 +35,26 @@ const detail = (over: Partial<MonitorDetail> = {}): MonitorDetail => {
   return {
     ...(base as Omit<MonitorListItem, "uptime24h" | "lastResponseMs">),
     uptime: { h24: 99.5, d7: 99.9, d30: null },
+    channelIds: [],
     tlsExpiresAt: new Date(Date.now() + 20.5 * 86_400_000).toISOString(),
     createdAt: "2026-10-01T00:00:00Z",
     updatedAt: "2026-10-01T00:00:00Z",
     ...over,
   };
 };
+
+const channel = (over: Partial<Channel> = {}): Channel => ({
+  id: "c1",
+  name: "#ops",
+  type: "slack_webhook",
+  events: ["down", "recovered", "tls_expiring"],
+  mention: [],
+  reminderMinutes: 0,
+  status: "active",
+  createdAt: "2026-10-01T00:00:00Z",
+  updatedAt: "2026-10-01T00:00:00Z",
+  ...over,
+});
 
 const usageOf = (
   monitors: number,
@@ -278,6 +292,7 @@ describe("monitor form", () => {
       expectedStatus: "204",
       failureThreshold: 3,
       notifySlack: false,
+      channelIds: [],
     });
     expect(screen.getByRole("status")).toHaveTextContent("Monitor created");
   });
@@ -299,6 +314,39 @@ describe("monitor form", () => {
     expect(checkbox).toHaveAccessibleDescription(
       expect.stringContaining("No Slack webhook is configured"),
     );
+  });
+
+  it("selects notification channels for a monitor", async () => {
+    let body: unknown;
+    const created = detail({ id: "new2", name: "Shop", channelIds: ["c2"] });
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/channels": () =>
+        json({ items: [channel(), channel({ id: "c2", name: "#on-call", status: "failed" })] }),
+      "POST /api/v1/monitors": async (req) => {
+        body = await req.json();
+        return json(created, 201);
+      },
+      "GET /api/v1/monitors/new2": () => json(created),
+    });
+    renderApp("/monitors/new");
+    await userEvent.type(await screen.findByLabelText("Name"), "Shop");
+    await userEvent.type(screen.getByLabelText("URL"), "shop.example.com");
+    const picker = await screen.findByRole("group", { name: "Notification channels" });
+    expect(picker).toHaveAccessibleDescription(/every active channel/);
+    expect(within(picker).getByLabelText("#on-call")).toHaveAccessibleDescription(/Webhook failed/);
+    await userEvent.click(within(picker).getByLabelText("#on-call"));
+    await userEvent.click(screen.getByRole("button", { name: "Create monitor" }));
+    await screen.findByRole("heading", { name: "Shop", level: 1 });
+    expect(body).toMatchObject({ name: "Shop", notifySlack: true, channelIds: ["c2"] });
+  });
+
+  it("hides the channel picker when Slack is off and links to Settings without channels", async () => {
+    mockApi({ ...signedIn, "GET /api/v1/channels": () => json({ items: [] }) });
+    renderApp("/monitors/new");
+    expect(await screen.findByText(/No notification channels yet/)).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText("Notify Slack"));
+    expect(screen.queryByText(/No notification channels yet/)).not.toBeInTheDocument();
   });
 
   it("drops a selected channel that was deleted before saving", async () => {
@@ -655,7 +703,7 @@ describe("settings", () => {
   it("shows the plan and the usage against its limits", async () => {
     mockApi({
       ...signedIn,
-      "GET /api/v1/settings/slack": () => json({ configured: true }),
+      "GET /api/v1/channels": () => json({ items: [channel()] }),
       "GET /api/v1/usage": () => json(usageOf(2, 3)),
     });
     renderApp("/settings");
@@ -678,46 +726,230 @@ describe("settings", () => {
   });
 
   it("shows an error for the plan without hiding the other settings", async () => {
-    mockApi({ ...signedIn, "GET /api/v1/settings/slack": () => json({ configured: false }) });
+    mockApi({ ...signedIn, "GET /api/v1/channels": () => json({ items: [] }) });
     renderApp("/settings");
     expect(await screen.findByText("Cannot load plan and usage")).toBeInTheDocument();
-    expect(screen.getByText(/No webhook is configured/)).toBeInTheDocument();
-  });
-
-  it("saves the webhook without showing it again", async () => {
-    let configured = false;
-    let sent: unknown;
-    mockApi({
-      ...signedIn,
-      "GET /api/v1/settings/slack": () => json({ configured }),
-      "PUT /api/v1/settings/slack": async (req) => {
-        sent = await req.json();
-        configured = true;
-        return json({ configured: true });
-      },
-    });
-    renderApp("/settings");
-    expect(await screen.findByText(/No webhook is configured/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Send test message" })).toBeDisabled();
+    expect(screen.getByText(/No notification channels yet/)).toBeInTheDocument();
     expect(screen.getByText(/Signed in as/)).toHaveTextContent(
       "Signed in as admin. The password is managed outside the app.",
     );
+  });
 
-    const input = screen.getByLabelText("Slack webhook URL");
-    await userEvent.type(input, "https://hooks.slack.com/services/T0/B0/secret");
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  it("lists channels with their events, mention, reminder and status", async () => {
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/channels": () =>
+        json({
+          items: [
+            channel(),
+            channel({
+              id: "c2",
+              name: "#on-call",
+              events: ["down"],
+              mention: ["@here"],
+              reminderMinutes: 60,
+              status: "failed",
+            }),
+          ],
+        }),
+    });
+    renderApp("/settings");
+    const oncall = await screen.findByRole("row", { name: /#on-call/ });
+    expect(oncall).toHaveTextContent("#on-callDown@hereEvery 1 hFailed");
+    expect(screen.getByRole("row", { name: /#ops/ })).toHaveTextContent(
+      "#opsDown, Recovered, TLS certificate expiringNoneOffActive",
+    );
+    expect(screen.getByText(/refused by Slack/)).toBeInTheDocument();
+  });
 
-    expect(await screen.findByText(/A webhook is configured/)).toBeInTheDocument();
-    // The URL is gone for good: the field is replaced by the write-only value.
+  it("adds a channel without showing the webhook again", async () => {
+    let items: Channel[] = [];
+    let sent: unknown;
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/channels": () => json({ items }),
+      "POST /api/v1/channels": async (req) => {
+        sent = await req.json();
+        items = [channel({ name: "#alerts", mention: ["@here"], reminderMinutes: 30 })];
+        return json(items[0], 201);
+      },
+    });
+    renderApp("/settings");
+    await userEvent.click(await screen.findByRole("button", { name: "Add channel" }));
+    const url = screen.getByLabelText("Slack webhook URL");
+    expect(url).toHaveAttribute("type", "text");
+    expect(url).toHaveAttribute("autocomplete", "off");
+    expect(url).toHaveAttribute("spellcheck", "false");
+    expect(url).toHaveClass("secret-text");
+    expect(screen.getByLabelText("Name")).toHaveFocus();
+    await userEvent.type(screen.getByLabelText("Name"), " #alerts ");
+    await userEvent.type(url, "https://hooks.slack.com/services/T0/B0/secret");
+    await userEvent.click(screen.getByLabelText("TLS certificate expiring"));
+    await userEvent.type(screen.getByLabelText("Mention (optional)"), "@here @here");
+    await userEvent.clear(screen.getByLabelText("Reminder every (minutes)"));
+    await userEvent.type(screen.getByLabelText("Reminder every (minutes)"), "30");
+    await userEvent.click(screen.getByRole("button", { name: "Add channel" }));
+
+    expect(await screen.findByRole("row", { name: /#alerts/ })).toBeInTheDocument();
+    expect(sent).toEqual({
+      name: "#alerts",
+      webhookUrl: "https://hooks.slack.com/services/T0/B0/secret",
+      events: ["down", "recovered"],
+      mention: ["@here"],
+      reminderMinutes: 30,
+    });
     expect(screen.queryByLabelText("Slack webhook URL")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Channel #alerts added");
+  });
+
+  it("checks the form before sending it", async () => {
+    const fetchMock = mockApi({ ...signedIn, "GET /api/v1/channels": () => json({ items: [] }) });
+    renderApp("/settings");
+    await userEvent.click(await screen.findByRole("button", { name: "Add channel" }));
+    await userEvent.type(screen.getByLabelText("Name"), "x");
+    await userEvent.type(screen.getByLabelText("Slack webhook URL"), "https://example.com");
+    await userEvent.type(screen.getByLabelText("Mention (optional)"), "@everyone");
+    await userEvent.clear(screen.getByLabelText("Reminder every (minutes)"));
+    await userEvent.type(screen.getByLabelText("Reminder every (minutes)"), "3");
+    await userEvent.click(screen.getByRole("button", { name: "Add channel" }));
+    for (const label of ["Slack webhook URL", "Mention (optional)", "Reminder every (minutes)"]) {
+      expect(screen.getByLabelText(label)).toHaveAttribute("aria-invalid", "true");
+    }
+    expect(fetchMock.mock.calls.some(([r]) => (r as Request).method === "POST")).toBe(false);
+  });
+
+  it("disables adding at the plan limit and explains a refused create", async () => {
+    let limit = 1;
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/channels": () => json({ items: limit === 1 ? [channel()] : [] }),
+      "GET /api/v1/usage": () => json(usageOf(0, 3)),
+      "POST /api/v1/channels": () =>
+        problem(409, "Plan limit reached", {
+          type: "urn:maiak:problem:plan-limit-reached",
+          detail: "The Free plan allows at most 1 channels.",
+          limit: "channels",
+          max: 1,
+        }),
+    });
+    const { queryClient } = renderApp("/settings");
+    expect(await screen.findByRole("button", { name: "Add channel" })).toBeDisabled();
+    expect(screen.getByText(/limit is reached/)).toBeInTheDocument();
+
+    // Usage that is out of date: the create is refused by the server.
+    limit = 0;
+    await act(() => queryClient.invalidateQueries({ queryKey: ["channels"] }));
+    queryClient.setQueryData(["usage"], {
+      ...usageOf(0, 3),
+      usage: { monitors: 0, heartbeats: 0, channels: 0 },
+    });
+    await userEvent.click(await screen.findByRole("button", { name: "Add channel" }));
+    await userEvent.type(screen.getByLabelText("Name"), "x");
+    await userEvent.type(
+      screen.getByLabelText("Slack webhook URL"),
+      "https://hooks.slack.com/services/T0/B0/x",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Add channel" }));
+    expect(
+      await screen.findByText(/Your plan allows at most 1 notification channel/),
+    ).toBeInTheDocument();
+  });
+
+  it("edits a channel and keeps the stored webhook unless it is replaced", async () => {
+    let sent: unknown;
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/channels": () => json({ items: [channel()] }),
+      "PATCH /api/v1/channels/c1": async (req) => {
+        sent = await req.json();
+        return json(channel({ name: "#ops2" }));
+      },
+    });
+    renderApp("/settings");
+    await userEvent.click(await screen.findByRole("button", { name: "Edit #ops" }));
+    expect(screen.queryByLabelText(/webhook URL/)).not.toBeInTheDocument();
     expect(screen.getByText("Configured, hidden")).toBeInTheDocument();
-    expect(sent).toEqual({ webhookUrl: "https://hooks.slack.com/services/T0/B0/secret" });
-    expect(screen.getByRole("button", { name: "Send test message" })).toBeEnabled();
-    expect(screen.getByRole("status")).toHaveTextContent("Webhook saved");
+    await userEvent.clear(screen.getByLabelText("Name"));
+    await userEvent.type(screen.getByLabelText("Name"), "#ops2");
+    await userEvent.click(screen.getByRole("button", { name: "Save channel" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Changes saved"));
+    expect(sent).toEqual({
+      name: "#ops2",
+      events: ["down", "recovered", "tls_expiring"],
+      mention: [],
+      reminderMinutes: 0,
+    });
+  });
+
+  it("replaces the webhook of a channel", async () => {
+    let sent: unknown;
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/channels": () => json({ items: [channel({ status: "failed" })] }),
+      "PATCH /api/v1/channels/c1": async (req) => {
+        sent = await req.json();
+        return json(channel());
+      },
+    });
+    renderApp("/settings");
+    await userEvent.click(await screen.findByRole("button", { name: "Edit #ops" }));
+    await userEvent.click(screen.getByRole("button", { name: "Replace" }));
+    const url = screen.getByLabelText("New Slack webhook URL");
+    expect(url).toHaveFocus();
+    await userEvent.type(url, "https://hooks.slack.com/services/T0/B0/new");
+    await userEvent.click(screen.getByRole("button", { name: "Save channel" }));
+    await waitFor(() =>
+      expect(sent).toMatchObject({ webhookUrl: "https://hooks.slack.com/services/T0/B0/new" }),
+    );
+  });
+
+  it("shows a delivered test and a failed one", async () => {
+    let fail = false;
+    mockApi({
+      ...signedIn,
+      "GET /api/v1/channels": () => json({ items: [channel()] }),
+      "POST /api/v1/channels/c1/test": () =>
+        fail
+          ? problem(429, "Too many attempts", { detail: "Try again later." })
+          : new Response(null, { status: 204 }),
+    });
+    renderApp("/settings");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Send a test message to #ops" }),
+    );
+    expect(await screen.findByText(/Test message sent to #ops at/)).toBeInTheDocument();
+    fail = true;
+    await userEvent.click(screen.getByRole("button", { name: "Send a test message to #ops" }));
+    expect(await screen.findByText("Test message to #ops failed.")).toBeInTheDocument();
+  });
+
+  it("deletes a channel after confirmation", async () => {
+    let items = [channel()];
+    const fetchMock = mockApi({
+      ...signedIn,
+      "GET /api/v1/channels": () => json({ items }),
+      "DELETE /api/v1/channels/c1": () => {
+        items = [];
+        return new Response(null, { status: 204 });
+      },
+    });
+    renderApp("/settings");
+    await userEvent.click(await screen.findByRole("button", { name: "Delete #ops" }));
+    const dialog = screen.getByRole("dialog", { name: "Delete #ops?" });
+    expect(dialog).toHaveTextContent(/notify every active channel/);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(fetchMock.mock.calls.some(([r]) => (r as Request).method === "DELETE")).toBe(false);
+
+    await userEvent.click(screen.getByRole("button", { name: "Delete #ops" }));
+    await userEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Delete channel" }),
+    );
+    expect(await screen.findByText(/No notification channels yet/)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Channel #ops deleted");
   });
 
   it("switches the theme and remembers it in this browser", async () => {
-    mockApi({ ...signedIn, "GET /api/v1/settings/slack": () => json({ configured: false }) });
+    mockApi({ ...signedIn, "GET /api/v1/channels": () => json({ items: [] }) });
     renderApp("/settings");
     await userEvent.click(await screen.findByRole("radio", { name: "Dark" }));
     expect(document.documentElement).toHaveClass("theme-dark");
@@ -728,7 +960,7 @@ describe("settings", () => {
   });
 
   it("switches the theme from the top bar, in step with Settings", async () => {
-    mockApi({ ...signedIn, "GET /api/v1/settings/slack": () => json({ configured: false }) });
+    mockApi({ ...signedIn, "GET /api/v1/channels": () => json({ items: [] }) });
     renderApp("/settings");
     const bar = within(await screen.findByRole("banner"));
     await userEvent.click(bar.getByRole("button", { name: "Light theme" }));
@@ -742,80 +974,6 @@ describe("settings", () => {
     await userEvent.click(bar.getByRole("button", { name: "Light theme" }));
     expect(document.documentElement).not.toHaveClass("theme-light");
     expect(screen.getByRole("radio", { name: "System" })).toBeChecked();
-  });
-
-  it("rejects a URL that is not a Slack webhook before sending it", async () => {
-    mockApi({ ...signedIn, "GET /api/v1/settings/slack": () => json({ configured: false }) });
-    renderApp("/settings");
-    await userEvent.type(await screen.findByLabelText("Slack webhook URL"), "https://example.com");
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(screen.getByLabelText("Slack webhook URL")).toHaveAttribute("aria-invalid", "true");
-  });
-
-  it("sends no PUT for a rejected URL", async () => {
-    const fetchMock = mockApi({
-      ...signedIn,
-      "GET /api/v1/settings/slack": () => json({ configured: false }),
-    });
-    renderApp("/settings");
-    await userEvent.type(await screen.findByLabelText("Slack webhook URL"), "https://example.com");
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(screen.getByLabelText("Slack webhook URL")).toHaveAttribute("aria-invalid", "true");
-    expect(fetchMock.mock.calls.some(([r]) => (r as Request).method === "PUT")).toBe(false);
-  });
-
-  it("masks the webhook as text without autofill", async () => {
-    mockApi({ ...signedIn, "GET /api/v1/settings/slack": () => json({ configured: false }) });
-    renderApp("/settings");
-    const input = await screen.findByLabelText("Slack webhook URL");
-    expect(input).toHaveAttribute("type", "text");
-    expect(input).toHaveAttribute("autocomplete", "off");
-    expect(input).toHaveAttribute("spellcheck", "false");
-    expect(input).toHaveClass("secret-text");
-  });
-
-  it("shows an error toast when the Slack test answers 409", async () => {
-    mockApi({
-      ...signedIn,
-      "GET /api/v1/settings/slack": () => json({ configured: true }),
-      "POST /api/v1/settings/slack/test": () =>
-        problem(409, "Conflict", { detail: "No Slack webhook is configured." }),
-    });
-    renderApp("/settings");
-    await userEvent.click(await screen.findByRole("button", { name: "Send test message" }));
-    const alert = (await screen.findByText("Test message failed.")).closest("[role=alert]")!;
-    expect(alert).toHaveTextContent("No Slack webhook is configured.");
-  });
-
-  it("shows a delivered test next to the button", async () => {
-    mockApi({
-      ...signedIn,
-      "GET /api/v1/settings/slack": () => json({ configured: true, status: "active" }),
-      "POST /api/v1/settings/slack/test": () => new Response(null, { status: 204 }),
-    });
-    renderApp("/settings");
-    await userEvent.click(await screen.findByRole("button", { name: "Send test message" }));
-    expect(await screen.findByText(/Test message sent at/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Send another test" })).toBeInTheDocument();
-  });
-
-  it("says when Slack refused the stored webhook", async () => {
-    mockApi({
-      ...signedIn,
-      "GET /api/v1/settings/slack": () => json({ configured: true, status: "failed" }),
-    });
-    renderApp("/settings");
-    expect(await screen.findByText(/Slack refused it/)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Replace" }));
-    expect(screen.getByLabelText("New Slack webhook URL")).toHaveValue("");
-    expect(screen.getByLabelText("New Slack webhook URL")).toHaveFocus();
-  });
-
-  it("reports a failed test message", async () => {
-    mockApi({ ...signedIn, "GET /api/v1/settings/slack": () => json({ configured: true }) });
-    renderApp("/settings");
-    await userEvent.click(await screen.findByRole("button", { name: "Send test message" }));
-    expect(await screen.findByText(/Test message failed/)).toBeInTheDocument();
   });
 });
 
@@ -905,6 +1063,7 @@ describe("watchdogs", () => {
       expectedIntervalSeconds: 900,
       graceSeconds: 120,
       notifySlack: true,
+      channelIds: [],
     });
     expect(screen.getByLabelText("Heartbeat URL")).toHaveValue(url);
     expect(screen.getByLabelText("Heartbeat URL")).toHaveAccessibleDescription(/shown only once/);
@@ -1014,6 +1173,7 @@ describe("watchdogs", () => {
       expectedIntervalSeconds: 60,
       graceSeconds: 60,
       notifySlack: true,
+      channelIds: [],
     });
   });
 });

@@ -5,8 +5,10 @@ import { ApiError, errorMessage, errorMeta, planLimitMessage } from "../api/clie
 import {
   createMonitor,
   getMonitor,
+  listChannels,
   queryKeys,
   updateMonitor,
+  type Channel,
   type MonitorDetail,
 } from "../api/endpoints";
 import HeartbeatUrlPanel from "../components/HeartbeatUrlPanel";
@@ -200,6 +202,7 @@ function MonitorFormBody({
           "expectedIntervalSeconds",
           "graceSeconds",
           "notifySlack",
+          "channelIds",
         ] as const
       ).find((f) => found[f]);
       if (first) document.querySelector<HTMLElement>(`[data-field="${first}"]`)?.focus();
@@ -334,6 +337,15 @@ function MonitorFormBody({
           checked={values.notifySlack}
           onChange={(e) => update("notifySlack", e.target.checked)}
         />
+
+        {values.notifySlack && (
+          <ChannelPicker
+            channels={channels}
+            selected={values.channelIds}
+            onChange={(ids) => update("channelIds", ids)}
+            error={errors.channelIds}
+          />
+        )}
       </fieldset>
 
       <div className="flex flex-col gap-4 border-t border-border pt-5">
@@ -369,6 +381,89 @@ function MonitorFormBody({
         </div>
       </div>
     </form>
+  );
+}
+
+/** Which notification channels get the monitor's alerts; none selected means all of them. */
+function ChannelPicker({
+  channels,
+  selected,
+  onChange,
+  error,
+}: {
+  channels: {
+    isPending: boolean;
+    isError: boolean;
+    data?: { items: Channel[] };
+    refetch: () => unknown;
+  };
+  selected: string[];
+  onChange: (ids: string[]) => void;
+  error?: string;
+}) {
+  if (channels.isPending) {
+    return (
+      <Loading label="Loading notification channels…">
+        <Skeleton className="w-1/3" />
+      </Loading>
+    );
+  }
+  if (channels.isError || !channels.data) {
+    // Quiet on purpose: the monitor can still be saved, and the server decides about the ids.
+    return (
+      <p className="text-caption text-muted-foreground">
+        Cannot load the notification channels; the current selection is kept.{" "}
+        <Button variant="link" onClick={() => void channels.refetch()}>
+          Retry
+        </Button>
+      </p>
+    );
+  }
+  const items = channels.data.items;
+  if (items.length === 0) {
+    return (
+      <p className="text-caption text-muted-foreground">
+        No notification channels yet: add one in{" "}
+        <Link to="/settings#channels-heading" className="underline underline-offset-3">
+          Settings
+        </Link>
+        .
+      </p>
+    );
+  }
+  return (
+    <fieldset
+      data-field="channelIds"
+      aria-describedby="channels-hint"
+      className="flex flex-col gap-1"
+    >
+      <legend className="pb-1.5 text-caption font-medium">Notification channels</legend>
+      {items.map((c) => (
+        <Checkbox
+          key={c.id}
+          name="channelIds"
+          value={c.id}
+          label={c.name}
+          description={
+            c.status === "failed"
+              ? "Webhook failed: nothing is sent until it is replaced."
+              : undefined
+          }
+          checked={selected.includes(c.id)}
+          onChange={(e) =>
+            onChange(e.target.checked ? [...selected, c.id] : selected.filter((id) => id !== c.id))
+          }
+        />
+      ))}
+      {error && (
+        <span role="alert" className="text-caption text-down">
+          {error}
+        </span>
+      )}
+      <span id="channels-hint" className="text-caption text-muted-foreground">
+        None selected: every active channel gets the alerts.
+      </span>
+    </fieldset>
   );
 }
 

@@ -103,7 +103,7 @@ The Claude Design project ("Maiak Monitor Dashboard Directions") is the source o
 | Mock-up | Reality | Do this |
 |---|---|---|
 | Three locations, a location column | One location, `home-eu-central-1` | Leave out |
-| `#ops-alerts` | The API has no channel name | Say "Slack" |
+| `#ops-alerts` | Channels have a user-given name since S-01 (ADR-0100), not the Slack channel itself | Show `Channel.name` as typed |
 | "Why" analysis, "HTTP 502 Bad Gateway", "Connection refused" | Only an error kind | `describeErrorKind()` |
 | Starter/Team/Business plans, "See plans", member limits | `free` and `internal`, no plans page, no member limits | Names and limits from the API only |
 | Alert after 1-10 | 1-3 | `Segmented` with 1, 2, 3 |

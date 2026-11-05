@@ -2,33 +2,56 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ApiError, errorMessage } from "../api/client";
 import {
-  getSlackSettings,
-  putSlackSettings,
+  createChannel,
+  deleteChannel,
+  listChannels,
   queryKeys,
-  testSlack,
+  testChannel,
+  updateChannel,
+  type Channel,
   type Usage,
 } from "../api/endpoints";
 import { useAuth } from "../auth/AuthProvider";
 import { useToast } from "../components/Toasts";
 import {
   Alert,
+  Badge,
   Button,
-  cx,
+  Checkbox,
+  ConfirmDialog,
   DotShape,
+  EmptyNote,
   ErrorState,
   Field,
   Input,
   Meter,
   Skeleton,
+  Table,
+  Td,
+  Th,
+  Tr,
   TriangleShape,
   WriteOnlyValue,
   Loading,
   Segmented,
 } from "../components/ui";
+import {
+  CHANNEL_NAME_MAX,
+  channelEvents,
+  emptyChannelForm,
+  eventsLabel,
+  REMINDER_MAX,
+  reminderLabel,
+  toChannelCreate,
+  toChannelUpdate,
+  validateChannelForm,
+  valuesFromChannel,
+  type ChannelFormErrors,
+  type ChannelFormValues,
+} from "../lib/channels";
 import { formatClock } from "../lib/format";
-import { validateSlackUrl } from "../lib/slack";
 import { useTheme } from "../lib/theme";
-import { useUsage } from "../lib/usage";
+import { countOf, useUsage } from "../lib/usage";
 
 export default function Settings() {
   const auth = useAuth();
@@ -41,11 +64,11 @@ export default function Settings() {
         <PlanUsage />
       </SettingsSection>
       <SettingsSection
-        id="slack"
-        title="Slack"
-        description="Maiak posts to one Slack channel when a monitor goes down, when it recovers and when a TLS certificate is about to expire."
+        id="channels"
+        title="Notification channels"
+        description="Slack channels Maiak posts to through Incoming Webhooks. Each channel chooses its events, an optional mention for down alerts and an optional reminder while an incident stays open."
       >
-        <SlackSettings />
+        <NotificationChannels />
       </SettingsSection>
       <SettingsSection id="appearance" title="Appearance" description="Saved in this browser only.">
         <Appearance />
@@ -142,276 +165,425 @@ function PlanUsage() {
   );
 }
 
-type TestResult = { ok: true; at: number } | { ok: false; message: string };
+/** Which form is open: none, a new channel, or the edit form of one channel. */
+type Editing = { mode: "none" } | { mode: "create" } | { mode: "edit"; channel: Channel };
 
-function SlackSettings() {
+type TestResult = { channel: Channel } & (
+  { ok: true; at: number } | { ok: false; message: string }
+);
+
+function NotificationChannels() {
   const queryClient = useQueryClient();
   const toast = useToast();
-  const settings = useQuery({ queryKey: queryKeys.slack, queryFn: getSlackSettings });
-  const [webhookUrl, setWebhookUrl] = useState("");
-  const [error, setError] = useState<string | undefined>();
-  const [replacing, setReplacing] = useState(false);
-  const input = useRef<HTMLInputElement>(null);
-  // Replacing is a deliberate step: the field it opens takes the focus.
-  useEffect(() => {
-    if (replacing) input.current?.focus();
-  }, [replacing]);
+  const usage = useUsage();
+  const channels = useQuery({ queryKey: queryKeys.channels, queryFn: listChannels });
+  const [editing, setEditing] = useState<Editing>({ mode: "none" });
+  const [deleting, setDeleting] = useState<Channel | undefined>();
   const [result, setResult] = useState<TestResult | undefined>();
 
-  const save = useMutation({
-    mutationFn: (url: string) => putSlackSettings(url),
-    onSuccess: (data) => {
-      queryClient.setQueryData(queryKeys.slack, data);
-      // A new channel counts against the plan.
-      void queryClient.invalidateQueries({ queryKey: queryKeys.usage });
-      // The URL is a secret: it is never shown again after saving.
-      setWebhookUrl("");
-      // Drop the URL from the mutation variables too.
-      save.reset();
-      setReplacing(false);
-      setResult(undefined);
-      toast("Webhook saved");
-    },
-    onError: (err) => {
-      const fieldMessage = err instanceof ApiError ? err.fieldErrorMap().webhookUrl : undefined;
-      setError(fieldMessage ?? errorMessage(err));
-    },
-  });
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.channels });
+    // Channels count against the plan, and deleting one changes monitors' selections.
+    void queryClient.invalidateQueries({ queryKey: queryKeys.usage });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.monitors });
+  };
 
   const test = useMutation({
-    mutationFn: testSlack,
-    onSuccess: () => setResult({ ok: true, at: Date.now() }),
-    onError: (err) => setResult({ ok: false, message: errorMessage(err) }),
+    mutationFn: (c: Channel) => testChannel(c.id),
+    onSuccess: (_, c) => setResult({ channel: c, ok: true, at: Date.now() }),
+    onError: (err, c) => {
+      setResult({ channel: c, ok: false, message: errorMessage(err) });
+      // A revoked webhook marks the channel failed.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.channels });
+    },
   });
 
-  function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const found = validateSlackUrl(webhookUrl);
-    setError(found);
-    if (!found) save.mutate(webhookUrl.trim());
-  }
+  const remove = useMutation({
+    mutationFn: (c: Channel) => deleteChannel(c.id),
+    onSuccess: (_, c) => {
+      setDeleting(undefined);
+      if (editing.mode === "edit" && editing.channel.id === c.id) setEditing({ mode: "none" });
+      if (result?.channel.id === c.id) setResult(undefined);
+      refresh();
+      toast(`Channel ${c.name} deleted`);
+    },
+    onError: (err) => toast(`Delete failed. ${errorMessage(err)}`, "error"),
+  });
 
-  if (settings.isPending) {
+  if (channels.isPending) {
     return (
-      <Loading label="Loading Slack settings…" className="gap-4">
+      <Loading label="Loading notification channels…" className="gap-4">
         <Skeleton className="w-3/4" />
         <Skeleton className="h-9 w-full" />
       </Loading>
     );
   }
+  if (channels.isError) {
+    return (
+      <ErrorState
+        variant="section"
+        title="Cannot load notification channels"
+        onRetry={() => void channels.refetch()}
+      />
+    );
+  }
 
-  const configured = settings.data?.configured ?? false;
-  const revoked = configured && settings.data?.status === "failed";
-  const showForm = !configured || replacing;
+  const items = channels.data.items;
+  const limit = usage.data?.limits.channels;
+  const full = limit !== undefined && (usage.data?.usage.channels ?? items.length) >= limit;
 
   return (
     <div className="flex flex-col gap-6">
-      {settings.isError ? (
-        <ErrorState
-          variant="section"
-          title="Cannot load Slack settings"
-          onRetry={() => void settings.refetch()}
-        />
+      {items.length === 0 ? (
+        <EmptyNote>No notification channels yet. Slack notifications are off.</EmptyNote>
       ) : (
-        <>
-          <Steps configured={configured} revoked={revoked} result={result} />
-          <p className={cx(revoked && "text-down")}>
-            {!configured
-              ? "No webhook is configured. Slack notifications are off."
-              : revoked
-                ? "A webhook is configured, but Slack refused it: it was probably removed in Slack. Alerts are not sent until you save a new URL."
-                : "A webhook is configured. Alerts go to its channel."}
-          </p>
-        </>
+        <Table>
+          <thead>
+            <tr>
+              <Th>Name</Th>
+              <Th>Events</Th>
+              <Th>Mention</Th>
+              <Th>Reminder</Th>
+              <Th>Status</Th>
+              <Th>
+                <span className="sr-only">Actions</span>
+              </Th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((c) => (
+              <Tr key={c.id} tone={c.status === "failed" ? "down" : "default"}>
+                <Td>
+                  <span className="font-medium break-words">{c.name}</span>
+                </Td>
+                <Td className="text-caption">{eventsLabel(c.events)}</Td>
+                <Td className="font-mono text-caption">
+                  {c.mention.length > 0 ? c.mention.join(" ") : "None"}
+                </Td>
+                <Td className="text-caption whitespace-nowrap">
+                  {reminderLabel(c.reminderMinutes)}
+                </Td>
+                <Td>
+                  {c.status === "active" ? (
+                    <Badge tone="success">Active</Badge>
+                  ) : (
+                    <Badge tone="danger" icon={<TriangleShape size="small" />}>
+                      Failed
+                    </Badge>
+                  )}
+                </Td>
+                <Td>
+                  <div className="flex justify-end gap-1">
+                    <Button
+                      variant="ghost"
+                      size="small"
+                      aria-label={`Edit ${c.name}`}
+                      onClick={() => setEditing({ mode: "edit", channel: c })}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="small"
+                      aria-label={`Send a test message to ${c.name}`}
+                      busy={test.isPending && test.variables?.id === c.id}
+                      disabled={test.isPending}
+                      onClick={() => test.mutate(c)}
+                    >
+                      Test
+                    </Button>
+                    <Button
+                      variant="ghost-destructive"
+                      size="small"
+                      aria-label={`Delete ${c.name}`}
+                      onClick={() => setDeleting(c)}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </Td>
+              </Tr>
+            ))}
+          </tbody>
+        </Table>
       )}
 
-      {showForm ? (
-        <form onSubmit={onSubmit} noValidate className="flex flex-col gap-4">
+      {items.some((c) => c.status === "failed") && (
+        <p className="text-caption text-down">
+          A failed channel&apos;s webhook was refused by Slack (probably removed there). Nothing is
+          sent to it until you edit it and store a new webhook URL.
+        </p>
+      )}
+
+      {result?.ok && (
+        <span role="status" className="flex items-center gap-2 text-[13px]">
+          <DotShape size="large" className="text-success" />
+          Test message sent to {result.channel.name} at {formatClock(result.at)}. Look for it in
+          your Slack channel.
+        </span>
+      )}
+      {result && !result.ok && (
+        <Alert title={`Test message to ${result.channel.name} failed.`}>{result.message}</Alert>
+      )}
+
+      {editing.mode === "none" ? (
+        <div className="flex flex-col items-start gap-2">
+          <Button
+            variant={items.length === 0 ? "primary" : "secondary"}
+            disabled={full}
+            onClick={() => setEditing({ mode: "create" })}
+          >
+            Add channel
+          </Button>
+          {limit !== undefined && (
+            <span className="text-caption text-muted-foreground">
+              {full
+                ? `Your plan allows ${countOf(limit, "notification channel", "notification channels")}, and the limit is reached. Delete a channel to add another.`
+                : `${countOf(usage.data?.usage.channels ?? items.length, "channel", "channels")} of ${limit} on your plan.`}
+            </span>
+          )}
+        </div>
+      ) : (
+        <ChannelForm
+          key={editing.mode === "edit" ? editing.channel.id : "new"}
+          channel={editing.mode === "edit" ? editing.channel : undefined}
+          onDone={() => {
+            setEditing({ mode: "none" });
+            refresh();
+          }}
+          onCancel={() => setEditing({ mode: "none" })}
+        />
+      )}
+
+      {deleting && (
+        <ConfirmDialog
+          title={`Delete ${deleting.name}?`}
+          confirmLabel="Delete channel"
+          busy={remove.isPending}
+          onConfirm={() => remove.mutate(deleting)}
+          onCancel={() => setDeleting(undefined)}
+        >
+          <p>
+            Its webhook URL is removed and alerts still queued for it are not sent. Monitors that
+            selected only this channel then notify every active channel.
+          </p>
+        </ConfirmDialog>
+      )}
+    </div>
+  );
+}
+
+/** Creates a channel, or edits one (the stored webhook is kept unless a new URL is typed). */
+function ChannelForm({
+  channel,
+  onDone,
+  onCancel,
+}: {
+  channel?: Channel;
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const creating = channel === undefined;
+  const [values, setValues] = useState<ChannelFormValues>(
+    channel ? valuesFromChannel(channel) : emptyChannelForm,
+  );
+  const [errors, setErrors] = useState<ChannelFormErrors>({});
+  const [general, setGeneral] = useState<string | undefined>();
+  // Editing keeps the stored webhook until the user asks to replace it.
+  const [replacing, setReplacing] = useState(creating);
+  const webhookInput = useRef<HTMLInputElement>(null);
+  const nameInput = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    nameInput.current?.focus();
+  }, []);
+  useEffect(() => {
+    if (replacing && !creating) webhookInput.current?.focus();
+  }, [replacing, creating]);
+
+  const save = useMutation({
+    mutationFn: (v: ChannelFormValues) =>
+      creating ? createChannel(toChannelCreate(v)) : updateChannel(channel.id, toChannelUpdate(v)),
+    onSuccess: (saved) => {
+      // The URL is a secret: it is never shown again after saving.
+      setValues((v) => ({ ...v, webhookUrl: "" }));
+      save.reset();
+      toast(creating ? `Channel ${saved.name} added` : "Changes saved");
+      onDone();
+    },
+    onError: (err) => {
+      // A plan-limit refusal means the cached usage is stale.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.usage });
+      const fields: ChannelFormErrors = {};
+      if (err instanceof ApiError) {
+        for (const [field, message] of Object.entries(err.fieldErrorMap())) {
+          const key = field.split(".")[0]!;
+          if (key in values) fields[key as keyof ChannelFormValues] ??= message;
+        }
+      }
+      setErrors(fields);
+      setGeneral(Object.keys(fields).length > 0 ? undefined : errorMessage(err));
+    },
+  });
+
+  function update<K extends keyof ChannelFormValues>(key: K, value: ChannelFormValues[K]) {
+    setValues((v) => ({ ...v, [key]: value }));
+    setErrors((e) => (e[key] ? { ...e, [key]: undefined } : e));
+  }
+
+  function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const found = validateChannelForm(values, creating);
+    setErrors(found);
+    setGeneral(undefined);
+    if (Object.keys(found).length === 0) save.mutate(values);
+  }
+
+  return (
+    <form
+      onSubmit={onSubmit}
+      noValidate
+      aria-labelledby="channel-form-heading"
+      className="flex flex-col gap-5 border border-border p-4"
+    >
+      <h3 id="channel-form-heading" className="text-lead font-semibold">
+        {creating ? "Add channel" : `Edit ${channel.name}`}
+      </h3>
+      {general && <Alert title="Could not save the channel.">{general}</Alert>}
+      <fieldset disabled={save.isPending} className="flex min-w-0 flex-col gap-5">
+        <Field
+          label="Name"
+          hint="Usually the Slack channel, such as #ops-alerts."
+          error={errors.name}
+        >
+          {(c) => (
+            <Input
+              {...c}
+              ref={nameInput}
+              name="name"
+              autoComplete="off"
+              maxLength={CHANNEL_NAME_MAX * 2}
+              placeholder="#ops-alerts"
+              value={values.name}
+              onChange={(e) => update("name", e.target.value)}
+            />
+          )}
+        </Field>
+
+        {replacing ? (
           <Field
-            label={replacing ? "New Slack webhook URL" : "Slack webhook URL"}
-            hint="Create an Incoming Webhook in Slack and paste its URL. It is stored encrypted and never shown again after saving."
-            error={error}
+            label={creating ? "Slack webhook URL" : "New Slack webhook URL"}
+            hint={
+              creating
+                ? "Create an Incoming Webhook in Slack and paste its URL. It is stored encrypted and never shown again after saving."
+                : "Replaces the stored webhook and reactivates a failed channel."
+            }
+            error={errors.webhookUrl}
           >
             {(c) => (
               <Input
                 {...c}
+                ref={webhookInput}
                 name="webhookUrl"
                 type="text"
-                ref={input}
                 mono
                 secret
                 autoComplete="off"
                 spellCheck={false}
                 autoCapitalize="off"
                 placeholder="https://hooks.slack.com/services/…"
-                value={webhookUrl}
-                onChange={(e) => {
-                  setWebhookUrl(e.target.value);
-                  setError(undefined);
-                }}
+                value={values.webhookUrl}
+                onChange={(e) => update("webhookUrl", e.target.value)}
               />
             )}
           </Field>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <Button type="submit" busy={save.isPending}>
-              {save.isPending ? "Saving…" : replacing ? "Save new URL" : "Save"}
-            </Button>
-            {replacing && (
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  setReplacing(false);
-                  setWebhookUrl("");
-                  setError(undefined);
-                }}
-              >
-                Cancel
-              </Button>
-            )}
-          </div>
-        </form>
-      ) : (
-        <WriteOnlyValue
-          label="Webhook URL"
-          hint="Stored encrypted. It cannot be shown again, only replaced."
-          onReplace={() => setReplacing(true)}
-        />
-      )}
+        ) : (
+          <WriteOnlyValue
+            label="Webhook URL"
+            hint="Stored encrypted. It cannot be shown again, only replaced."
+            onReplace={() => setReplacing(true)}
+          />
+        )}
 
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-          <Button
-            variant={configured && !result && !revoked ? "primary" : "secondary"}
-            busy={test.isPending}
-            disabled={!configured}
-            className="self-start"
-            onClick={() => test.mutate()}
-          >
-            {test.isPending ? "Sending…" : result ? "Send another test" : "Send test message"}
-          </Button>
-          {result?.ok && (
-            <span role="status" className="flex items-center gap-2 text-[13px]">
-              <DotShape size="large" className="text-success" />
-              Test message sent at {formatClock(result.at)}. Look for it in your Slack channel.
+        <fieldset className="flex flex-col gap-1">
+          <legend className="pb-1.5 text-caption font-medium">Events</legend>
+          {channelEvents.map((e) => (
+            <Checkbox
+              key={e.value}
+              name="events"
+              value={e.value}
+              label={e.label}
+              checked={values.events.includes(e.value)}
+              onChange={(ev) =>
+                update(
+                  "events",
+                  ev.target.checked
+                    ? [...values.events, e.value]
+                    : values.events.filter((x) => x !== e.value),
+                )
+              }
+            />
+          ))}
+          {errors.events && (
+            <span role="alert" className="text-caption text-down">
+              {errors.events}
             </span>
           )}
-        </div>
-        {result && !result.ok && (
-          <Alert title="Test message failed.">
-            {result.message}
-            {configured && !replacing && (
-              <>
-                {" "}
-                If the webhook was removed in Slack,{" "}
-                <Button variant="link" onClick={() => setReplacing(true)}>
-                  replace the URL
-                </Button>
-                .
-              </>
-            )}
-          </Alert>
-        )}
-      </div>
-    </div>
-  );
-}
+        </fieldset>
 
-/** Not configured → Saved → Test delivered (or refused), so the next step is always visible. */
-function Steps({
-  configured,
-  revoked,
-  result,
-}: {
-  configured: boolean;
-  revoked: boolean;
-  result: TestResult | undefined;
-}) {
-  const failed = revoked || (result !== undefined && !result.ok);
-  const delivered = !failed && result?.ok === true;
-  const steps = [
-    {
-      label: "Not configured",
-      sub: configured ? "done" : "now",
-      done: configured,
-      current: !configured,
-    },
-    {
-      label: "Saved",
-      sub: "encrypted",
-      done: configured && (delivered || failed),
-      current: configured && !delivered && !failed,
-    },
-    failed
-      ? {
-          label: "Test failed",
-          sub: revoked ? "Slack refused the webhook" : "see below",
-          failed: true,
-        }
-      : {
-          label: "Test delivered",
-          sub: delivered && result?.ok ? formatClock(result.at) : "not sent yet",
-          done: delivered,
-          current: delivered,
-        },
-  ];
-  return (
-    <ol aria-label="Slack connection" className="grid grid-cols-3 gap-0">
-      {steps.map((step, i) => (
-        <li
-          key={step.label}
-          aria-current={"current" in step && step.current ? "step" : undefined}
-          className="flex min-w-0 flex-col gap-3"
+        <Field
+          label="Mention (optional)"
+          hint="Up to 3 of @here, @channel, <!subteam^ID> (a user group) or <@UID> (a user), separated by spaces. Used in down alerts and reminders only."
+          error={errors.mention}
         >
-          <div className="flex h-3.5 items-center">
-            {"failed" in step && step.failed ? (
-              <TriangleShape size="large" className="text-down" />
-            ) : (
-              <span
-                aria-hidden="true"
-                className={cx(
-                  "box-border size-2.5 flex-none rounded-full",
-                  step.current
-                    ? "bg-foreground shadow-[0_0_0_3px_var(--background),0_0_0_4px_var(--foreground)]"
-                    : step.done
-                      ? "bg-foreground"
-                      : "border-[1.5px] border-input",
-                )}
-              />
-            )}
-            {i < steps.length - 1 && (
-              <span
-                aria-hidden="true"
-                className={cx(
-                  "mx-2.5 h-px flex-1",
-                  "failed" in steps[i + 1]! && steps[i + 1]!.failed
-                    ? "bg-down"
-                    : step.done
-                      ? "bg-foreground"
-                      : "bg-border",
-                )}
-              />
-            )}
-          </div>
-          <div className="flex flex-col gap-0.5 pr-2.5">
-            <span
-              className={cx(
-                "text-[13px]",
-                "failed" in step && step.failed
-                  ? "font-semibold text-down"
-                  : step.current
-                    ? "font-semibold"
-                    : step.done
-                      ? ""
-                      : "text-muted-foreground",
-              )}
-            >
-              {step.label}
-            </span>
-            <span className="font-mono text-[11px] text-muted-foreground">{step.sub}</span>
-          </div>
-        </li>
-      ))}
-    </ol>
+          {(c) => (
+            <Input
+              {...c}
+              name="mention"
+              mono
+              autoComplete="off"
+              spellCheck={false}
+              autoCapitalize="off"
+              placeholder="@here"
+              value={values.mention}
+              onChange={(e) => update("mention", e.target.value)}
+            />
+          )}
+        </Field>
+
+        <Field
+          label="Reminder every (minutes)"
+          hint={`0 turns reminders off. Otherwise 5 to ${REMINDER_MAX} minutes between reminders while a monitor stays down.`}
+          error={errors.reminderMinutes}
+        >
+          {(c) => (
+            <Input
+              {...c}
+              name="reminderMinutes"
+              type="number"
+              inputMode="numeric"
+              min={0}
+              max={REMINDER_MAX}
+              mono
+              end="min"
+              className="sm:w-40"
+              value={values.reminderMinutes}
+              onChange={(e) => update("reminderMinutes", e.target.value)}
+            />
+          )}
+        </Field>
+      </fieldset>
+
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <Button type="submit" busy={save.isPending}>
+          {save.isPending ? "Saving…" : creating ? "Add channel" : "Save channel"}
+        </Button>
+        <Button variant="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </form>
   );
 }
 
