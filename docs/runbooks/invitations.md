@@ -17,6 +17,8 @@ The API refuses anything above a role with 403 `urn:maiak:problem:forbidden`; th
 2. The link (`<MAIAK_PUBLIC_URL>/invite#<token>`) is shown **once**. Maiak stores only its SHA-256. Copy it and hand it over over a channel you trust (a direct message, not a shared channel or a ticket). No email is sent (L-273).
 3. The person opens it. Without an account they register on that page (this works even when `MAIAK_REGISTRATION_ENABLED=false`, because the invitation is the authorization); they get no organization of their own. With an account they sign in and choose **Join**; the session moves to the new organization. Their other organizations stay; the switcher in the top bar moves between them.
 
+**Someone who already has an account** (for example a user removed from every organization, who can no longer sign in: a login without any membership gets the generic "wrong login or password") uses the same link: on the invitation page they choose **Already have an account? Join with it** and enter that account's email and password. The password is checked like a login; a wrong one is answered like a failed login and the link stays usable. Failed attempts count per address, per invitation and per login.
+
 A link works once and for 7 days. Open invitations count toward the plan's member limit (`max_members`: `free` 3, `internal` 50) until they are used, revoked or expire, so revoke the ones nobody will use.
 
 ## A link was sent to the wrong person or leaked (R-213)
@@ -28,6 +30,9 @@ The token travels in the URL fragment, which browsers never send to a server, so
 The answer is the same for an unknown, expired, used or revoked link, and for an organization that is suspended or deleted. Ask an admin of the organization for a new link. Too many failed attempts from one address are answered 429 for up to 15 minutes (20 failures per 15 minutes per api replica, L-276).
 
 A user who is already a member gets 409 `already-member`; they switch to the organization from the top bar instead. The platform admin cannot join other organizations (L-277): use a separate normal account.
+
+## Rolling back past T-01 (L-282)
+The release before T-01 ignores roles (every member can do everything) and its `BootstrapAdmin` disables every other active owner of `default` at start. Do not grant `owner` in the `default` organization until the T-01 release is final. After an emergency rollback, re-enable such users as `maiak_owner`: `UPDATE users SET status = 'active', updated_at = now() WHERE email = '<login>';` (their sessions are gone; they sign in again), and roll forward as soon as possible.
 
 ## Organization switcher
 `GET /api/v1/auth/organizations` lists the user's organizations; switching (`POST /api/v1/auth/switch-organization`) checks the membership and that the organization is active, then replaces the session (new cookie and CSRF token; the old session is deleted). A suspended organization is listed but cannot be selected. Login still lands in the organization `auth_login_tenant` picks (`default` first, then active before suspended, then the oldest membership).

@@ -73,20 +73,8 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (LoginResult, 
 	if ok, wait := s.ipLimit.Reserve(ipKey); !ok {
 		return LoginResult{}, s.registrationRateLimited(ctx, &RateLimitedError{RetryAfter: wait})
 	}
-	var target invitationTarget
 	if in.InviteToken != "" {
-		// The token is checked before the expensive hash, and a bad one counts against the
-		// invitation limit as well.
-		inviteKey, err := s.reserveInvite(ctx, in.IP)
-		if err != nil {
-			s.ipLimit.Refund(ipKey)
-			return LoginResult{}, s.registrationRateLimited(ctx, err)
-		}
-		if target, err = s.lookupInvitation(ctx, in.InviteToken); err != nil {
-			s.registrations.WithLabelValues("invalid_invitation").Inc()
-			return LoginResult{}, err
-		}
-		s.inviteLimit.Refund(inviteKey)
+		return s.registerInvited(ctx, email, in, ipKey)
 	}
 	if err := s.acquireHash(ctx); err != nil {
 		s.ipLimit.Refund(ipKey)
@@ -99,29 +87,6 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (LoginResult, 
 	if err != nil {
 		s.ipLimit.Refund(ipKey)
 		return LoginResult{}, fmt.Errorf("auth: register: hash password: %w", err)
-	}
-
-	if in.InviteToken != "" {
-		res, err := s.createInvitedAccount(ctx, email, phc, target.tenantID, in)
-		switch {
-		case err == nil:
-			s.registrations.WithLabelValues("succeeded").Inc()
-			s.log.InfoContext(ctx, "account registered through an invitation", "user_id", res.User.ID, "tenant_id", res.Tenant.ID)
-			return res, nil
-		case errors.Is(err, ErrEmailTaken):
-			s.registrations.WithLabelValues("email_taken").Inc()
-			return LoginResult{}, ErrEmailTaken
-		case errors.Is(err, ErrInvitationInvalid):
-			// Used, revoked or expired between the lookup and the transaction.
-			s.registrations.WithLabelValues("invalid_invitation").Inc()
-			return LoginResult{}, err
-		}
-		var limit *plans.LimitError
-		if errors.As(err, &limit) {
-			return LoginResult{}, err
-		}
-		s.ipLimit.Refund(ipKey)
-		return LoginResult{}, fmt.Errorf("auth: register: %w", err)
 	}
 
 	for attempt := 1; ; attempt++ {
@@ -187,6 +152,167 @@ func (s *Service) createAccount(ctx context.Context, email, passwordHash string,
 		}}
 		return nil
 	})
+	return res, err
+}
+
+// registerInvited joins the invited organization with the email and password given (T-01, T-12):
+// a new email gets a new user; an email that already has an account must come with that account's
+// password, checked like a login (one argon2 operation either way, the same generic
+// ErrInvalidCredentials, the invitation untouched on a wrong password). Every attempt that does
+// not succeed counts against the per-IP invitation limit and the per-invitation limit; a wrong
+// password also counts against the login's per-login limit.
+func (s *Service) registerInvited(ctx context.Context, email string, in RegisterInput, ipKey string) (LoginResult, error) {
+	inviteKey, err := s.reserveInvite(ctx, in.IP)
+	if err != nil {
+		s.ipLimit.Refund(ipKey)
+		return LoginResult{}, s.registrationRateLimited(ctx, err)
+	}
+	target, err := s.lookupInvitation(ctx, in.InviteToken)
+	if err != nil {
+		s.registrations.WithLabelValues("invalid_invitation").Inc()
+		return LoginResult{}, err
+	}
+	perInvite := "invitation:" + target.invitationID.String()
+	if ok, wait := s.inviteLimit.Reserve(perInvite); !ok {
+		s.inviteLimit.Refund(inviteKey)
+		return LoginResult{}, s.registrationRateLimited(ctx, &RateLimitedError{RetryAfter: wait})
+	}
+	succeeded := func() {
+		s.inviteLimit.Refund(inviteKey)
+		s.inviteLimit.Refund(perInvite)
+	}
+	s.beforeJoin()
+
+	existing, err := s.userByEmail(ctx, email)
+	if err != nil {
+		return LoginResult{}, fmt.Errorf("auth: register: %w", err)
+	}
+	var res LoginResult
+	if existing != nil {
+		res, err = s.joinExistingAccount(ctx, *existing, email, target, in)
+	} else {
+		res, err = s.joinNewAccount(ctx, email, target, in)
+	}
+	var limit *plans.LimitError
+	switch {
+	case err == nil:
+		succeeded()
+		s.registrations.WithLabelValues("succeeded").Inc()
+		s.log.InfoContext(ctx, "account joined through an invitation", "user_id", res.User.ID, "tenant_id", res.Tenant.ID,
+			"existing_account", existing != nil)
+		return res, nil
+	case errors.Is(err, ErrEmailTaken):
+		// Only when the email was registered between the check and the insert.
+		s.registrations.WithLabelValues("email_taken").Inc()
+		return LoginResult{}, ErrEmailTaken
+	case errors.Is(err, ErrInvalidCredentials):
+		s.registrations.WithLabelValues("invalid_credentials").Inc()
+		return LoginResult{}, err
+	case errors.Is(err, ErrInvitationInvalid):
+		// Used, revoked or expired, or the tenant suspended, between the lookup and the transaction.
+		s.registrations.WithLabelValues("invalid_invitation").Inc()
+		return LoginResult{}, err
+	case errors.Is(err, ErrRateLimited):
+		s.registrations.WithLabelValues("rate_limited").Inc()
+		return LoginResult{}, err
+	case errors.Is(err, ErrAlreadyMember), errors.As(err, &limit):
+		succeeded()
+		return LoginResult{}, err
+	}
+	succeeded()
+	s.ipLimit.Refund(ipKey)
+	return LoginResult{}, fmt.Errorf("auth: register: %w", err)
+}
+
+// userByEmail returns the user with the login, or nil.
+func (s *Service) userByEmail(ctx context.Context, email string) (*authdb.GetUserByEmailRow, error) {
+	var row *authdb.GetUserByEmailRow
+	err := db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		r, err := authdb.New(tx).GetUserByEmail(ctx, email)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err == nil {
+			row = &r
+		}
+		return err
+	})
+	return row, err
+}
+
+func (s *Service) joinNewAccount(ctx context.Context, email string, target invitationTarget, in RegisterInput) (LoginResult, error) {
+	if err := s.acquireHash(ctx); err != nil {
+		return LoginResult{}, err
+	}
+	// Same function and parameters as the admin hash (and the dummy), so every stored hash
+	// costs the same to verify.
+	phc, err := crypto.HashPassword(in.Password, s.dummy.Params)
+	<-s.hashSem
+	if err != nil {
+		return LoginResult{}, fmt.Errorf("hash password: %w", err)
+	}
+	return s.createInvitedAccount(ctx, email, phc, target.tenantID, in)
+}
+
+// joinExistingAccount verifies the account's password like a login and, when it is right, joins
+// the account to the invited organization and creates a session there, all in one transaction
+// that re-checks the credential (ADR-0098). A wrong password leaves the invitation open.
+func (s *Service) joinExistingAccount(ctx context.Context, row authdb.GetUserByEmailRow, email string, target invitationTarget, in RegisterInput) (LoginResult, error) {
+	loginKey := normalizeLogin(email)
+	if ok, wait := s.loginLimit.Reserve(loginKey); !ok {
+		return LoginResult{}, &RateLimitedError{RetryAfter: wait}
+	}
+	hash := s.dummy
+	if row.PasswordHash != nil {
+		if h, perr := crypto.ParseArgon2idHash(*row.PasswordHash); perr == nil {
+			hash = h
+		}
+	}
+	if err := s.acquireHash(ctx); err != nil {
+		s.loginLimit.Refund(loginKey)
+		return LoginResult{}, err
+	}
+	match := hash.Verify(in.Password)
+	<-s.hashSem
+	if !match || hash == s.dummy || row.Status != userStatusActive {
+		s.logins.WithLabelValues("failed").Inc()
+		if err := s.auditFailure(ctx, target.tenantID, &row.ID, in.IP, "invitation_invalid_credentials"); err != nil {
+			return LoginResult{}, err
+		}
+		return LoginResult{}, ErrInvalidCredentials
+	}
+	cred := credential{hash: *row.PasswordHash, updatedAt: row.UpdatedAt}
+	var res LoginResult
+	err := db.WithTenantTx(ctx, s.pool, target.tenantID, func(tx pgx.Tx) error {
+		q := authdb.New(tx)
+		if err := recheckCredential(ctx, q, row.ID, cred); err != nil {
+			return ErrInvalidCredentials
+		}
+		if row.IsPlatformAdmin {
+			// BootstrapAdmin refuses to start when the admin belongs to another tenant (ADR-0095).
+			return ErrAlreadyMember
+		}
+		role, err := s.joinInvited(ctx, tx, target.tenantID, row.ID, in.InviteToken, in.IP)
+		if err != nil {
+			return err
+		}
+		t, err := tenants.Get(ctx, tx, target.tenantID)
+		if err != nil {
+			return err
+		}
+		sess, err := s.insertSession(ctx, q, target.tenantID, row.ID, in.IP, in.UserAgent)
+		if err != nil {
+			return err
+		}
+		res = LoginResult{Token: sess.token, SessionInfo: SessionInfo{
+			User: User{ID: row.ID, Login: row.Email, DisplayName: row.DisplayName}, Tenant: t, Role: role,
+			CSRFToken: sess.csrf, ExpiresAt: sess.expiresAt,
+		}}
+		return nil
+	})
+	if err == nil {
+		s.loginLimit.Reset(loginKey)
+	}
 	return res, err
 }
 

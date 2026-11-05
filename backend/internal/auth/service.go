@@ -101,6 +101,9 @@ type Service struct {
 	// afterVerify runs between the password verification and the session transaction of a
 	// login. It does nothing; the integration tests replace it to pause a login there.
 	afterVerify func()
+	// beforeJoin runs between an invitation's lookup and the transaction that uses it. It does
+	// nothing; the integration tests replace it.
+	beforeJoin func()
 }
 
 // NewService builds the service. Call BootstrapAdmin before serving logins.
@@ -134,13 +137,14 @@ func NewService(pool *db.Pool, opts Options) (*Service, error) {
 		hashSem:     make(chan struct{}, maxConcurrentHashes),
 		hashWait:    opts.HashQueueWait,
 		afterVerify: func() {},
+		beforeJoin:  func() {},
 		logins: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "maiak_auth_logins_total",
 			Help: "Login attempts by result (succeeded, failed, suspended, rate_limited).",
 		}, []string{"result"}),
 		registrations: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "maiak_auth_registrations_total",
-			Help: "Registration attempts by result (succeeded, invalid, invalid_invitation, email_taken, rate_limited).",
+			Help: "Registration attempts by result (succeeded, invalid, invalid_invitation, invalid_credentials, email_taken, rate_limited).",
 		}, []string{"result"}),
 	}
 	if opts.Registerer != nil {

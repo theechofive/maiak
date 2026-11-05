@@ -1,5 +1,5 @@
 import { QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { setCsrfToken, setUnauthorizedHandler } from "../api/client";
 import * as api from "../api/endpoints";
 import { queryKeys, type SessionInfo } from "../api/endpoints";
@@ -46,6 +46,17 @@ function replaceSession(queryClient: QueryClient, session: SessionInfo) {
   void queryClient.resetQueries({ predicate: (q) => q.queryKey[0] !== queryKeys.me[0] });
 }
 
+/**
+ * Tabs of the app tell each other when the session changed (login, logout, organization switch,
+ * invitation accepted), so no tab keeps showing another organization's data or a dead session.
+ * The message carries no token or id: the other tabs ask the server again.
+ */
+export const SESSION_CHANNEL = "maiak-session";
+
+function openSessionChannel(): BroadcastChannel | null {
+  return typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(SESSION_CHANNEL);
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const me = useQuery({
@@ -60,8 +71,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Any 401 ends the session in the UI; the route guard then redirects to /login with the target path.
   useEffect(() => setUnauthorizedHandler(() => dropSession(queryClient)), [queryClient]);
 
-  const value = useMemo<AuthValue>(
-    () => ({
+  const channel = useRef<BroadcastChannel | null>(null);
+  useEffect(() => {
+    const ch = openSessionChannel();
+    channel.current = ch;
+    if (!ch) return;
+    ch.onmessage = () => {
+      void queryClient.resetQueries({ predicate: (q) => q.queryKey[0] !== queryKeys.me[0] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.me });
+    };
+    return () => {
+      ch.close();
+      channel.current = null;
+    };
+  }, [queryClient]);
+
+  const value = useMemo<AuthValue>(() => {
+    const announce = () => channel.current?.postMessage({ type: "session-changed" });
+    return {
       status: me.isPending ? "loading" : me.isError ? "error" : "ready",
       session: me.data ?? null,
       error: me.error,
@@ -69,18 +96,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login: async (login, password) => {
         const session = await api.login(login, password);
         queryClient.setQueryData(queryKeys.me, session);
+        announce();
       },
       register: async (email, password, inviteToken) => {
         const session = await api.register(email, password, inviteToken);
         queryClient.setQueryData(queryKeys.me, session);
+        announce();
       },
       switchOrganization: async (tenantId) => {
         replaceSession(queryClient, await api.switchOrganization(tenantId));
+        announce();
       },
       acceptInvitation: async (token) => {
         replaceSession(queryClient, await api.acceptInvitation(token));
+        announce();
       },
-      endSession: () => dropSession(queryClient),
+      endSession: () => {
+        dropSession(queryClient);
+        announce();
+      },
       logout: async () => {
         try {
           await api.logout();
@@ -88,10 +122,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // The session is dropped locally even when the server call fails.
         }
         dropSession(queryClient);
+        announce();
       },
-    }),
-    [me, queryClient],
-  );
+    };
+  }, [me, queryClient]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

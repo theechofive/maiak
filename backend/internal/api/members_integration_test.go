@@ -696,3 +696,78 @@ func TestIntegrationInvitationRateLimit(t *testing.T) {
 		t.Fatalf("after the window: %d", r.code)
 	}
 }
+
+func registerWithInvite(c *client, email, password, token, ip string) response {
+	b, _ := json.Marshal(map[string]string{"email": email, "password": password, "inviteToken": token})
+	return c.do(http.MethodPost, "/api/v1/auth/register", string(b), map[string]string{"X-Forwarded-For": ip})
+}
+
+// T-12 (M1): a user removed from its only organization cannot log in (the generic failure), and
+// gets back in through a new invitation by registering with the same email and its password. A
+// wrong password is the login's generic answer and leaves the invitation open.
+func TestIntegrationInviteExistingAccount(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("inviteexisting"))
+	c := newRegistrationServer(t, env, membersOpts(), false, &lockedBuffer{})
+	owner := adminSession(c)
+
+	tok, _ := invite(t, c, owner, "member")
+	carol, _ := joinByRegister(t, c, tok, "carol@example.com")
+	carolID := userIDOf(t, c, carol)
+	if r := c.do(http.MethodDelete, "/api/v1/members/"+carolID, "", owner); r.code != http.StatusNoContent {
+		t.Fatalf("remove: %d %s", r.code, r.raw)
+	}
+	loginBody := `{"login":"carol@example.com","password":"` + ownerPassword + `"}`
+	if r := c.do(http.MethodPost, "/api/v1/auth/login", loginBody, nil); r.code != http.StatusUnauthorized || r.body["type"] != "urn:maiak:problem:invalid-credentials" {
+		t.Fatalf("login without memberships: %d %s", r.code, r.raw)
+	}
+
+	tok, _ = invite(t, c, owner, "viewer")
+	r := registerWithInvite(c, "carol@example.com", "a wrong passphrase", tok, "198.51.100.30")
+	if r.code != http.StatusUnauthorized || r.body["type"] != "urn:maiak:problem:invalid-credentials" {
+		t.Fatalf("wrong password: %d %s", r.code, r.raw)
+	}
+	if l := c.do(http.MethodPost, "/api/v1/invitations/lookup", `{"token":"`+tok+`"}`, nil); l.code != http.StatusOK {
+		t.Fatalf("invitation consumed by a wrong password: %d", l.code)
+	}
+	if n := countRows(t, env, `SELECT count(*) FROM users WHERE email = 'carol@example.com'`); n != 1 {
+		t.Fatalf("users: %d", n)
+	}
+
+	r = registerWithInvite(c, "Carol@Example.com", ownerPassword, tok, "198.51.100.30")
+	if r.code != http.StatusCreated || r.body["role"] != "viewer" || r.body["tenant"].(map[string]any)["slug"] != "default" {
+		t.Fatalf("existing account joins: %d %s", r.code, r.raw)
+	}
+	if u := r.body["user"].(map[string]any); u["id"] != carolID {
+		t.Fatalf("joined as another user: %v", u)
+	}
+	if r := c.do(http.MethodPost, "/api/v1/auth/login", loginBody, nil); r.code != http.StatusOK {
+		t.Fatalf("login after rejoining: %d %s", r.code, r.raw)
+	}
+	if n := countRows(t, env, `SELECT count(*) FROM audit_log WHERE action = 'auth.login.failed' AND metadata->>'reason' = 'invitation_invalid_credentials'`); n != 1 {
+		t.Fatalf("failed attempt audit rows: %d", n)
+	}
+	// Used now.
+	if r := registerWithInvite(c, "carol@example.com", ownerPassword, tok, "198.51.100.30"); r.code != http.StatusNotFound {
+		t.Fatalf("reuse: %d %s", r.code, r.raw)
+	}
+}
+
+// T-12 (L2): wrong passwords for an existing account are limited per invitation, whatever the
+// client address.
+func TestIntegrationInviteExistingAccountLimit(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("inviteexistlimit"))
+	fake := clock.NewFake(time.Now())
+	c := newRegistrationServer(t, env, auth.Options{Clock: fake, IPLimiter: auth.NewLimiter(1000, time.Minute, 1000, fake),
+		InviteLimiter: auth.NewLimiter(3, time.Minute, 1000, fake)}, true, &lockedBuffer{})
+	c.register("dave@example.com")
+	owner := adminSession(c)
+	tok, _ := invite(t, c, owner, "viewer")
+	for i := range 3 {
+		if r := registerWithInvite(c, "dave@example.com", "a wrong passphrase", tok, fmt.Sprintf("203.0.113.%d", 60+i)); r.code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: %d %s", i, r.code, r.raw)
+		}
+	}
+	if r := registerWithInvite(c, "dave@example.com", ownerPassword, tok, "203.0.113.99"); r.code != http.StatusTooManyRequests {
+		t.Fatalf("fourth attempt on the invitation from a new address: %d %s", r.code, r.raw)
+	}
+}

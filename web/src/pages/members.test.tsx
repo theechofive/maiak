@@ -438,3 +438,84 @@ describe("invitation page", () => {
     expect(await screen.findByText(/This link is incomplete/)).toBeInTheDocument();
   });
 });
+
+describe("invitation page (T-12)", () => {
+  const preview = { organizationName: "Acme", role: "member", expiresAt: "2026-11-12T10:00:00Z" };
+
+  it("removes the token from the address bar and joins with an existing account", async () => {
+    window.history.replaceState(null, "", "/invite#TOKEN-123");
+    let attempts = 0;
+    const fetchMock = mockApi({
+      "GET /api/v1/auth/me": () => problem(401, "Not authenticated"),
+      "POST /api/v1/invitations/lookup": () => json(preview),
+      "POST /api/v1/auth/register": () =>
+        ++attempts === 1
+          ? problem(401, "Wrong login or password", {
+              type: "urn:maiak:problem:invalid-credentials",
+            })
+          : json({ ...session, role: "member" }, 201),
+      "GET /api/v1/monitors": () =>
+        json({ summary: { up: 0, down: 0, paused: 0, unknown: 0 }, items: [] }),
+    });
+    renderApp("/invite#TOKEN-123");
+    expect(await screen.findByRole("heading", { name: "Join Acme" })).toBeInTheDocument();
+    expect(window.location.hash).toBe("");
+    expect(window.location.pathname).toBe("/invite");
+
+    await userEvent.click(screen.getByRole("button", { name: "Join with it" }));
+    await userEvent.type(screen.getByLabelText("Email"), "old@example.com");
+    await userEvent.type(screen.getByLabelText("Password"), "wrong one");
+    await userEvent.click(screen.getByRole("button", { name: "Sign in and join Acme" }));
+    expect(await screen.findByText("Wrong email or password. Try again.")).toBeInTheDocument();
+    // Still on the page, not thrown out to the sign-in screen.
+    expect(screen.getByRole("heading", { name: "Join Acme" })).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText("Password"), "the right passphrase");
+    await userEvent.click(screen.getByRole("button", { name: "Sign in and join Acme" }));
+    expect(await screen.findByRole("heading", { name: "Monitors" })).toBeInTheDocument();
+    const sent = requests(fetchMock, "POST", "/api/v1/auth/register")[1]!;
+    expect(await sent.clone().json()).toEqual({
+      email: "old@example.com",
+      password: "the right passphrase",
+      inviteToken: "TOKEN-123",
+    });
+  });
+
+  it("explains a taken email with the wrong password on the new-account form", async () => {
+    mockApi({
+      "GET /api/v1/auth/me": () => problem(401, "Not authenticated"),
+      "POST /api/v1/invitations/lookup": () => json(preview),
+      "POST /api/v1/auth/register": () =>
+        problem(401, "Wrong login or password", { type: "urn:maiak:problem:invalid-credentials" }),
+    });
+    renderApp("/invite#TOKEN-123");
+    await screen.findByRole("heading", { name: "Join Acme" });
+    await userEvent.type(screen.getByLabelText("Email"), "old@example.com");
+    await userEvent.type(screen.getByLabelText("Password"), "a long passphrase");
+    await userEvent.type(screen.getByLabelText("Confirm password"), "a long passphrase");
+    await userEvent.click(screen.getByRole("button", { name: "Create account and join" }));
+    expect(
+      await screen.findByText(/already has an account and the password does not match/),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("session changes in other tabs (T-12)", () => {
+  it("reloads the session when another tab announces a change", async () => {
+    const fetchMock = mockApi({
+      ...as("owner"),
+      "GET /api/v1/monitors": () =>
+        json({ summary: { up: 0, down: 0, paused: 0, unknown: 0 }, items: [] }),
+    });
+    renderApp("/");
+    await waitFor(() => expect(requests(fetchMock, "GET", "/api/v1/monitors")).toHaveLength(1));
+    const meCalls = requests(fetchMock, "GET", "/api/v1/auth/me").length;
+    const other = new BroadcastChannel("maiak-session");
+    other.postMessage({ type: "session-changed" });
+    other.close();
+    await waitFor(() =>
+      expect(requests(fetchMock, "GET", "/api/v1/auth/me").length).toBeGreaterThan(meCalls),
+    );
+    await waitFor(() => expect(requests(fetchMock, "GET", "/api/v1/monitors")).toHaveLength(2));
+  });
+});

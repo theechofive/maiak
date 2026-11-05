@@ -196,8 +196,9 @@ func (s *Service) RevokeInvitation(ctx context.Context, a Actor, id uuid.UUID) e
 
 // invitationTarget is an open invitation found by its token before the tenant is known.
 type invitationTarget struct {
-	tenantID uuid.UUID
-	preview  InvitationPreview
+	invitationID uuid.UUID
+	tenantID     uuid.UUID
+	preview      InvitationPreview
 }
 
 // lookupInvitation finds an open invitation through auth_invitation_lookup. A malformed or
@@ -208,9 +209,8 @@ func (s *Service) lookupInvitation(ctx context.Context, token string) (invitatio
 	}
 	var t invitationTarget
 	err := db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
-		var id uuid.UUID
 		return tx.QueryRow(ctx, `SELECT invitation_id, tenant_id, tenant_name, role, expires_at FROM auth_invitation_lookup($1)`,
-			hashToken(token)).Scan(&id, &t.tenantID, &t.preview.OrganizationName, &t.preview.Role, &t.preview.ExpiresAt)
+			hashToken(token)).Scan(&t.invitationID, &t.tenantID, &t.preview.OrganizationName, &t.preview.Role, &t.preview.ExpiresAt)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return invitationTarget{}, ErrInvitationInvalid
@@ -254,6 +254,12 @@ func (s *Service) joinInvited(ctx context.Context, tx pgx.Tx, tenantID, userID u
 		if errors.Is(err, tenants.ErrNotFound) {
 			return "", ErrInvitationInvalid
 		}
+		return "", err
+	}
+	// The lookup ran before this transaction: the tenant may have been suspended since (T-12).
+	if t, err := tenants.Get(ctx, tx, tenantID); errors.Is(err, tenants.ErrNotFound) || (err == nil && t.Status != tenants.StatusActive) {
+		return "", ErrInvitationInvalid
+	} else if err != nil {
 		return "", err
 	}
 	q := authdb.New(tx)
@@ -300,6 +306,7 @@ func (s *Service) AcceptInvitation(ctx context.Context, p Principal, token strin
 	if err != nil {
 		return LoginResult{}, err
 	}
+	s.beforeJoin()
 	var res LoginResult
 	err = db.WithTenantTx(ctx, s.pool, t.tenantID, func(tx pgx.Tx) error {
 		q := authdb.New(tx)

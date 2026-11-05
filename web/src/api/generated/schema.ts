@@ -99,7 +99,11 @@ export interface paths {
      *     organization with the invited role, and the invitation is used up. This works also when
      *     registration is turned off, because the invitation is the authorization. An unknown,
      *     expired, used or revoked token is 404 `urn:maiak:problem:invitation-invalid`, and counts
-     *     against the per-client-IP invitation limit (429). Every attempt that reaches the password hash
+     *     against the per-client-IP invitation limit (429). When the email already has an account,
+     *     the password must be that account's password (checked like a login): the account joins the
+     *     organization and is signed in there; a wrong password is 401
+     *     `urn:maiak:problem:invalid-credentials` (the same answer as a failed login) and leaves the
+     *     invitation open. Failed attempts count per client IP, per invitation and per login. Every attempt that reaches the password hash
      *     counts against the per-client-IP limit of the login, and hashing shares the login's
      *     bounded queue (429 with Retry-After). No CSRF token is needed (there is no session yet).
      */
@@ -1769,6 +1773,7 @@ export interface operations {
         };
       };
       400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
       /** @description Registration is turned off (`urn:maiak:problem:registration-disabled`) */
       403: {
         headers: {

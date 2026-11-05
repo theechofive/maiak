@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   ALREADY_MEMBER_PROBLEM_TYPE,
@@ -9,7 +9,7 @@ import {
 } from "../api/client";
 import { lookupInvitation, queryKeys, type InvitationPreview } from "../api/endpoints";
 import { useAuth } from "../auth/AuthProvider";
-import AuthScreen, { AuthHeading, authLink } from "../components/AuthScreen";
+import AuthScreen, { AuthHeading, ShowPassword } from "../components/AuthScreen";
 import { useToast } from "../components/Toasts";
 import { Alert, Button, buttonClass, cx, Field, Input, Loading, Skeleton } from "../components/ui";
 import { formatDateTime, formatDuration } from "../lib/format";
@@ -26,11 +26,18 @@ import { PasswordField, registerErrors } from "./Register";
 
 /**
  * The page an invitation link opens (ADR-0102). The token is in the URL fragment, which the
- * browser never sends to a server; it goes to the API only in request bodies (R-213).
+ * browser never sends to a server; it goes to the API only in request bodies (R-213). It is read
+ * once into component state and removed from the address bar and the history entry (T-12), and
+ * never put into a redirect or router state.
  */
 export default function Invite() {
   const location = useLocation();
-  const token = location.hash.replace(/^#/, "");
+  const [token] = useState(() => location.hash.replace(/^#/, ""));
+  useEffect(() => {
+    if (globalThis.location?.hash) {
+      globalThis.history.replaceState(globalThis.history.state, "", "/invite");
+    }
+  }, []);
   const auth = useAuth();
   // Set while joining: the used link must not be looked up again when the session changes.
   const [joining, setJoining] = useState(false);
@@ -175,7 +182,28 @@ function AcceptAsUser({
   );
 }
 
+/** Joining without a session: a new account, or an existing account with its password (T-12). */
 function RegisterInvited({ token, preview }: { token: string; preview: InvitationPreview }) {
+  const [existing, setExisting] = useState(false);
+  return existing ? (
+    <ExistingAccount token={token} preview={preview} onNewAccount={() => setExisting(false)} />
+  ) : (
+    <NewAccount token={token} preview={preview} onExisting={() => setExisting(true)} />
+  );
+}
+
+const WRONG_PASSWORD =
+  "This email already has an account and the password does not match it. Enter that account's password, or use another email.";
+
+function NewAccount({
+  token,
+  preview,
+  onExisting,
+}: {
+  token: string;
+  preview: InvitationPreview;
+  onExisting: () => void;
+}) {
   const auth = useAuth();
   const navigate = useNavigate();
   const [values, setValues] = useState<RegisterFormValues>({
@@ -211,6 +239,8 @@ function RegisterInvited({ token, preview }: { token: string; preview: Invitatio
     } catch (err) {
       if (err instanceof ApiError && err.type === INVITATION_INVALID_PROBLEM_TYPE) {
         setGeneral("The invitation was used, revoked or expired meanwhile. Ask for a new link.");
+      } else if (err instanceof ApiError && err.status === 401) {
+        setGeneral(WRONG_PASSWORD);
       } else {
         const mapped = registerErrors(err);
         setErrors(mapped.fields);
@@ -226,9 +256,9 @@ function RegisterInvited({ token, preview }: { token: string; preview: Invitatio
       footer={
         <>
           Already have an account?{" "}
-          <Link to="/login" state={{ from: `/invite#${token}` }} className={authLink}>
-            Sign in to join
-          </Link>
+          <Button variant="link" onClick={onExisting}>
+            Join with it
+          </Button>
         </>
       }
     >
@@ -279,6 +309,116 @@ function RegisterInvited({ token, preview }: { token: string; preview: Invitatio
         </Field>
         <Button type="submit" busy={submitting} className="mt-1.5">
           {submitting ? "Creating account…" : "Create account and join"}
+        </Button>
+      </form>
+    </AuthScreen>
+  );
+}
+
+function ExistingAccount({
+  token,
+  preview,
+  onNewAccount,
+}: {
+  token: string;
+  preview: InvitationPreview;
+  onNewAccount: () => void;
+}) {
+  const auth = useAuth();
+  const navigate = useNavigate();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [shown, setShown] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const [submitting, setSubmitting] = useState(false);
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(undefined);
+    setSubmitting(true);
+    try {
+      // The registration call with the token checks an existing account's password like a login.
+      await auth.register(normalizeEmail(email), password, token);
+      navigate("/", { replace: true });
+    } catch (err) {
+      setSubmitting(false);
+      setPassword("");
+      if (err instanceof ApiError && (err.status === 401 || err.status === 422)) {
+        setError("Wrong email or password. Try again.");
+      } else if (err instanceof ApiError && err.type === INVITATION_INVALID_PROBLEM_TYPE) {
+        setError("The invitation was used, revoked or expired meanwhile. Ask for a new link.");
+      } else if (err instanceof ApiError && err.type === ALREADY_MEMBER_PROBLEM_TYPE) {
+        setError(
+          "This account is already a member, or cannot join other organizations. Sign in instead.",
+        );
+      } else if (err instanceof ApiError && err.status === 429) {
+        setError(
+          err.retryAfter
+            ? `Too many attempts. Try again in ${formatDuration(err.retryAfter)}.`
+            : "Too many attempts. Try again later.",
+        );
+      } else {
+        setError(errorMessage(err));
+      }
+    }
+  }
+
+  return (
+    <AuthScreen
+      footer={
+        <>
+          No account yet?{" "}
+          <Button variant="link" onClick={onNewAccount}>
+            Create one
+          </Button>
+        </>
+      }
+    >
+      <AuthHeading>Join {preview.organizationName}</AuthHeading>
+      <Offer preview={preview} />
+      <p className="text-muted-foreground">
+        Sign in with your account to join; your other organizations stay.
+      </p>
+      <form onSubmit={onSubmit} className="flex flex-col gap-[18px]">
+        {error && <Alert>{error}</Alert>}
+        <Field label="Email">
+          {(c) => (
+            <Input
+              {...c}
+              name="email"
+              type="email"
+              inputMode="email"
+              autoComplete="username"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              maxLength={EMAIL_MAX + 10}
+              required
+              readOnly={submitting}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          )}
+        </Field>
+        <Field label="Password">
+          {(c) => (
+            <Input
+              {...c}
+              name="password"
+              type={shown ? "text" : "password"}
+              autoComplete="current-password"
+              required
+              readOnly={submitting}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              action={
+                <ShowPassword shown={shown} controls={c.id} onToggle={() => setShown((v) => !v)} />
+              }
+            />
+          )}
+        </Field>
+        <Button type="submit" busy={submitting} className="mt-1.5">
+          {submitting ? "Joining…" : `Sign in and join ${preview.organizationName}`}
         </Button>
       </form>
     </AuthScreen>

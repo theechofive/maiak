@@ -653,3 +653,44 @@ func waitForLockWait(t *testing.T, env *pgtest.Env, fragment string) {
 	}
 	t.Fatalf("no backend waits for a lock in a query with %q", fragment)
 }
+
+// T-12 (M3): an organization suspended between the invitation's lookup and the accept
+// transaction is refused, and the invitation stays open.
+func TestIntegrationAcceptRefusesTenantSuspendedMeanwhile(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("auth_accept_suspended"))
+	ctx := context.Background()
+	hash, _ := crypto.HashPassword("admin password", cheap)
+	svc := newBootstrapped(t, env, "admin", hash)
+	ownerRes, err := svc.Register(ctx, auth.RegisterInput{Email: "owner@example.com", Password: "owner passphrase", IP: testIP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, token, err := svc.CreateInvitation(ctx, auth.Actor{TenantID: ownerRes.Tenant.ID, UserID: ownerRes.User.ID}, "viewer", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, err := svc.Register(ctx, auth.RegisterInput{Email: "guest@example.com", Password: "guest passphrase", IP: testIP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := svc.Authenticate(ctx, guest.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := env.AdminConn(t)
+	svc.SetBeforeJoin(func() {
+		pgtest.MustExec(t, admin, `UPDATE tenants SET status = 'suspended' WHERE id = '`+ownerRes.Tenant.ID.String()+`'`)
+	})
+	if _, err := svc.AcceptInvitation(ctx, p, token, testIP, ""); !errors.Is(err, auth.ErrInvitationInvalid) {
+		t.Fatalf("accept into a suspended tenant: %v", err)
+	}
+	var open, members int
+	if err := admin.QueryRow(ctx, `SELECT (SELECT count(*) FROM invitations WHERE accepted_at IS NULL),
+		(SELECT count(*) FROM memberships WHERE tenant_id = $1)`, ownerRes.Tenant.ID).Scan(&open, &members); err != nil || open != 1 || members != 1 {
+		t.Fatalf("open invitations %d, members %d, %v", open, members, err)
+	}
+	// The same for a registration through the link.
+	if _, err := svc.Register(ctx, auth.RegisterInput{Email: "new@example.com", Password: "new passphrase!", IP: testIP, InviteToken: token}); !errors.Is(err, auth.ErrInvitationInvalid) {
+		t.Fatalf("register into a suspended tenant: %v", err)
+	}
+}

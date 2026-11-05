@@ -21,6 +21,8 @@ export const INVITATION_INVALID_PROBLEM_TYPE = "urn:maiak:problem:invitation-inv
 export const ALREADY_MEMBER_PROBLEM_TYPE = "urn:maiak:problem:already-member";
 export const LAST_OWNER_PROBLEM_TYPE = "urn:maiak:problem:last-owner";
 const LOGIN_PATH = "/api/v1/auth/login";
+/** A wrong password for an existing account when joining through an invitation (T-12). */
+const REGISTER_PATH = "/api/v1/auth/register";
 
 // The CSRF token lives only in memory (ADR-0015): it is fetched again from /auth/me after a reload.
 let csrfToken: string | null = null;
@@ -159,7 +161,8 @@ export async function apiFetch(request: Request): Promise<Response> {
     headers.set("X-CSRF-Token", csrfToken);
   }
   const response = await fetch(new Request(request, { headers, credentials: "same-origin" }));
-  if (response.status === 401 && new URL(request.url).pathname !== LOGIN_PATH) {
+  const path = new URL(request.url).pathname;
+  if (response.status === 401 && path !== LOGIN_PATH && path !== REGISTER_PATH) {
     unauthorizedHandler?.();
   }
   return response;
