@@ -1,6 +1,6 @@
 # Phase 3: notification channels, agent, watchdog verification
 
-Decisions: [ADR-0099](../adr/0099-phase3-agent-channels.md). Conventions as in [README.md](README.md): one commit per task, independent review after each task, ledger entries for shortcuts. Public domain is later: everything is built and verified on the internal network, first in `klr-platform`.
+Decisions: [ADR-0101](../adr/0101-phase3-agent-channels.md). Conventions as in [README.md](README.md): one commit per task, independent review after each task, ledger entries for shortcuts. Public domain is later: everything is built and verified on the internal network, first in `klr-platform`.
 
 | ID | Task | Depends on | Status |
 |---|---|---|---|

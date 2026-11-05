@@ -1,4 +1,4 @@
-# ADR-0099: Phase 3: notification channels, in-cluster agent, watchdog verification
+# ADR-0101: Phase 3: notification channels, in-cluster agent, watchdog verification
 
 - Status: Accepted
 - Date: 2026-10-27
