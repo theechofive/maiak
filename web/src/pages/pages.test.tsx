@@ -64,8 +64,8 @@ const usageOf = (
   maxHeartbeats = 1,
 ) => ({
   plan,
-  limits: { monitors: maxMonitors, heartbeats: maxHeartbeats, channels: 1 },
-  usage: { monitors, heartbeats, channels: 1 },
+  limits: { monitors: maxMonitors, heartbeats: maxHeartbeats, channels: 1, members: 3 },
+  usage: { monitors, heartbeats, channels: 1, members: 1 },
 });
 
 describe("monitors list", () => {
@@ -721,6 +721,7 @@ describe("settings", () => {
       ["Monitors", "2", "3"],
       ["Heartbeat monitors", "0", "1"],
       ["Notification channels", "1", "1"],
+      ["Members and open invitations", "1", "3"],
     ]);
     expect(screen.getByText("Limit reached")).toBeInTheDocument();
   });
@@ -841,7 +842,7 @@ describe("settings", () => {
     await act(() => queryClient.invalidateQueries({ queryKey: ["channels"] }));
     queryClient.setQueryData(["usage"], {
       ...usageOf(0, 3),
-      usage: { monitors: 0, heartbeats: 0, channels: 0 },
+      usage: { monitors: 0, heartbeats: 0, channels: 0, members: 1 },
     });
     await userEvent.click(await screen.findByRole("button", { name: "Add channel" }));
     await userEvent.type(screen.getByLabelText("Name"), "x");

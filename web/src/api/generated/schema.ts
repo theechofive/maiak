@@ -93,7 +93,13 @@ export interface paths {
      *     An email that is already registered is answered with 409 `urn:maiak:problem:email-taken`:
      *     without verification, registration cannot hide whether an account exists. When
      *     registration is turned off (`MAIAK_REGISTRATION_ENABLED=false`) the answer is 403
-     *     `urn:maiak:problem:registration-disabled`. Every attempt that reaches the password hash
+     *     `urn:maiak:problem:registration-disabled`.
+     *
+     *     With `inviteToken` (ADR-0102) no organization is created: the user joins the inviting
+     *     organization with the invited role, and the invitation is used up. This works also when
+     *     registration is turned off, because the invitation is the authorization. An unknown,
+     *     expired, used or revoked token is 404 `urn:maiak:problem:invitation-invalid`, and counts
+     *     against the per-client-IP invitation limit (429). Every attempt that reaches the password hash
      *     counts against the per-client-IP limit of the login, and hashing shares the login's
      *     bounded queue (429 with Retry-After). No CSRF token is needed (there is no session yet).
      */
@@ -138,6 +144,52 @@ export interface paths {
     get: operations["getMe"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/auth/organizations": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Organizations of the current user
+     * @description Every organization (tenant) the user is a member of and that is not deleted, with the
+     *     user's role there and the tenant's status, sorted by name. `current` marks the one the
+     *     session is bound to. Any role.
+     */
+    get: operations["listOrganizations"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/auth/switch-organization": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Switch the session to another organization
+     * @description Checks that the user is a member of the organization and that it is active, then replaces
+     *     the session with a new one bound to it: a new `maiak_session` cookie and a new CSRF token
+     *     in the answer; the old session is deleted. 404 when the user is not a member of an
+     *     organization with that id (or it is deleted), 403 `urn:maiak:problem:account-suspended`
+     *     when it is suspended. Any role.
+     */
+    post: operations["switchOrganization"];
     delete?: never;
     options?: never;
     head?: never;
@@ -513,6 +565,213 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/members": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Members of the organization
+     * @description Every member with login, role and when they joined, oldest first. Any role.
+     */
+    get: operations["listMembers"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/members/{userId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description User id of the member; a value that is not a UUID is answered with 400 */
+        userId: components["parameters"]["MemberUserId"];
+      };
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /**
+     * Remove a member
+     * @description Admin or owner, with the rules of the role change (an admin cannot remove an owner, the
+     *     last owner cannot be removed, nor the platform admin). The member's sessions in this
+     *     organization end at once; the user and its other memberships stay. Audited as
+     *     `member.removed`. To leave the organization yourself, use `POST /api/v1/organization/leave`.
+     */
+    delete: operations["removeMember"];
+    options?: never;
+    head?: never;
+    /**
+     * Change a member's role
+     * @description Admin or owner. An admin may change only admins, members and viewers and may not grant
+     *     `owner` (403 `urn:maiak:problem:forbidden`). The organization always keeps an active
+     *     owner: demoting the last one is 409 `urn:maiak:problem:last-owner`. The platform admin's
+     *     role in the default organization cannot be changed (409 `urn:maiak:problem:system-admin`).
+     *     Audited as `member.role_changed`. The new role applies on the member's next request.
+     */
+    patch: operations["updateMember"];
+    trace?: never;
+  };
+  "/api/v1/invitations": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Invitations of the organization
+     * @description The newest 200 invitations with their state (open, accepted, revoked or expired). The link of an invitation is never shown again. Admin or owner.
+     */
+    get: operations["listInvitations"];
+    put?: never;
+    /**
+     * Invite someone
+     * @description Creates a single-use invitation with the role `admin`, `member` or `viewer` (`owner` is
+     *     granted by changing a member's role). It expires after 7 days. The answer carries `inviteUrl` with
+     *     the secret token in the URL fragment; it is shown only here (only its SHA-256 is stored)
+     *     and must be handed over like a password (R-213). No email is sent. Open invitations count
+     *     toward the member limit of the plan: 409 `urn:maiak:problem:plan-limit-reached` (`limit`
+     *     is `members`) when members plus open invitations already reach it. Audited as
+     *     `member.invited` (without the token). Admin or owner.
+     */
+    post: operations["createInvitation"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/invitations/{invitationId}/revoke": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Invitation id; a value that is not a UUID is answered with 400 */
+        invitationId: components["parameters"]["InvitationId"];
+      };
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Revoke an invitation
+     * @description The link stops working at once and the place it reserved is freed. Revoking a revoked or
+     *     expired invitation changes nothing (204); an accepted one is 409
+     *     `urn:maiak:problem:invitation-accepted` (remove the member instead). Audited as
+     *     `invitation.revoked`. Admin or owner.
+     */
+    post: operations["revokeInvitation"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/invitations/lookup": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * What an invitation link offers
+     * @description Public (no session): the organization name, role and expiry of an open invitation, for the
+     *     invitation page. The token travels in the body, never in a URL, so proxies do not log it.
+     *     Unknown, expired, used and revoked tokens get the same 404
+     *     `urn:maiak:problem:invitation-invalid`. Each 404 counts against a per-client-IP limit
+     *     (429 with Retry-After).
+     */
+    post: operations["lookupInvitation"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/invitations/accept": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Accept an invitation as the logged-in user
+     * @description The logged-in user joins the inviting organization with the invited role, the invitation
+     *     is used up, and the session switches to that organization (new cookie and CSRF token, the
+     *     old session is deleted). 404 `urn:maiak:problem:invitation-invalid` for an unknown,
+     *     expired, used or revoked token (counted against the per-client-IP limit, 429); 409
+     *     `urn:maiak:problem:already-member` when the user is already a member, or when the user is
+     *     the platform admin (who belongs to the default organization only); 409
+     *     `urn:maiak:problem:plan-limit-reached` when the organization's member limit was lowered
+     *     below its members. Audited as `member.joined`. Any role.
+     */
+    post: operations["acceptInvitation"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/organization": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /**
+     * Delete the organization
+     * @description Owner only. Soft delete, like the platform admin's (ADR-0097): nothing is erased, but no
+     *     member can use the organization any more, its monitors stop and its deliveries are not
+     *     sent. The session's cookie is cleared; members of other organizations can still log in
+     *     there. The default organization cannot be deleted (409
+     *     `urn:maiak:problem:protected-tenant`). Audited as `organization.deleted`.
+     */
+    delete: operations["deleteOrganization"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/organization/leave": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Leave the organization
+     * @description The logged-in user stops being a member; the session ends and the cookie is cleared. The
+     *     last active owner cannot leave (409 `urn:maiak:problem:last-owner`), nor the platform
+     *     admin (409 `urn:maiak:problem:system-admin`). Audited as `member.removed`. Any role.
+     */
+    post: operations["leaveOrganization"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/admin/stats": {
     parameters: {
       query?: never;
@@ -680,6 +939,11 @@ export interface components {
        * @description 12-128 characters, not equal to the email; checked by the server (422)
        */
       password: string;
+      /**
+       * Format: password
+       * @description The token of an invitation link; join that organization instead of creating one
+       */
+      inviteToken?: string;
     };
     PublicConfig: {
       /** @description Whether `POST /api/v1/auth/register` accepts registrations */
@@ -1053,6 +1317,8 @@ export interface components {
       heartbeats: number;
       /** @description Notification channels (deleted channels do not count) */
       channels: number;
+      /** @description Members plus open invitations (an open invitation reserves a place) */
+      members: number;
     };
     /**
      * @description `suspended`: the tenant's users cannot log in and nothing of it is checked. A deleted tenant is also `suspended` and has `deletedAt`.
@@ -1148,6 +1414,90 @@ export interface components {
       /** @description Every plan, also those without tenants */
       plans: components["schemas"]["AdminPlanCount"][];
     };
+    Organization: {
+      /** Format: uuid */
+      id: string;
+      slug: string;
+      name: string;
+      role: components["schemas"]["MembershipRole"];
+      status: components["schemas"]["TenantStatus"];
+      /** @description The organization the session is bound to */
+      current: boolean;
+    };
+    OrganizationList: {
+      items: components["schemas"]["Organization"][];
+    };
+    SwitchOrganizationRequest: {
+      /** Format: uuid */
+      tenantId: string;
+    };
+    Member: {
+      /** Format: uuid */
+      userId: string;
+      login: string;
+      displayName: string;
+      role: components["schemas"]["MembershipRole"];
+      /** Format: date-time */
+      joinedAt: string;
+      /** @description The system admin; its role cannot be changed and it cannot be removed */
+      isPlatformAdmin: boolean;
+    };
+    MemberList: {
+      items: components["schemas"]["Member"][];
+    };
+    MemberUpdate: {
+      role: components["schemas"]["MembershipRole"];
+    };
+    /** @enum {string} */
+    InvitationRole: "admin" | "member" | "viewer";
+    /** @enum {string} */
+    InvitationStatus: "open" | "accepted" | "revoked" | "expired";
+    Invitation: {
+      /** Format: uuid */
+      id: string;
+      role: components["schemas"]["InvitationRole"];
+      /** @description The admin's own note about whom the link is for; empty when none */
+      label: string;
+      status: components["schemas"]["InvitationStatus"];
+      /** Format: date-time */
+      createdAt: string;
+      /** Format: date-time */
+      expiresAt: string;
+      /** @description Login of the member who created it */
+      createdBy: string;
+      /** @description Login of the user who joined with it */
+      acceptedBy: string | null;
+      /** Format: date-time */
+      acceptedAt: string | null;
+      /** Format: date-time */
+      revokedAt: string | null;
+    };
+    InvitationList: {
+      items: components["schemas"]["Invitation"][];
+    };
+    InvitationCreate: {
+      role: components["schemas"]["InvitationRole"];
+      /** @description An optional note for yourself, for example the person's name */
+      label?: string;
+    };
+    InvitationCreated: {
+      invitation: components["schemas"]["Invitation"];
+      /**
+       * @description The secret invitation link (token in the URL fragment); shown once, hand it over like a password
+       * @example https://maiak.klr-ops.net/invite#3q2-7wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+       */
+      inviteUrl: string;
+    };
+    InvitationToken: {
+      /** Format: password */
+      token: string;
+    };
+    InvitationPreview: {
+      organizationName: string;
+      role: components["schemas"]["InvitationRole"];
+      /** Format: date-time */
+      expiresAt: string;
+    };
     FieldError: {
       /**
        * @description Dotted path of the request body field
@@ -1175,7 +1525,7 @@ export interface components {
        * @description Which plan limit was reached (only with `urn:maiak:problem:plan-limit-reached`)
        * @enum {string}
        */
-      limit?: "monitors" | "heartbeats" | "channels";
+      limit?: "monitors" | "heartbeats" | "channels" | "members";
       /** @description The value of that limit for the tenant (only with `urn:maiak:problem:plan-limit-reached`) */
       max?: number;
     };
@@ -1294,6 +1644,10 @@ export interface components {
     ChannelId: string;
     /** @description Tenant id; a value that is not a UUID is answered with 400 */
     TenantId: string;
+    /** @description User id of the member; a value that is not a UUID is answered with 400 */
+    MemberUserId: string;
+    /** @description Invitation id; a value that is not a UUID is answered with 400 */
+    InvitationId: string;
     /** @description Case-insensitive substring to search for; empty lists everything */
     AdminQuery: string;
     /** @description Page size */
@@ -1424,7 +1778,19 @@ export interface operations {
           "application/problem+json": components["schemas"]["Problem"];
         };
       };
-      /** @description The email is already registered (`urn:maiak:problem:email-taken`) */
+      /** @description The invitation token is unknown, expired, used or revoked (`urn:maiak:problem:invitation-invalid`) */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /**
+       * @description The email is already registered (`urn:maiak:problem:email-taken`), or the invited
+       *     organization has reached its member limit (`urn:maiak:problem:plan-limit-reached`)
+       */
       409: {
         headers: {
           [name: string]: unknown;
@@ -1483,6 +1849,62 @@ export interface operations {
         };
       };
       401: components["responses"]["Unauthorized"];
+      default: components["responses"]["Error"];
+    };
+  };
+  listOrganizations: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The user's organizations */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OrganizationList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      default: components["responses"]["Error"];
+    };
+  };
+  switchOrganization: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SwitchOrganizationRequest"];
+      };
+    };
+    responses: {
+      /** @description Switched; the answer describes the new session */
+      200: {
+        headers: {
+          /** @description The new session cookie (`maiak_session`, HttpOnly, SameSite=Lax) */
+          "Set-Cookie"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SessionInfo"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
       default: components["responses"]["Error"];
     };
   };
@@ -2059,6 +2481,298 @@ export interface operations {
       403: components["responses"]["Forbidden"];
       404: components["responses"]["NotFound"];
       429: components["responses"]["TooManyRequests"];
+      default: components["responses"]["Error"];
+    };
+  };
+  listMembers: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The members */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MemberList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      default: components["responses"]["Error"];
+    };
+  };
+  removeMember: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description User id of the member; a value that is not a UUID is answered with 400 */
+        userId: components["parameters"]["MemberUserId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Removed */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      default: components["responses"]["Error"];
+    };
+  };
+  updateMember: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description User id of the member; a value that is not a UUID is answered with 400 */
+        userId: components["parameters"]["MemberUserId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["MemberUpdate"];
+      };
+    };
+    responses: {
+      /** @description The member after the change */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Member"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      default: components["responses"]["Error"];
+    };
+  };
+  listInvitations: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The invitations */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["InvitationList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      default: components["responses"]["Error"];
+    };
+  };
+  createInvitation: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["InvitationCreate"];
+      };
+    };
+    responses: {
+      /** @description The invitation and its link, shown once */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["InvitationCreated"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      409: components["responses"]["PlanLimitReached"];
+      422: components["responses"]["UnprocessableEntity"];
+      default: components["responses"]["Error"];
+    };
+  };
+  revokeInvitation: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description Invitation id; a value that is not a UUID is answered with 400 */
+        invitationId: components["parameters"]["InvitationId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Revoked */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      default: components["responses"]["Error"];
+    };
+  };
+  lookupInvitation: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["InvitationToken"];
+      };
+    };
+    responses: {
+      /** @description The open invitation */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["InvitationPreview"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      404: components["responses"]["NotFound"];
+      429: components["responses"]["TooManyRequests"];
+      default: components["responses"]["Error"];
+    };
+  };
+  acceptInvitation: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["InvitationToken"];
+      };
+    };
+    responses: {
+      /** @description Joined; the answer describes the new session */
+      200: {
+        headers: {
+          /** @description The new session cookie (`maiak_session`, HttpOnly, SameSite=Lax) */
+          "Set-Cookie"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SessionInfo"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      429: components["responses"]["TooManyRequests"];
+      default: components["responses"]["Error"];
+    };
+  };
+  deleteOrganization: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Deleted */
+      204: {
+        headers: {
+          /** @description Expires the session cookie */
+          "Set-Cookie"?: string;
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      409: components["responses"]["Conflict"];
+      default: components["responses"]["Error"];
+    };
+  };
+  leaveOrganization: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Left */
+      204: {
+        headers: {
+          /** @description Expires the session cookie */
+          "Set-Cookie"?: string;
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      409: components["responses"]["Conflict"];
       default: components["responses"]["Error"];
     };
   };

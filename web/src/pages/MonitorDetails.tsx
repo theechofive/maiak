@@ -76,6 +76,8 @@ import {
 } from "../lib/monitors";
 import { axisLabels, incidentSpans, seriesSpan } from "../lib/ribbon";
 import { useNow } from "../lib/useNow";
+import { useAuth } from "../auth/AuthProvider";
+import { abilities, ROLE_HINTS } from "../lib/roles";
 
 const RANGES: { value: StatsRange; label: string; name: string; bucket: string }[] = [
   { value: "24h", label: "24h", name: "24 hours", bucket: "15 min" },
@@ -238,6 +240,7 @@ function Header({
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const toast = useToast();
+  const canEdit = abilities(useAuth().session).editMonitors;
   const [confirming, setConfirming] = useState(false);
   const heartbeat = isHeartbeat(monitor);
 
@@ -297,17 +300,23 @@ function Header({
             <span className="text-caption text-muted-foreground">{checkSettings(monitor)}</span>
           )}
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Link to={`/monitors/${monitor.id}/edit`} className={buttonClass("secondary")}>
-            Edit
-          </Link>
-          <Button variant="secondary" busy={toggle.isPending} onClick={() => toggle.mutate()}>
-            {monitor.paused ? "Resume" : "Pause"}
-          </Button>
-          <Button variant="ghost-destructive" onClick={() => setConfirming(true)}>
-            Delete
-          </Button>
-        </div>
+        {canEdit ? (
+          <div className="flex flex-wrap gap-2">
+            <Link to={`/monitors/${monitor.id}/edit`} className={buttonClass("secondary")}>
+              Edit
+            </Link>
+            <Button variant="secondary" busy={toggle.isPending} onClick={() => toggle.mutate()}>
+              {monitor.paused ? "Resume" : "Pause"}
+            </Button>
+            <Button variant="ghost-destructive" onClick={() => setConfirming(true)}>
+              Delete
+            </Button>
+          </div>
+        ) : (
+          <p className="max-w-[280px] text-caption text-muted-foreground">
+            {ROLE_HINTS.editMonitors}
+          </p>
+        )}
       </div>
       {confirming && (
         <ConfirmDialog
@@ -566,6 +575,7 @@ function IncidentLane({
 
 function HeartbeatSection({ monitor, now }: { monitor: MonitorDetail; now: number }) {
   const toast = useToast();
+  const canEdit = abilities(useAuth().session).editMonitors;
   const [regenerating, setRegenerating] = useState(false);
   const [newUrl, setNewUrl] = useState<string | undefined>();
   const deadline = heartbeatDeadline(monitor);
@@ -615,7 +625,7 @@ function HeartbeatSection({ monitor, now }: { monitor: MonitorDetail; now: numbe
             I saved the URL, hide it
           </Button>
         </HeartbeatUrlPanel>
-      ) : (
+      ) : canEdit ? (
         <div className="max-w-[560px]">
           <WriteOnlyValue
             label="Heartbeat URL"
@@ -624,6 +634,10 @@ function HeartbeatSection({ monitor, now }: { monitor: MonitorDetail; now: numbe
             onReplace={() => setRegenerating(true)}
           />
         </div>
+      ) : (
+        <p className="text-caption text-muted-foreground">
+          The heartbeat URL is secret and shown only to whoever creates or regenerates it.
+        </p>
       )}
       {regenerating && (
         <ConfirmDialog

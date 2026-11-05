@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Maiak API
-  version: 0.5.0
+  version: 0.6.0
   description: |
     REST API of Maiak, the multi-tenant uptime-monitoring service. This file is the source of
     truth: the Go server and the TypeScript client are generated from it (ADR-0008).
@@ -19,6 +19,12 @@ info:
 
     Field names of the monitor, check, incident and channel resources are camelCase. The auth
     resources predate that convention and keep their snake_case names (ADR-0017).
+
+    Roles (ADR-0102): every operation that needs a session has a minimum role of the session's
+    membership in its organization (tenant). `viewer` reads; `member` also creates, edits,
+    pauses and deletes monitors; `admin` also manages notification channels, members and
+    invitations; `owner` also deletes the organization and grants or revokes `owner`. A role below
+    the minimum gets 403 `urn:maiak:problem:forbidden`. A role change applies on the next request.
   contact:
     name: Maiak maintainers
     url: https://github.com/theechofive/maiak
@@ -29,7 +35,12 @@ tags:
   - name: system
     description: Service metadata
   - name: auth
-    description: Login, logout and the current session
+    description: Login, logout, the current session and the organizations of the user
+  - name: members
+    description: |
+      Members of the organization, their roles and invitations (ADR-0102). Roles are `owner`,
+      `admin`, `member` and `viewer`; every operation has a minimum role, and a session whose role
+      is below it gets 403 `urn:maiak:problem:forbidden`.
   - name: monitors
     description: HTTPS and heartbeat (watchdog) monitors, their status, statistics, checks and incidents
   - name: heartbeat
@@ -141,7 +152,13 @@ paths:
         An email that is already registered is answered with 409 `urn:maiak:problem:email-taken`:
         without verification, registration cannot hide whether an account exists. When
         registration is turned off (`MAIAK_REGISTRATION_ENABLED=false`) the answer is 403
-        `urn:maiak:problem:registration-disabled`. Every attempt that reaches the password hash
+        `urn:maiak:problem:registration-disabled`.
+
+        With `inviteToken` (ADR-0102) no organization is created: the user joins the inviting
+        organization with the invited role, and the invitation is used up. This works also when
+        registration is turned off, because the invitation is the authorization. An unknown,
+        expired, used or revoked token is 404 `urn:maiak:problem:invitation-invalid`, and counts
+        against the per-client-IP invitation limit (429). Every attempt that reaches the password hash
         counts against the per-client-IP limit of the login, and hashing shares the login's
         bounded queue (429 with Retry-After). No CSRF token is needed (there is no session yet).
       tags: [auth]
@@ -172,8 +189,16 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+        "404":
+          description: The invitation token is unknown, expired, used or revoked (`urn:maiak:problem:invitation-invalid`)
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
         "409":
-          description: The email is already registered (`urn:maiak:problem:email-taken`)
+          description: |
+            The email is already registered (`urn:maiak:problem:email-taken`), or the invited
+            organization has reached its member limit (`urn:maiak:problem:plan-limit-reached`)
           content:
             application/problem+json:
               schema:
@@ -224,6 +249,70 @@ paths:
                 $ref: "#/components/schemas/SessionInfo"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/organizations:
+    get:
+      operationId: listOrganizations
+      summary: Organizations of the current user
+      description: |
+        Every organization (tenant) the user is a member of and that is not deleted, with the
+        user's role there and the tenant's status, sorted by name. `current` marks the one the
+        session is bound to. Any role.
+      tags: [auth]
+      responses:
+        "200":
+          description: The user's organizations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/switch-organization:
+    post:
+      operationId: switchOrganization
+      summary: Switch the session to another organization
+      description: |
+        Checks that the user is a member of the organization and that it is active, then replaces
+        the session with a new one bound to it: a new `maiak_session` cookie and a new CSRF token
+        in the answer; the old session is deleted. 404 when the user is not a member of an
+        organization with that id (or it is deleted), 403 `urn:maiak:problem:account-suspended`
+        when it is suspended. Any role.
+      tags: [auth]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SwitchOrganizationRequest"
+      responses:
+        "200":
+          description: Switched; the answer describes the new session
+          headers:
+            Set-Cookie:
+              description: The new session cookie (`maiak_session`, HttpOnly, SameSite=Lax)
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionInfo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
         default:
           $ref: "#/components/responses/Error"
   /api/v1/monitors:
@@ -820,6 +909,334 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/members:
+    get:
+      operationId: listMembers
+      summary: Members of the organization
+      description: Every member with login, role and when they joined, oldest first. Any role.
+      tags: [members]
+      responses:
+        "200":
+          description: The members
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/members/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/MemberUserId"
+    patch:
+      operationId: updateMember
+      summary: Change a member's role
+      description: |
+        Admin or owner. An admin may change only admins, members and viewers and may not grant
+        `owner` (403 `urn:maiak:problem:forbidden`). The organization always keeps an active
+        owner: demoting the last one is 409 `urn:maiak:problem:last-owner`. The platform admin's
+        role in the default organization cannot be changed (409 `urn:maiak:problem:system-admin`).
+        Audited as `member.role_changed`. The new role applies on the member's next request.
+      tags: [members]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MemberUpdate"
+      responses:
+        "200":
+          description: The member after the change
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Member"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: removeMember
+      summary: Remove a member
+      description: |
+        Admin or owner, with the rules of the role change (an admin cannot remove an owner, the
+        last owner cannot be removed, nor the platform admin). The member's sessions in this
+        organization end at once; the user and its other memberships stay. Audited as
+        `member.removed`. To leave the organization yourself, use `POST /api/v1/organization/leave`.
+      tags: [members]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "204":
+          description: Removed
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/invitations:
+    get:
+      operationId: listInvitations
+      summary: Invitations of the organization
+      description: The newest 200 invitations with their state (open, accepted, revoked or expired). The link of an invitation is never shown again. Admin or owner.
+      tags: [members]
+      responses:
+        "200":
+          description: The invitations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createInvitation
+      summary: Invite someone
+      description: |
+        Creates a single-use invitation with the role `admin`, `member` or `viewer` (`owner` is
+        granted by changing a member's role). It expires after 7 days. The answer carries `inviteUrl` with
+        the secret token in the URL fragment; it is shown only here (only its SHA-256 is stored)
+        and must be handed over like a password (R-213). No email is sent. Open invitations count
+        toward the member limit of the plan: 409 `urn:maiak:problem:plan-limit-reached` (`limit`
+        is `members`) when members plus open invitations already reach it. Audited as
+        `member.invited` (without the token). Admin or owner.
+      tags: [members]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InvitationCreate"
+      responses:
+        "201":
+          description: The invitation and its link, shown once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationCreated"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/PlanLimitReached"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/invitations/{invitationId}/revoke:
+    parameters:
+      - $ref: "#/components/parameters/InvitationId"
+    post:
+      operationId: revokeInvitation
+      summary: Revoke an invitation
+      description: |
+        The link stops working at once and the place it reserved is freed. Revoking a revoked or
+        expired invitation changes nothing (204); an accepted one is 409
+        `urn:maiak:problem:invitation-accepted` (remove the member instead). Audited as
+        `invitation.revoked`. Admin or owner.
+      tags: [members]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "204":
+          description: Revoked
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/invitations/lookup:
+    post:
+      operationId: lookupInvitation
+      summary: What an invitation link offers
+      description: |
+        Public (no session): the organization name, role and expiry of an open invitation, for the
+        invitation page. The token travels in the body, never in a URL, so proxies do not log it.
+        Unknown, expired, used and revoked tokens get the same 404
+        `urn:maiak:problem:invitation-invalid`. Each 404 counts against a per-client-IP limit
+        (429 with Retry-After).
+      tags: [members]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InvitationToken"
+      responses:
+        "200":
+          description: The open invitation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationPreview"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/invitations/accept:
+    post:
+      operationId: acceptInvitation
+      summary: Accept an invitation as the logged-in user
+      description: |
+        The logged-in user joins the inviting organization with the invited role, the invitation
+        is used up, and the session switches to that organization (new cookie and CSRF token, the
+        old session is deleted). 404 `urn:maiak:problem:invitation-invalid` for an unknown,
+        expired, used or revoked token (counted against the per-client-IP limit, 429); 409
+        `urn:maiak:problem:already-member` when the user is already a member, or when the user is
+        the platform admin (who belongs to the default organization only); 409
+        `urn:maiak:problem:plan-limit-reached` when the organization's member limit was lowered
+        below its members. Audited as `member.joined`. Any role.
+      tags: [members]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InvitationToken"
+      responses:
+        "200":
+          description: Joined; the answer describes the new session
+          headers:
+            Set-Cookie:
+              description: The new session cookie (`maiak_session`, HttpOnly, SameSite=Lax)
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionInfo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/organization:
+    delete:
+      operationId: deleteOrganization
+      summary: Delete the organization
+      description: |
+        Owner only. Soft delete, like the platform admin's (ADR-0097): nothing is erased, but no
+        member can use the organization any more, its monitors stop and its deliveries are not
+        sent. The session's cookie is cleared; members of other organizations can still log in
+        there. The default organization cannot be deleted (409
+        `urn:maiak:problem:protected-tenant`). Audited as `organization.deleted`.
+      tags: [members]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "204":
+          description: Deleted
+          headers:
+            Set-Cookie:
+              description: Expires the session cookie
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/organization/leave:
+    post:
+      operationId: leaveOrganization
+      summary: Leave the organization
+      description: |
+        The logged-in user stops being a member; the session ends and the cookie is cleared. The
+        last active owner cannot leave (409 `urn:maiak:problem:last-owner`), nor the platform
+        admin (409 `urn:maiak:problem:system-admin`). Audited as `member.removed`. Any role.
+      tags: [members]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "204":
+          description: Left
+          headers:
+            Set-Cookie:
+              description: Expires the session cookie
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/admin/stats:
     get:
       operationId: adminGetStats
@@ -1084,6 +1501,22 @@ components:
       schema:
         type: string
         format: uuid
+    MemberUserId:
+      name: userId
+      in: path
+      required: true
+      description: User id of the member; a value that is not a UUID is answered with 400
+      schema:
+        type: string
+        format: uuid
+    InvitationId:
+      name: invitationId
+      in: path
+      required: true
+      description: Invitation id; a value that is not a UUID is answered with 400
+      schema:
+        type: string
+        format: uuid
     AdminQuery:
       name: query
       in: query
@@ -1245,6 +1678,12 @@ components:
           description: 12-128 characters, not equal to the email; checked by the server (422)
           minLength: 1
           maxLength: 1024
+        inviteToken:
+          type: string
+          format: password
+          description: The token of an invitation link; join that organization instead of creating one
+          minLength: 1
+          maxLength: 128
     PublicConfig:
       type: object
       additionalProperties: false
@@ -1915,7 +2354,7 @@ components:
     ResourceCounts:
       type: object
       additionalProperties: false
-      required: [monitors, heartbeats, channels]
+      required: [monitors, heartbeats, channels, members]
       properties:
         monitors:
           type: integer
@@ -1929,6 +2368,10 @@ components:
           type: integer
           minimum: 0
           description: Notification channels (deleted channels do not count)
+        members:
+          type: integer
+          minimum: 0
+          description: Members plus open invitations (an open invitation reserves a place)
     TenantStatus:
       type: string
       description: "`suspended`: the tenant's users cannot log in and nothing of it is checked. A deleted tenant is also `suspended` and has `deletedAt`."
@@ -2097,6 +2540,173 @@ components:
           description: Every plan, also those without tenants
           items:
             $ref: "#/components/schemas/AdminPlanCount"
+    Organization:
+      type: object
+      additionalProperties: false
+      required: [id, slug, name, role, status, current]
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+        name:
+          type: string
+        role:
+          $ref: "#/components/schemas/MembershipRole"
+        status:
+          $ref: "#/components/schemas/TenantStatus"
+        current:
+          type: boolean
+          description: The organization the session is bound to
+    OrganizationList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Organization"
+    SwitchOrganizationRequest:
+      type: object
+      additionalProperties: false
+      required: [tenantId]
+      properties:
+        tenantId:
+          type: string
+          format: uuid
+    Member:
+      type: object
+      additionalProperties: false
+      required: [userId, login, displayName, role, joinedAt, isPlatformAdmin]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        login:
+          type: string
+        displayName:
+          type: string
+        role:
+          $ref: "#/components/schemas/MembershipRole"
+        joinedAt:
+          type: string
+          format: date-time
+        isPlatformAdmin:
+          type: boolean
+          description: The system admin; its role cannot be changed and it cannot be removed
+    MemberList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Member"
+    MemberUpdate:
+      type: object
+      additionalProperties: false
+      required: [role]
+      properties:
+        role:
+          $ref: "#/components/schemas/MembershipRole"
+    InvitationRole:
+      type: string
+      enum: [admin, member, viewer]
+    InvitationStatus:
+      type: string
+      enum: [open, accepted, revoked, expired]
+    Invitation:
+      type: object
+      additionalProperties: false
+      required: [id, role, label, status, createdAt, expiresAt, createdBy, acceptedBy, acceptedAt, revokedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        role:
+          $ref: "#/components/schemas/InvitationRole"
+        label:
+          type: string
+          description: The admin's own note about whom the link is for; empty when none
+        status:
+          $ref: "#/components/schemas/InvitationStatus"
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+          description: Login of the member who created it
+        acceptedBy:
+          type: string
+          nullable: true
+          description: Login of the user who joined with it
+        acceptedAt:
+          type: string
+          format: date-time
+          nullable: true
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+    InvitationList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Invitation"
+    InvitationCreate:
+      type: object
+      additionalProperties: false
+      required: [role]
+      properties:
+        role:
+          $ref: "#/components/schemas/InvitationRole"
+        label:
+          type: string
+          maxLength: 80
+          description: An optional note for yourself, for example the person's name
+    InvitationCreated:
+      type: object
+      additionalProperties: false
+      required: [invitation, inviteUrl]
+      properties:
+        invitation:
+          $ref: "#/components/schemas/Invitation"
+        inviteUrl:
+          type: string
+          description: The secret invitation link (token in the URL fragment); shown once, hand it over like a password
+          example: https://maiak.klr-ops.net/invite#3q2-7wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+    InvitationToken:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
+          format: password
+          minLength: 1
+          maxLength: 128
+    InvitationPreview:
+      type: object
+      additionalProperties: false
+      required: [organizationName, role, expiresAt]
+      properties:
+        organizationName:
+          type: string
+        role:
+          $ref: "#/components/schemas/InvitationRole"
+        expiresAt:
+          type: string
+          format: date-time
     FieldError:
       type: object
       additionalProperties: false
@@ -2137,7 +2747,7 @@ components:
             $ref: "#/components/schemas/FieldError"
         limit:
           type: string
-          enum: [monitors, heartbeats, channels]
+          enum: [monitors, heartbeats, channels, members]
           description: Which plan limit was reached (only with `urn:maiak:problem:plan-limit-reached`)
         max:
           type: integer

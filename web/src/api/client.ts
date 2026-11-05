@@ -16,6 +16,10 @@ export const REGISTRATION_DISABLED_PROBLEM_TYPE = "urn:maiak:problem:registratio
 /** Platform admin problems (P-04, ADR-0097). */
 export const ACCOUNT_SUSPENDED_PROBLEM_TYPE = "urn:maiak:problem:account-suspended";
 export const FORBIDDEN_PROBLEM_TYPE = "urn:maiak:problem:forbidden";
+/** Members and invitations (T-01, ADR-0102). */
+export const INVITATION_INVALID_PROBLEM_TYPE = "urn:maiak:problem:invitation-invalid";
+export const ALREADY_MEMBER_PROBLEM_TYPE = "urn:maiak:problem:already-member";
+export const LAST_OWNER_PROBLEM_TYPE = "urn:maiak:problem:last-owner";
 const LOGIN_PATH = "/api/v1/auth/login";
 
 // The CSRF token lives only in memory (ADR-0015): it is fetched again from /auth/me after a reload.
@@ -87,7 +91,7 @@ function isFieldError(value: unknown): value is FieldError {
   return typeof v.field === "string" && typeof v.message === "string";
 }
 
-const PLAN_RESOURCES = new Set<unknown>(["monitors", "heartbeats", "channels"]);
+const PLAN_RESOURCES = new Set<unknown>(["monitors", "heartbeats", "channels", "members"]);
 
 function isPlanResource(value: unknown): value is NonNullable<Problem["limit"]> {
   return PLAN_RESOURCES.has(value);
@@ -97,6 +101,7 @@ const PLAN_RESOURCE_NAMES: Record<NonNullable<Problem["limit"]>, [string, string
   monitors: ["monitor", "monitors"],
   heartbeats: ["heartbeat monitor", "heartbeat monitors"],
   channels: ["notification channel", "notification channels"],
+  members: ["member", "members"],
 };
 
 /** A user-facing message for a plan-limit problem, or undefined for any other error. */
@@ -105,7 +110,12 @@ export function planLimitMessage(err: unknown): string | undefined {
   if (!err.limit || err.max === undefined) return err.detail ?? err.title;
   const [one, many] = PLAN_RESOURCE_NAMES[err.limit];
   const what = `${err.max} ${err.max === 1 ? one : many}`;
-  const hint = err.limit === "channels" ? "" : ` Delete a ${one} to add a new one.`;
+  const hint =
+    err.limit === "channels"
+      ? ""
+      : err.limit === "members"
+        ? " Open invitations count too: revoke one or remove a member to invite someone new."
+        : ` Delete a ${one} to add a new one.`;
   return `Your plan allows at most ${what}, and the limit is reached.${hint}`;
 }
 

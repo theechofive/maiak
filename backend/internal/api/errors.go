@@ -16,6 +16,7 @@ import (
 
 	"github.com/theechofive/maiak/backend/internal/admin"
 	"github.com/theechofive/maiak/backend/internal/auth"
+	"github.com/theechofive/maiak/backend/internal/authz"
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/notify"
 	"github.com/theechofive/maiak/backend/internal/plans"
@@ -48,6 +49,10 @@ const (
 	problemProtectedTenant    = "urn:maiak:problem:protected-tenant"
 	problemSystemAdmin        = "urn:maiak:problem:system-admin"
 	problemTenantDeleted      = "urn:maiak:problem:tenant-deleted"
+	problemInvitationInvalid  = "urn:maiak:problem:invitation-invalid"
+	problemInvitationAccepted = "urn:maiak:problem:invitation-accepted"
+	problemAlreadyMember      = "urn:maiak:problem:already-member"
+	problemLastOwner          = "urn:maiak:problem:last-owner"
 	problemInternal           = "urn:maiak:problem:internal"
 )
 
@@ -79,6 +84,7 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 	var valErr *validation.Error
 	var limitErr *plans.LimitError
 	var sendErr *notify.SendError
+	var roleErr *roleError
 	switch {
 	case errors.As(err, &badReq):
 		p.Type, p.Title, p.Status, p.Detail = problemBadRequest, "Bad request", http.StatusBadRequest, badReq.detail
@@ -100,6 +106,30 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 		// Only after a correct password (auth.Login), so it reveals nothing to a guess.
 		p.Type, p.Title, p.Status = problemAccountSuspended, "Account suspended", http.StatusForbidden
 		p.Detail = "This workspace was suspended by the platform administrator. Contact them to restore access."
+	case errors.As(err, &roleErr):
+		p.Type, p.Title, p.Status = problemForbidden, "Not allowed", http.StatusForbidden
+		p.Detail = fmt.Sprintf("This needs the %s role or higher in this organization.", roleErr.required)
+	case errors.Is(err, authz.ErrForbidden):
+		p.Type, p.Title, p.Status = problemForbidden, "Not allowed", http.StatusForbidden
+		p.Detail = "Your role does not allow this: admins cannot change owners, and nobody can grant a role above their own."
+	case errors.Is(err, auth.ErrInvitationInvalid):
+		p.Type, p.Title, p.Status = problemInvitationInvalid, "This invitation link is not valid", http.StatusNotFound
+		p.Detail = "It may have expired, been used or been revoked. Ask for a new link."
+	case errors.Is(err, auth.ErrInvitationAccepted):
+		p.Type, p.Title, p.Status = problemInvitationAccepted, "The invitation was already used", http.StatusConflict
+		p.Detail = "Remove the member instead."
+	case errors.Is(err, auth.ErrAlreadyMember):
+		p.Type, p.Title, p.Status = problemAlreadyMember, "Already a member", http.StatusConflict
+		p.Detail = "You are already a member of this organization, or your account cannot join other organizations."
+	case errors.Is(err, auth.ErrLastOwner):
+		p.Type, p.Title, p.Status = problemLastOwner, "The organization needs an owner", http.StatusConflict
+		p.Detail = "Make another member an owner first."
+	case errors.Is(err, auth.ErrSystemAdminMember):
+		p.Type, p.Title, p.Status = problemSystemAdmin, "The platform administrator's membership cannot be changed", http.StatusConflict
+		p.Detail = "It comes from the deployment's configuration (MAIAK_ADMIN_LOGIN)."
+	case errors.Is(err, auth.ErrProtectedOrganization):
+		p.Type, p.Title, p.Status = problemProtectedTenant, "This organization cannot be deleted", http.StatusConflict
+		p.Detail = "The default organization belongs to the platform."
 	case errors.Is(err, errForbidden), errors.Is(err, admin.ErrForbidden):
 		p.Type, p.Title, p.Status = problemForbidden, "Not allowed", http.StatusForbidden
 		p.Detail = "Only the platform administrator may do this."
@@ -144,7 +174,8 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 		log.ErrorContext(r.Context(), "request failed", "error", err)
 		p.Type, p.Title, p.Status = problemUnavailable, "Monitoring location unavailable, try again later", http.StatusServiceUnavailable
 	case errors.Is(err, errNotFound), errors.Is(err, routers.ErrPathNotFound), errors.Is(err, monitors.ErrNotFound), errors.Is(err, queries.ErrNotFound), errors.Is(err, admin.ErrNotFound),
-		errors.Is(err, notify.ErrChannelNotFound):
+		errors.Is(err, notify.ErrChannelNotFound), errors.Is(err, auth.ErrMemberNotFound), errors.Is(err, auth.ErrInvitationNotFound),
+		errors.Is(err, auth.ErrOrganizationNotFound):
 		p.Type, p.Title, p.Status = problemNotFound, "Not found", http.StatusNotFound
 	case errors.Is(err, errMethodNotAllowed), errors.Is(err, routers.ErrMethodNotAllowed):
 		p.Type, p.Title, p.Status = problemMethodNotAllowed, "Method not allowed", http.StatusMethodNotAllowed

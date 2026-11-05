@@ -139,8 +139,8 @@ describe("register page", () => {
       "GET /api/v1/usage": () =>
         json({
           plan: { key: "free", name: "Free" },
-          limits: { monitors: 3, heartbeats: 1, channels: 1 },
-          usage: { monitors: 0, heartbeats: 0, channels: 0 },
+          limits: { monitors: 3, heartbeats: 1, channels: 1, members: 3 },
+          usage: { monitors: 0, heartbeats: 0, channels: 0, members: 1 },
         }),
     });
     renderApp("/register");

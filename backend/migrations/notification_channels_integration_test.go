@@ -61,10 +61,11 @@ func TestIntegrationNotificationChannels(t *testing.T) {
 	}
 
 	t.Run("replay over an existing channel", func(t *testing.T) {
+		pgtest.MustExec(t, admin, rollbackInvitationsRoles...)
 		pgtest.MustExec(t, admin, rollbackNotificationChannels...)
 		old := channel(tenantA, "", "")
-		if n, err := env.Migrate(ctx); err != nil || n != 2 {
-			t.Fatalf("re-applied %d migrations, err=%v; want 2", n, err)
+		if n, err := env.Migrate(ctx); err != nil || n != 3 {
+			t.Fatalf("re-applied %d migrations, err=%v; want 3 (S-01 and T-01)", n, err)
 		}
 		var got string
 		if err := admin.QueryRow(ctx, `SELECT name || ' ' || events::text || ' ' || mention::text || ' ' || reminder_minutes || ' ' || (deleted_at IS NULL)

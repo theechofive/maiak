@@ -34,6 +34,8 @@ const (
 	ResourceMonitor   Resource = "monitors"
 	ResourceHeartbeat Resource = "heartbeats"
 	ResourceChannel   Resource = "channels"
+	// ResourceMember counts memberships plus open invitations (ADR-0102).
+	ResourceMember Resource = "members"
 )
 
 // JSON keys in plans.limits and tenants.limits.
@@ -41,6 +43,7 @@ const (
 	keyMaxMonitors   = "max_monitors"
 	keyMaxHeartbeats = "max_heartbeats"
 	keyMaxChannels   = "max_channels"
+	keyMaxMembers    = "max_members"
 )
 
 var (
@@ -56,6 +59,7 @@ type Limits struct {
 	MaxMonitors   int
 	MaxHeartbeats int
 	MaxChannels   int
+	MaxMembers    int
 }
 
 // Of returns the limit for r.
@@ -67,6 +71,8 @@ func (l Limits) Of(r Resource) int {
 		return l.MaxHeartbeats
 	case ResourceChannel:
 		return l.MaxChannels
+	case ResourceMember:
+		return l.MaxMembers
 	}
 	panic(fmt.Sprintf("plans: unknown resource %q", r))
 }
@@ -76,6 +82,7 @@ type Counts struct {
 	Monitors   int
 	Heartbeats int
 	Channels   int
+	Members    int
 }
 
 // Plan identifies a plan.
@@ -116,7 +123,7 @@ func Resolve(planKey string, planLimits, overrides []byte) (Limits, error) {
 	for _, f := range []struct {
 		key string
 		dst *int
-	}{{keyMaxMonitors, &l.MaxMonitors}, {keyMaxHeartbeats, &l.MaxHeartbeats}, {keyMaxChannels, &l.MaxChannels}} {
+	}{{keyMaxMonitors, &l.MaxMonitors}, {keyMaxHeartbeats, &l.MaxHeartbeats}, {keyMaxChannels, &l.MaxChannels}, {keyMaxMembers, &l.MaxMembers}} {
 		v, ok := over[f.key]
 		if !ok {
 			if v, ok = base[f.key]; !ok {
@@ -138,7 +145,7 @@ func parse(raw []byte) (map[string]int, error) {
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidLimits, err)
 	}
-	for _, key := range []string{keyMaxMonitors, keyMaxHeartbeats, keyMaxChannels} {
+	for _, key := range []string{keyMaxMonitors, keyMaxHeartbeats, keyMaxChannels, keyMaxMembers} {
 		v, ok := obj[key]
 		if !ok {
 			continue
@@ -182,6 +189,29 @@ func CheckCreate(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, r Resource)
 	return nil
 }
 
+// CheckJoin locks the tenant row until the end of tx and returns a *LimitError when the tenant
+// uses more than its quota for r. An invitation already holds its place in the member count
+// while it is open, so accepting it does not need a free place; this refuses it only when the
+// limit was lowered below the current use after the invitation was created.
+func CheckJoin(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, r Resource) error {
+	q, err := tenants.LockQuota(ctx, tx, tenantID)
+	if err != nil {
+		return err
+	}
+	plan, limits, err := resolveQuota(ctx, tx, q)
+	if err != nil {
+		return err
+	}
+	n, err := count(ctx, tx, tenantID, r)
+	if err != nil {
+		return err
+	}
+	if limit := limits.Of(r); n > limit {
+		return &LimitError{Resource: r, Max: limit, PlanName: plan.Name}
+	}
+	return nil
+}
+
 // Lock locks the tenant row until the end of tx, for callers that must decide whether they
 // create anything at all before calling CheckCreate (which locks the same row again).
 func Lock(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error {
@@ -217,6 +247,8 @@ func count(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, r Resource) (int,
 		n, err = q.CountChannels(ctx, tenantID)
 	case ResourceHeartbeat:
 		n, err = q.CountLiveHeartbeats(ctx, tenantID)
+	case ResourceMember:
+		n, err = q.CountMembers(ctx, tenantID)
 	default:
 		return 0, fmt.Errorf("plans: unknown resource %q", r)
 	}
@@ -257,7 +289,8 @@ func (s *Service) Usage(ctx context.Context, tenantID uuid.UUID) (Usage, error) 
 		for _, c := range []struct {
 			r   Resource
 			dst *int
-		}{{ResourceMonitor, &u.Counts.Monitors}, {ResourceHeartbeat, &u.Counts.Heartbeats}, {ResourceChannel, &u.Counts.Channels}} {
+		}{{ResourceMonitor, &u.Counts.Monitors}, {ResourceHeartbeat, &u.Counts.Heartbeats}, {ResourceChannel, &u.Counts.Channels},
+			{ResourceMember, &u.Counts.Members}} {
 			if *c.dst, err = count(ctx, tx, tenantID, c.r); err != nil {
 				return err
 			}

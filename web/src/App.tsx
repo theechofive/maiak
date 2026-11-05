@@ -2,7 +2,9 @@ import { Route, Routes } from "react-router-dom";
 import RequireAuth from "./auth/RequireAuth";
 import RequirePlatformAdmin from "./auth/RequirePlatformAdmin";
 import Layout from "./components/Layout";
+import Invite from "./pages/Invite";
 import Login from "./pages/Login";
+import Members from "./pages/Members";
 import MonitorDetails from "./pages/MonitorDetails";
 import MonitorForm from "./pages/MonitorForm";
 import Monitors from "./pages/Monitors";
@@ -18,6 +20,7 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
+      <Route path="/invite" element={<Invite />} />
       <Route element={<RequireAuth />}>
         <Route element={<Layout />}>
           <Route path="/" element={<Monitors />} />
@@ -25,6 +28,7 @@ export default function App() {
           <Route path="/monitors/:id" element={<MonitorDetails />} />
           <Route path="/monitors/:id/edit" element={<MonitorForm mode="edit" />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/members" element={<Members />} />
           <Route path="/admin" element={<RequirePlatformAdmin />}>
             <Route index element={<AdminOverview />} />
             <Route path="tenants" element={<AdminTenants />} />

@@ -67,6 +67,9 @@ SELECT m.user_id
 FROM memberships AS m
 JOIN users AS u ON u.id = m.user_id
 WHERE m.tenant_id = @tenant_id AND m.role = 'owner' AND m.user_id <> @user_id AND u.status = 'active'
+  -- Only a previous configured admin (still flagged until auth_sync_platform_admin runs after
+  -- this), never an owner granted through member management (T-01, ADR-0102).
+  AND u.is_platform_admin
 ORDER BY m.user_id;
 
 -- name: InsertUser :exec

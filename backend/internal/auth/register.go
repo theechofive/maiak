@@ -10,10 +10,12 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/theechofive/maiak/backend/internal/audit"
 	"github.com/theechofive/maiak/backend/internal/auth/authdb"
+	"github.com/theechofive/maiak/backend/internal/plans"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
 	"github.com/theechofive/maiak/backend/internal/platform/db"
 	"github.com/theechofive/maiak/backend/internal/platform/uuidv7"
@@ -47,6 +49,9 @@ type RegisterInput struct {
 	Password  string
 	IP        netip.Addr
 	UserAgent string
+	// InviteToken, when set, makes the user a member of the inviting organization instead of
+	// creating one (ADR-0102). The caller allows it even when registration is turned off.
+	InviteToken string
 }
 
 // Register creates a tenant on the free plan, the user as its owner, an audit row and a session
@@ -68,6 +73,21 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (LoginResult, 
 	if ok, wait := s.ipLimit.Reserve(ipKey); !ok {
 		return LoginResult{}, s.registrationRateLimited(ctx, &RateLimitedError{RetryAfter: wait})
 	}
+	var target invitationTarget
+	if in.InviteToken != "" {
+		// The token is checked before the expensive hash, and a bad one counts against the
+		// invitation limit as well.
+		inviteKey, err := s.reserveInvite(ctx, in.IP)
+		if err != nil {
+			s.ipLimit.Refund(ipKey)
+			return LoginResult{}, s.registrationRateLimited(ctx, err)
+		}
+		if target, err = s.lookupInvitation(ctx, in.InviteToken); err != nil {
+			s.registrations.WithLabelValues("invalid_invitation").Inc()
+			return LoginResult{}, err
+		}
+		s.inviteLimit.Refund(inviteKey)
+	}
 	if err := s.acquireHash(ctx); err != nil {
 		s.ipLimit.Refund(ipKey)
 		return LoginResult{}, s.registrationRateLimited(ctx, err)
@@ -79,6 +99,29 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (LoginResult, 
 	if err != nil {
 		s.ipLimit.Refund(ipKey)
 		return LoginResult{}, fmt.Errorf("auth: register: hash password: %w", err)
+	}
+
+	if in.InviteToken != "" {
+		res, err := s.createInvitedAccount(ctx, email, phc, target.tenantID, in)
+		switch {
+		case err == nil:
+			s.registrations.WithLabelValues("succeeded").Inc()
+			s.log.InfoContext(ctx, "account registered through an invitation", "user_id", res.User.ID, "tenant_id", res.Tenant.ID)
+			return res, nil
+		case errors.Is(err, ErrEmailTaken):
+			s.registrations.WithLabelValues("email_taken").Inc()
+			return LoginResult{}, ErrEmailTaken
+		case errors.Is(err, ErrInvitationInvalid):
+			// Used, revoked or expired between the lookup and the transaction.
+			s.registrations.WithLabelValues("invalid_invitation").Inc()
+			return LoginResult{}, err
+		}
+		var limit *plans.LimitError
+		if errors.As(err, &limit) {
+			return LoginResult{}, err
+		}
+		s.ipLimit.Refund(ipKey)
+		return LoginResult{}, fmt.Errorf("auth: register: %w", err)
 	}
 
 	for attempt := 1; ; attempt++ {
@@ -141,6 +184,49 @@ func (s *Service) createAccount(ctx context.Context, email, passwordHash string,
 		}
 		res = LoginResult{Token: sess.token, SessionInfo: SessionInfo{
 			User: User{ID: userID, Login: email}, Tenant: t, Role: RoleOwner, CSRFToken: sess.csrf, ExpiresAt: sess.expiresAt,
+		}}
+		return nil
+	})
+	return res, err
+}
+
+// createInvitedAccount creates the user and its membership in the inviting organization (no
+// tenant of its own) and a session there, in one transaction bound to that tenant.
+func (s *Service) createInvitedAccount(ctx context.Context, email, passwordHash string, tenantID uuid.UUID, in RegisterInput) (LoginResult, error) {
+	userID := uuidv7.New()
+	var res LoginResult
+	err := db.WithTenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		q := authdb.New(tx)
+		if err := q.InsertUser(ctx, authdb.InsertUserParams{ID: userID, Email: email, PasswordHash: &passwordHash}); err != nil {
+			if db.IsUniqueViolation(err, "users_email_key") {
+				return ErrEmailTaken
+			}
+			return fmt.Errorf("insert user: %w", err)
+		}
+		role, err := s.joinInvited(ctx, tx, tenantID, userID, in.InviteToken, in.IP)
+		if err != nil {
+			return err
+		}
+		t, err := tenants.Get(ctx, tx, tenantID)
+		if err != nil {
+			return err
+		}
+		if t.Status != tenants.StatusActive {
+			return ErrInvitationInvalid
+		}
+		if err := audit.Record(ctx, tx, audit.Entry{
+			TenantID: tenantID, ActorUserID: &userID, Action: ActionRegister,
+			EntityType: "user", EntityID: userID.String(), IP: in.IP,
+			Metadata: map[string]any{"tenant_id": tenantID.String(), "invited": true},
+		}); err != nil {
+			return err
+		}
+		sess, err := s.insertSession(ctx, q, tenantID, userID, in.IP, in.UserAgent)
+		if err != nil {
+			return err
+		}
+		res = LoginResult{Token: sess.token, SessionInfo: SessionInfo{
+			User: User{ID: userID, Login: email}, Tenant: t, Role: role, CSRFToken: sess.csrf, ExpiresAt: sess.expiresAt,
 		}}
 		return nil
 	})

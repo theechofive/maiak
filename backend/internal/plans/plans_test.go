@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-const freeLimits = `{"max_monitors":3,"max_heartbeats":1,"max_channels":1}`
+const freeLimits = `{"max_monitors":3,"max_heartbeats":1,"max_channels":1,"max_members":3}`
 
 func TestResolve(t *testing.T) {
 	cases := []struct {
@@ -13,12 +13,12 @@ func TestResolve(t *testing.T) {
 		overrides string
 		want      Limits
 	}{
-		{"no overrides", `{}`, Limits{MaxMonitors: 3, MaxHeartbeats: 1, MaxChannels: 1}},
-		{"empty column value", ``, Limits{MaxMonitors: 3, MaxHeartbeats: 1, MaxChannels: 1}},
+		{"no overrides", `{}`, Limits{MaxMonitors: 3, MaxHeartbeats: 1, MaxChannels: 1, MaxMembers: 3}},
+		{"empty column value", ``, Limits{MaxMonitors: 3, MaxHeartbeats: 1, MaxChannels: 1, MaxMembers: 3}},
 		// The pre-plans override key keeps working.
-		{"max_monitors override", `{"max_monitors":5}`, Limits{MaxMonitors: 5, MaxHeartbeats: 1, MaxChannels: 1}},
-		{"all overridden", `{"max_monitors":0,"max_heartbeats":7,"max_channels":2}`, Limits{MaxMonitors: 0, MaxHeartbeats: 7, MaxChannels: 2}},
-		{"unknown keys ignored", `{"max_interval":30,"max_channels":4}`, Limits{MaxMonitors: 3, MaxHeartbeats: 1, MaxChannels: 4}},
+		{"max_monitors override", `{"max_monitors":5}`, Limits{MaxMonitors: 5, MaxHeartbeats: 1, MaxChannels: 1, MaxMembers: 3}},
+		{"all overridden", `{"max_monitors":0,"max_heartbeats":7,"max_channels":2}`, Limits{MaxMonitors: 0, MaxHeartbeats: 7, MaxChannels: 2, MaxMembers: 3}},
+		{"unknown keys ignored", `{"max_interval":30,"max_channels":4}`, Limits{MaxMonitors: 3, MaxHeartbeats: 1, MaxChannels: 4, MaxMembers: 3}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -59,19 +59,19 @@ func TestResolveRejectsInvalidValues(t *testing.T) {
 
 func TestResolvePlanMissingKey(t *testing.T) {
 	// A key missing from the plan is an error unless the tenant overrides it.
-	plan := []byte(`{"max_monitors":3,"max_channels":1}`)
+	plan := []byte(`{"max_monitors":3,"max_channels":1,"max_members":2}`)
 	if _, err := Resolve("partial", plan, nil); !errors.Is(err, ErrInvalidLimits) {
 		t.Fatalf("err = %v, want ErrInvalidLimits", err)
 	}
 	got, err := Resolve("partial", plan, []byte(`{"max_heartbeats":2}`))
-	if err != nil || got != (Limits{MaxMonitors: 3, MaxHeartbeats: 2, MaxChannels: 1}) {
+	if err != nil || got != (Limits{MaxMonitors: 3, MaxHeartbeats: 2, MaxChannels: 1, MaxMembers: 2}) {
 		t.Fatalf("Resolve = %+v, %v", got, err)
 	}
 }
 
 func TestLimitsOf(t *testing.T) {
-	l := Limits{MaxMonitors: 1, MaxHeartbeats: 2, MaxChannels: 3}
-	if l.Of(ResourceMonitor) != 1 || l.Of(ResourceHeartbeat) != 2 || l.Of(ResourceChannel) != 3 {
+	l := Limits{MaxMonitors: 1, MaxHeartbeats: 2, MaxChannels: 3, MaxMembers: 4}
+	if l.Of(ResourceMonitor) != 1 || l.Of(ResourceHeartbeat) != 2 || l.Of(ResourceChannel) != 3 || l.Of(ResourceMember) != 4 {
 		t.Fatalf("Of: %+v", l)
 	}
 }

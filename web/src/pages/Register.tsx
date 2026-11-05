@@ -37,7 +37,7 @@ const DISABLED_TITLE = "Registration is turned off.";
 const DISABLED_TEXT = "Ask the administrator for an account.";
 
 /** Maps a failed registration to field errors and a general message. */
-function registerErrors(err: unknown): { fields: RegisterFormErrors; general?: string } {
+export function registerErrors(err: unknown): { fields: RegisterFormErrors; general?: string } {
   if (err instanceof ApiError) {
     if (err.type === EMAIL_TAKEN_PROBLEM_TYPE) {
       return { fields: { email: "This email is already registered. Sign in instead." } };
@@ -198,7 +198,7 @@ export default function Register() {
 }
 
 /** The password with the server's two rules checked as you type. */
-function PasswordField({
+export function PasswordField({
   values,
   error,
   shown,

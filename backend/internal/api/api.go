@@ -135,7 +135,7 @@ func NewHandler(cfg Config, deps Deps) (http.Handler, error) {
 	badRequest := func(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, r, s.log, &badRequestError{detail: err.Error()})
 	}
-	strict := gen.NewStrictHandlerWithOptions(s, []gen.StrictMiddlewareFunc{withHTTPRequest}, gen.StrictHTTPServerOptions{
+	strict := gen.NewStrictHandlerWithOptions(s, []gen.StrictMiddlewareFunc{s.authorize, withHTTPRequest}, gen.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc:  badRequest,
 		ResponseErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) { writeError(w, r, s.log, err) },
 	})
@@ -287,15 +287,21 @@ func (s *server) Login(ctx context.Context, req gen.LoginRequestObject) (gen.Log
 }
 
 func (s *server) Register(ctx context.Context, req gen.RegisterRequestObject) (gen.RegisterResponseObject, error) {
-	if !s.cfg.RegistrationEnabled {
+	var invite string
+	if req.Body.InviteToken != nil {
+		invite = *req.Body.InviteToken
+	}
+	// An invitation is its own authorization (ADR-0102): it works with registration turned off.
+	if !s.cfg.RegistrationEnabled && invite == "" {
 		return nil, errRegistrationDisabled
 	}
 	r := httpRequest(ctx)
 	res, err := s.auth.Register(ctx, auth.RegisterInput{
-		Email:     req.Body.Email,
-		Password:  req.Body.Password,
-		IP:        s.limiterIP(ctx, r),
-		UserAgent: r.UserAgent(),
+		Email:       req.Body.Email,
+		Password:    req.Body.Password,
+		IP:          s.limiterIP(ctx, r),
+		UserAgent:   r.UserAgent(),
+		InviteToken: invite,
 	})
 	if err != nil {
 		return nil, err

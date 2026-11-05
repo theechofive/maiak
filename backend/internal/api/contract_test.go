@@ -2,12 +2,16 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
+
+	"github.com/theechofive/maiak/backend/internal/authz"
 
 	"github.com/theechofive/maiak/backend/internal/api/gen"
 )
@@ -17,12 +21,14 @@ import (
 // register and getPublicConfig were added deliberately with self-service registration (P-02).
 // The heartbeat ping (P-03, ADR-0094) is public on purpose: Alertmanager and cron jobs call it
 // without a session, the secret token in its URL is the credential.
-var publicOperations = []string{"getHealth", "getPublicConfig", "login", "register", "pingHeartbeat", "pingHeartbeatPost"}
+// lookupInvitation (T-01, ADR-0102) is public: the invitation page asks what a link offers before
+// the visitor has an account; the token in the body is the credential.
+var publicOperations = []string{"getHealth", "getPublicConfig", "login", "register", "pingHeartbeat", "pingHeartbeatPost", "lookupInvitation"}
 
 // csrfExempt are the unsafe operations without a session, hence without a CSRF token. The POST
 // form of the heartbeat ping is one: it has no session to carry a CSRF token, and it changes only
 // the ping time of the heartbeat whose secret token is in the URL.
-var csrfExempt = []string{"login", "register", "pingHeartbeatPost"}
+var csrfExempt = []string{"login", "register", "pingHeartbeatPost", "lookupInvitation"}
 
 func isCSRFExempt(operationID string) bool {
 	return slices.ContainsFunc(csrfExempt, func(id string) bool { return strings.EqualFold(id, operationID) })
@@ -60,6 +66,7 @@ func concretePath(p string) string {
 		"{tenantId}", "0192b9c4-7c5e-7000-8000-000000000002",
 		"{userId}", "0192b9c4-7c5e-7000-8000-000000000003",
 		"{channelId}", "0192b9c4-7c5e-7000-8000-000000000004",
+		"{invitationId}", "0192b9c4-7c5e-7000-8000-000000000005",
 	).Replace(p)
 }
 
@@ -172,5 +179,50 @@ func TestEveryOperationExceptPublicNeedsSession(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized || p.Type != problemUnauthenticated {
 			t.Errorf("%s %s (%s): code=%d problem=%+v, want 401", o.method, o.path, o.id, rec.Code, p)
 		}
+	}
+}
+
+// The authorization table of internal/authz lists exactly the operations of the spec (deny by
+// default makes a missing one unusable, an extra one is a stale entry), and its public operations
+// are exactly the ones without a session.
+func TestAuthzTableCoversSpec(t *testing.T) {
+	_, ops := specOperations(t)
+	inSpec := map[string]bool{}
+	for _, o := range ops {
+		id := strings.ToLower(o.id)
+		inSpec[id] = true
+		min, ok := authz.MinRole(o.id)
+		if !ok {
+			t.Errorf("%s %s (%s) is not in the authorization table", o.method, o.path, o.id)
+			continue
+		}
+		public := slices.ContainsFunc(publicOperations, func(p string) bool { return strings.EqualFold(p, o.id) })
+		if public != (min == authz.Public) {
+			t.Errorf("%s: public in the contract test %v, in the table %v", o.id, public, min == authz.Public)
+		}
+		if strings.HasPrefix(o.path, adminPathPrefix) && min != authz.Viewer {
+			t.Errorf("%s: platform admin operations are decided by the flag, want minimum role viewer, got %s", o.id, min)
+		}
+	}
+	for _, id := range authz.Operations() {
+		if !inSpec[id] {
+			t.Errorf("authorization table lists %q, which is not in the spec", id)
+		}
+	}
+}
+
+// An operation the table does not know is refused even with a session.
+func TestAuthorizeDeniesUnknownOperation(t *testing.T) {
+	s := &server{log: discard()}
+	called := false
+	h := s.authorize(func(context.Context, http.ResponseWriter, *http.Request, any) (any, error) {
+		called = true
+		return nil, nil
+	}, "NoSuchOperation")
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	_, err := h(context.Background(), httptest.NewRecorder(), r, nil)
+	var re *roleError
+	if called || !errors.As(err, &re) {
+		t.Fatalf("unknown operation: called=%v err=%v", called, err)
 	}
 }

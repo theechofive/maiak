@@ -29,7 +29,7 @@ func TestIntegrationMigrateFromScratchAndRerun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "audit_log,auth_identities,check_results,heartbeat_tokens,incident_monitors,incidents,memberships,monitor_channels,monitor_location_state," +
+	want := "audit_log,auth_identities,check_results,heartbeat_tokens,incident_monitors,incidents,invitations,memberships,monitor_channels,monitor_location_state," +
 		"monitor_locations,monitor_state,monitors,notification_channels,notification_deliveries,plans,probe_locations,result_rollups_hourly,rollup_state,sessions,tenants,users"
 	if got := strings.Join(tables, ","); got != want {
 		t.Fatalf("tables = %s, want %s", got, want)
@@ -82,6 +82,12 @@ var definerAllowList = map[string][]string{
 	// the caller's tenant, and jobs queues reminders of open incidents across tenants.
 	"fail_deleted_channel_deliveries": {"maiak_api"},
 	"enqueue_incident_reminders":      {"maiak_worker"},
+	// Members and invitations (T-01, ADR-0102): an invitation token is looked up before the
+	// tenant is known, the organization switcher lists the user's own memberships, and an owner
+	// soft-deletes the organization of its own transaction.
+	"auth_invitation_lookup":  {"maiak_api"},
+	"auth_user_organizations": {"maiak_api"},
+	"org_delete_tenant":       {"maiak_api"},
 }
 
 // extraPolicies are the permissive policies on tenant tables that are not tenant isolation
@@ -112,6 +118,8 @@ var extraPolicies = map[string]struct {
 	"notification_channels.owner_reminder_read":     {cmd: "r", roles: []string{"maiak_owner"}},
 	"monitor_channels.owner_reminder_read":          {cmd: "r", roles: []string{"maiak_owner"}},
 	"notification_deliveries.owner_reminder_insert": {cmd: "a", roles: []string{"maiak_owner"}},
+	// auth_invitation_lookup (T-01, ADR-0102).
+	"invitations.owner_invitation_lookup": {cmd: "r", roles: []string{"maiak_owner"}},
 }
 
 var runtimeRoles = []string{"maiak_api", "maiak_worker"}

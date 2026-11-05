@@ -70,20 +70,25 @@ type Options struct {
 	// IPLimiter and LoginLimiter default to 30 and 10 failures per 15 minutes.
 	IPLimiter    *Limiter
 	LoginLimiter *Limiter
+	// InviteLimiter limits invitation token attempts per client IP (lookup, accept, registration
+	// with a token); every attempt that does not end in success counts. Defaults to 20 per 15
+	// minutes.
+	InviteLimiter *Limiter
 	// HashQueueWait defaults to 5 s.
 	HashQueueWait time.Duration
 }
 
 // Service implements authentication.
 type Service struct {
-	pool       *db.Pool
-	ttl        time.Duration
-	clock      clock.Clock
-	log        *slog.Logger
-	ipLimit    *Limiter
-	loginLimit *Limiter
-	hashSem    chan struct{}
-	hashWait   time.Duration
+	pool        *db.Pool
+	ttl         time.Duration
+	clock       clock.Clock
+	log         *slog.Logger
+	ipLimit     *Limiter
+	loginLimit  *Limiter
+	inviteLimit *Limiter
+	hashSem     chan struct{}
+	hashWait    time.Duration
 	// dummy is verified for unknown or password-less users. BootstrapAdmin builds it with the
 	// admin hash's parameters, so both cost the same and timing does not reveal the login.
 	dummy         *crypto.ParsedHash
@@ -112,6 +117,9 @@ func NewService(pool *db.Pool, opts Options) (*Service, error) {
 	if opts.LoginLimiter == nil {
 		opts.LoginLimiter = NewLimiter(10, 15*time.Minute, 100_000, opts.Clock)
 	}
+	if opts.InviteLimiter == nil {
+		opts.InviteLimiter = NewLimiter(20, 15*time.Minute, 100_000, opts.Clock)
+	}
 	if opts.HashQueueWait <= 0 {
 		opts.HashQueueWait = defaultHashQueueWait
 	}
@@ -122,6 +130,7 @@ func NewService(pool *db.Pool, opts Options) (*Service, error) {
 		log:         opts.Logger,
 		ipLimit:     opts.IPLimiter,
 		loginLimit:  opts.LoginLimiter,
+		inviteLimit: opts.InviteLimiter,
 		hashSem:     make(chan struct{}, maxConcurrentHashes),
 		hashWait:    opts.HashQueueWait,
 		afterVerify: func() {},
@@ -131,7 +140,7 @@ func NewService(pool *db.Pool, opts Options) (*Service, error) {
 		}, []string{"result"}),
 		registrations: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "maiak_auth_registrations_total",
-			Help: "Registration attempts by result (succeeded, invalid, email_taken, rate_limited).",
+			Help: "Registration attempts by result (succeeded, invalid, invalid_invitation, email_taken, rate_limited).",
 		}, []string{"result"}),
 	}
 	if opts.Registerer != nil {
@@ -345,6 +354,9 @@ type Principal struct {
 	SessionID uuid.UUID
 	UserID    uuid.UUID
 	TenantID  uuid.UUID
+	// Role is the user's membership role in TenantID, read on every request so a role change
+	// applies to the next one (ADR-0102).
+	Role      string
 	CSRFToken string
 	ExpiresAt time.Time
 }
@@ -669,6 +681,24 @@ func (s *Service) Authenticate(ctx context.Context, token string) (Principal, er
 		return Principal{}, fmt.Errorf("auth: lookup session: %w", err)
 	}
 	now := s.clock.Now()
+	err = db.WithTenantTx(ctx, s.pool, p.TenantID, func(tx pgx.Tx) error {
+		role, err := authdb.New(tx).GetMembershipRole(ctx, authdb.GetMembershipRoleParams{TenantID: p.TenantID, UserID: p.UserID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Removing a membership deletes its sessions; this only covers a race with that.
+			return ErrUnauthenticated
+		}
+		if err != nil {
+			return fmt.Errorf("get membership: %w", err)
+		}
+		p.Role = role
+		return nil
+	})
+	if errors.Is(err, ErrUnauthenticated) {
+		return Principal{}, err
+	}
+	if err != nil {
+		return Principal{}, fmt.Errorf("auth: resolve role: %w", err)
+	}
 	if now.Sub(lastSeen) >= touchInterval {
 		err := db.WithTenantTx(ctx, s.pool, p.TenantID, func(tx pgx.Tx) error {
 			return authdb.New(tx).TouchSession(ctx, authdb.TouchSessionParams{ID: p.SessionID, Now: now, StaleBefore: now.Add(-touchInterval)})

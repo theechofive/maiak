@@ -42,6 +42,8 @@ import {
 import { atHeartbeatLimit, atMonitorLimit, countOf, useUsage } from "../lib/usage";
 import { withoutHttps } from "../lib/monitorForm";
 import { useNow } from "../lib/useNow";
+import { useAuth } from "../auth/AuthProvider";
+import { abilities, ROLE_HINTS } from "../lib/roles";
 
 export default function Monitors() {
   const now = useNow();
@@ -506,6 +508,15 @@ function atAllLimits(usage: Usage | undefined): boolean {
  * button marked aria-disabled with the reason next to it (the server enforces the limits anyway).
  */
 function AddMonitor({ usage }: { usage: Usage | undefined }) {
+  const auth = useAuth();
+  if (!abilities(auth.session).editMonitors) {
+    // Viewers read only (ADR-0102); the API refuses a create anyway.
+    return (
+      <p className="max-w-[320px] self-start text-caption text-muted-foreground">
+        {ROLE_HINTS.editMonitors}
+      </p>
+    );
+  }
   if (!usage || !atAllLimits(usage)) {
     return (
       <Link to="/monitors/new" className={cx(buttonClass(), "self-start")}>

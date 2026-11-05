@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
 import ErrorBoundary from "./ErrorBoundary";
+import OrganizationSwitcher from "./OrganizationSwitcher";
 import ThemeToggle from "./ThemeToggle";
 import { Badge, Button, cx } from "./ui";
 
@@ -38,6 +39,9 @@ export default function Layout() {
       <NavLink to="/" end className={navClass}>
         Monitors
       </NavLink>
+      <NavLink to="/members" className={navClass}>
+        Members
+      </NavLink>
       <NavLink to="/settings" className={navClass}>
         Settings
       </NavLink>
@@ -65,6 +69,7 @@ export default function Layout() {
             </nav>
           </div>
           <div className="flex items-center gap-3.5 max-sm:hidden">
+            <OrganizationSwitcher />
             <span className="font-mono text-mono text-muted-foreground">{login}</span>
             <ThemeToggle />
             <Button variant="ghost" size="small" onClick={() => void onLogout()}>
@@ -98,6 +103,9 @@ export default function Layout() {
             <nav aria-label="Main" className="flex flex-col [&>a]:h-11 [&>a]:shadow-none">
               {links}
             </nav>
+            <div className="flex items-center justify-between gap-3 border-t border-border-faint py-3">
+              <OrganizationSwitcher className="max-w-none flex-1" />
+            </div>
             <div className="flex items-center justify-between gap-3 border-t border-border-faint pt-3">
               <span className="font-mono text-mono text-muted-foreground">{login}</span>
               <span className="flex items-center gap-2">

@@ -50,16 +50,33 @@ import {
   type MonitorFormValues,
 } from "../lib/monitorForm";
 import { atHeartbeatLimit, atMonitorLimit, useUsage } from "../lib/usage";
+import { useAuth } from "../auth/AuthProvider";
+import { abilities, ROLE_HINTS } from "../lib/roles";
 
 const title = "text-headline leading-[1.1] font-semibold tracking-[-0.02em] sm:text-display";
 
 export default function MonitorForm({ mode }: { mode: "create" | "edit" }) {
   const { id = "" } = useParams();
+  const canEdit = abilities(useAuth().session).editMonitors;
   const monitor = useQuery({
     queryKey: queryKeys.monitor(id),
     queryFn: () => getMonitor(id),
-    enabled: mode === "edit",
+    enabled: mode === "edit" && canEdit,
   });
+
+  if (!canEdit) {
+    // Viewers read only (ADR-0102); the API would refuse the save.
+    return (
+      <Page
+        back={<Link to="/">← Monitors</Link>}
+        title={mode === "create" ? "Add monitor" : "Edit monitor"}
+      >
+        <Alert tone="neutral" title="Read only.">
+          {ROLE_HINTS.editMonitors}
+        </Alert>
+      </Page>
+    );
+  }
 
   if (mode === "create") {
     return (

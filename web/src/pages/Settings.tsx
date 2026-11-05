@@ -12,6 +12,7 @@ import {
   type Usage,
 } from "../api/endpoints";
 import { useAuth } from "../auth/AuthProvider";
+import { abilities, ROLE_HINTS } from "../lib/roles";
 import { useToast } from "../components/Toasts";
 import {
   Alert,
@@ -119,6 +120,7 @@ const usageRows: { key: keyof Usage["limits"]; label: string }[] = [
   { key: "monitors", label: "Monitors" },
   { key: "heartbeats", label: "Heartbeat monitors" },
   { key: "channels", label: "Notification channels" },
+  { key: "members", label: "Members and open invitations" },
 ];
 
 function PlanUsage() {
@@ -173,6 +175,7 @@ type TestResult = { channel: Channel } & (
 );
 
 function NotificationChannels() {
+  const canManage = abilities(useAuth().session).manageChannels;
   const queryClient = useQueryClient();
   const toast = useToast();
   const usage = useUsage();
@@ -245,9 +248,11 @@ function NotificationChannels() {
               <Th>Mention</Th>
               <Th>Reminder</Th>
               <Th>Status</Th>
-              <Th>
-                <span className="sr-only">Actions</span>
-              </Th>
+              {canManage && (
+                <Th>
+                  <span className="sr-only">Actions</span>
+                </Th>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -272,36 +277,38 @@ function NotificationChannels() {
                     </Badge>
                   )}
                 </Td>
-                <Td>
-                  <div className="flex justify-end gap-1">
-                    <Button
-                      variant="ghost"
-                      size="small"
-                      aria-label={`Edit ${c.name}`}
-                      onClick={() => setEditing({ mode: "edit", channel: c })}
-                    >
-                      Edit
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="small"
-                      aria-label={`Send a test message to ${c.name}`}
-                      busy={test.isPending && test.variables?.id === c.id}
-                      disabled={test.isPending}
-                      onClick={() => test.mutate(c)}
-                    >
-                      Test
-                    </Button>
-                    <Button
-                      variant="ghost-destructive"
-                      size="small"
-                      aria-label={`Delete ${c.name}`}
-                      onClick={() => setDeleting(c)}
-                    >
-                      Delete
-                    </Button>
-                  </div>
-                </Td>
+                {canManage && (
+                  <Td>
+                    <div className="flex justify-end gap-1">
+                      <Button
+                        variant="ghost"
+                        size="small"
+                        aria-label={`Edit ${c.name}`}
+                        onClick={() => setEditing({ mode: "edit", channel: c })}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="small"
+                        aria-label={`Send a test message to ${c.name}`}
+                        busy={test.isPending && test.variables?.id === c.id}
+                        disabled={test.isPending}
+                        onClick={() => test.mutate(c)}
+                      >
+                        Test
+                      </Button>
+                      <Button
+                        variant="ghost-destructive"
+                        size="small"
+                        aria-label={`Delete ${c.name}`}
+                        onClick={() => setDeleting(c)}
+                      >
+                        Delete
+                      </Button>
+                    </div>
+                  </Td>
+                )}
               </Tr>
             ))}
           </tbody>
@@ -326,7 +333,9 @@ function NotificationChannels() {
         <Alert title={`Test message to ${result.channel.name} failed.`}>{result.message}</Alert>
       )}
 
-      {editing.mode === "none" ? (
+      {!canManage ? (
+        <p className="text-caption text-muted-foreground">{ROLE_HINTS.manageChannels}</p>
+      ) : editing.mode === "none" ? (
         <div className="flex flex-col items-start gap-2">
           <Button
             variant={items.length === 0 ? "primary" : "secondary"}

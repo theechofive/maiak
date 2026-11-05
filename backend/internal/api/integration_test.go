@@ -309,7 +309,8 @@ func TestIntegrationUnsafeOperationsNeedCSRF(t *testing.T) {
 				continue
 			}
 			url := strings.NewReplacer("{monitorId}", "0192b9c4-7c5e-7000-8000-000000000001",
-				"{tenantId}", "0192b9c4-7c5e-7000-8000-000000000002", "{userId}", "0192b9c4-7c5e-7000-8000-000000000003").Replace(path)
+				"{tenantId}", "0192b9c4-7c5e-7000-8000-000000000002", "{userId}", "0192b9c4-7c5e-7000-8000-000000000003",
+				"{channelId}", "0192b9c4-7c5e-7000-8000-000000000004", "{invitationId}", "0192b9c4-7c5e-7000-8000-000000000005").Replace(path)
 			for name, token := range map[string]string{"missing": "", "wrong": csrf + "x"} {
 				hdr := map[string]string{"Cookie": cookie["Cookie"]}
 				if token != "" {
@@ -333,5 +334,5 @@ func TestIntegrationUnsafeOperationsNeedCSRF(t *testing.T) {
 }
 
 func isCSRFExemptOperation(id string) bool {
-	return strings.EqualFold(id, "login") || strings.EqualFold(id, "register") || strings.EqualFold(id, "pingHeartbeatPost")
+	return strings.EqualFold(id, "login") || strings.EqualFold(id, "register") || strings.EqualFold(id, "pingHeartbeatPost") || strings.EqualFold(id, "lookupInvitation")
 }

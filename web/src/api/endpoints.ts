@@ -23,6 +23,13 @@ export type AdminTenantList = Schemas["AdminTenantList"];
 export type AdminTenantUpdate = Schemas["AdminTenantUpdate"];
 export type AdminUser = Schemas["AdminUser"];
 export type AdminUserList = Schemas["AdminUserList"];
+export type MembershipRole = Schemas["MembershipRole"];
+export type Organization = Schemas["Organization"];
+export type Member = Schemas["Member"];
+export type Invitation = Schemas["Invitation"];
+export type InvitationRole = Schemas["InvitationRole"];
+export type InvitationCreated = Schemas["InvitationCreated"];
+export type InvitationPreview = Schemas["InvitationPreview"];
 
 /** Page size of the admin lists (the API default; at most 100). */
 export const ADMIN_PAGE_SIZE = 25;
@@ -45,6 +52,10 @@ export const queryKeys = {
     ["admin", "tenants", { query, offset, includeDeleted }] as const,
   adminTenant: (id: string) => ["admin", "tenant", id] as const,
   adminUsers: (id: string) => ["admin", "tenant", id, "users"] as const,
+  organizations: ["organizations"] as const,
+  members: ["members"] as const,
+  invitations: ["invitations"] as const,
+  invitationPreview: (token: string) => ["invitation-preview", token] as const,
 };
 
 export async function login(login: string, password: string): Promise<SessionInfo> {
@@ -53,9 +64,17 @@ export async function login(login: string, password: string): Promise<SessionInf
   return session;
 }
 
-/** Registers a new account and workspace; the answer is a session, exactly like login. */
-export async function register(email: string, password: string): Promise<SessionInfo> {
-  const session = await unwrap(client.POST("/api/v1/auth/register", { body: { email, password } }));
+/**
+ * Registers a new account and workspace; the answer is a session, exactly like login. With an
+ * invitation token the account joins the inviting organization instead (ADR-0102).
+ */
+export async function register(
+  email: string,
+  password: string,
+  inviteToken?: string,
+): Promise<SessionInfo> {
+  const body = inviteToken ? { email, password, inviteToken } : { email, password };
+  const session = await unwrap(client.POST("/api/v1/auth/register", { body }));
   setCsrfToken(session.csrf_token);
   return session;
 }
@@ -184,3 +203,60 @@ export const resetAdminUserPassword = (userId: string) =>
       params: { path: { userId } },
     }),
   );
+
+// Organizations, members and invitations (T-01, ADR-0102).
+
+export const listOrganizations = () => unwrap(client.GET("/api/v1/auth/organizations"));
+
+/** Replaces the session with one in another organization (new cookie and CSRF token). */
+export async function switchOrganization(tenantId: string): Promise<SessionInfo> {
+  const session = await unwrap(
+    client.POST("/api/v1/auth/switch-organization", { body: { tenantId } }),
+  );
+  setCsrfToken(session.csrf_token);
+  return session;
+}
+
+export const listMembers = () => unwrap(client.GET("/api/v1/members"));
+
+const memberPath = (userId: string) => ({ params: { path: { userId } } });
+
+export const updateMember = (userId: string, role: MembershipRole) =>
+  unwrap(client.PATCH("/api/v1/members/{userId}", { ...memberPath(userId), body: { role } }));
+
+export const removeMember = (userId: string) =>
+  unwrap(client.DELETE("/api/v1/members/{userId}", memberPath(userId)));
+
+export const listInvitations = () => unwrap(client.GET("/api/v1/invitations"));
+
+/** A new invitation; its link is in this answer only. */
+export const createInvitation = (role: InvitationRole, label: string) =>
+  unwrap(client.POST("/api/v1/invitations", { body: label ? { role, label } : { role } }));
+
+export const revokeInvitation = (invitationId: string) =>
+  unwrap(
+    client.POST("/api/v1/invitations/{invitationId}/revoke", {
+      params: { path: { invitationId } },
+    }),
+  );
+
+/** What an invitation link offers; works without a session. */
+export const lookupInvitation = (token: string) =>
+  unwrap(client.POST("/api/v1/invitations/lookup", { body: { token } }));
+
+/** Joins the inviting organization as the signed-in user; the session moves there. */
+export async function acceptInvitation(token: string): Promise<SessionInfo> {
+  const session = await unwrap(client.POST("/api/v1/invitations/accept", { body: { token } }));
+  setCsrfToken(session.csrf_token);
+  return session;
+}
+
+export async function leaveOrganization(): Promise<void> {
+  try {
+    await unwrap(client.POST("/api/v1/organization/leave"));
+  } finally {
+    setCsrfToken(null);
+  }
+}
+
+export const deleteOrganization = () => unwrap(client.DELETE("/api/v1/organization"));

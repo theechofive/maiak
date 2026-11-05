@@ -47,6 +47,10 @@ var definerCalls = map[string]string{
 	"admin_list_users":          `SELECT * FROM admin_list_users(gen_random_uuid(), gen_random_uuid(), '', 1, 0)`,
 	"admin_reset_user_password": `SELECT * FROM admin_reset_user_password(gen_random_uuid(), gen_random_uuid(), '$argon2id$x', gen_random_uuid(), NULL)`,
 	"admin_stats":               `SELECT admin_stats(gen_random_uuid())`,
+	// T-01 (ADR-0102); org_delete_tenant refuses (MKO02) without a tenant in the transaction.
+	"auth_invitation_lookup":  `SELECT * FROM auth_invitation_lookup('\x00')`,
+	"auth_user_organizations": `SELECT * FROM auth_user_organizations(gen_random_uuid())`,
+	"org_delete_tenant":       `SELECT org_delete_tenant(gen_random_uuid(), gen_random_uuid(), NULL)`,
 }
 
 // Every definer function in the allow-list is executable by exactly the roles listed there: a
