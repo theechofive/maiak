@@ -5,6 +5,7 @@
 - [Deploy tasks](deploy.md)
 - [Phase 2 tasks](phase2.md): plans and quotas, registration, watchdog, admin panel
 - [Phase 3 tasks](phase3.md): notification channels, agent, watchdog verification
+- [Phase 4 tasks](phase4.md): teams, roles, projects, status page
 
 ## Conventions
 - IDs: `B-nn` backend, `F-nn` frontend, `D-nn` deploy. Statuses: `todo`, `doing`, `done`, `blocked`.

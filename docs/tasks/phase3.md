@@ -2,6 +2,8 @@
 
 Decisions: [ADR-0101](../adr/0101-phase3-agent-channels.md). Conventions as in [README.md](README.md): one commit per task, independent review after each task, ledger entries for shortcuts. Public domain is later: everything is built and verified on the internal network, first in `klr-platform`.
 
+**Postponed (2026-11-05):** A-01 and the tasks after it (A-02..A-04, V-01, K-01) start after [Phase 4](phase4.md). Agents then belong to a project (ADR-0102), so A-01 is updated before it starts.
+
 | ID | Task | Depends on | Status |
 |---|---|---|---|
 | S-01 | **Notification channels.** Several Slack channels per tenant (plan `max_channels`: free 1, internal 10); API `/api/v1/channels` (list, create, get, patch, delete, test) replacing `/settings/slack`; fields name, write-only webhook, events (`down`, `recovered`, `tls_expiring`), optional validated mention, optional reminder interval (5 to 1440 minutes, off by default); monitors choose `channelIds` (empty with `notifySlack` means all active channels); outbox creates one delivery per matching channel and respects event filters; `reminder` deliveries for incidents that stay open; deleting a channel fails its pending deliveries; web: channels list and form in Settings, channel selection on the monitor form; closes L-081. Done: [ADR-0100](../adr/0100-notification-channels.md). | none | done |

@@ -16,7 +16,9 @@ Maiak is a **modular monolith deployed as several processes** from one Go module
 
 Every process serves `/healthz`, `/readyz` and `/metrics` on the admin port (`:9090`, never routed externally); metrics and log fields are listed in the [observability runbook](../runbooks/observability.md).
 
-Later: `probe` (remote executor, no DB access, pull/push over HTTPS), `agent` (inside a client cluster), a status-page renderer, ClickHouse for results.
+Later: `probe` (remote executor, no DB access, pull/push over HTTPS), `agent` (inside a client cluster), ClickHouse for results.
+
+Planned in [Phase 4](../tasks/phase4.md), not implemented: a `statuspage` process (`/status/<slug>`, no sessions, own database role that can only read prepared snapshots built by `jobs`, [ADR-0103](../adr/0103-status-page.md)); roles enforced in one authorization package, invitations, an organization switcher and projects inside an organization, with RLS staying per tenant ([ADR-0102](../adr/0102-teams-roles-projects.md)).
 
 ```mermaid
 flowchart LR

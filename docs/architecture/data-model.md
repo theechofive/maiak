@@ -27,7 +27,7 @@ Owning module in brackets, as declared in the migrations; only the owner writes 
 | `tenants` [tenants] | `id`, `slug` (unique, `^[a-z0-9][a-z0-9-]{0,62}$`), `name`, `status` (`active`/`suspended`; changed by the platform admin through `admin_set_tenant_status`, a soft delete sets `suspended` too), `plan_key` (FK `plans.key`, default `free`; `default` is on `internal`), `limits jsonb` (per-tenant overrides of `max_monitors`, `max_heartbeats`, `max_channels`; `CHECK` it is an object), timestamps, `deleted_at`. No RLS. The api creates tenants through `auth_create_tenant` (ADR-0095) | S I U(updated_at) | S |
 | `plans` [plans] | `key` (PK, slug pattern), `name`, `limits jsonb` (object: `max_monitors`, `max_heartbeats`, `max_channels`, non-negative integers), `created_at`. Seeded `free` (3/1/1) and `internal` (1000/100/10). No RLS; changed only by migrations | S | S |
 | `users` [auth] | `id`, `email citext` unique (the login: `admin` for the system admin, the lowercase email address of a registered user; ADR-0009 amendment 2026-10-21), `password_hash` (nullable), `display_name`, `status` (`active`/`disabled`), `is_platform_admin` (default false; set only by `auth_sync_platform_admin` for the configured system admin, ADR-0097), timestamps. No RLS | S I(id, email, password_hash, display_name) U(email, password_hash, display_name, status, updated_at) | none |
-| `memberships` [auth] | PK `(tenant_id, user_id)`, `role` in owner/admin/member/viewer | S I U D | none |
+| `memberships` [auth] | PK `(tenant_id, user_id)`, `role` in owner/admin/member/viewer (not enforced yet; planned in T-01, ADR-0102) | S I U D | none |
 | `auth_identities` [auth] | PK `(provider, subject)`, `user_id`; unused until OAuth. No RLS | S I D | none |
 | `sessions` [auth] | `id`, `user_id`, `tenant_id`, `token_hash bytea` (SHA-256, unique), `csrf_token`, `expires_at`, `last_seen_at`, `ip`, `user_agent` | S I U D | none |
 | `audit_log` [audit] | `id`, `tenant_id`, `actor_user_id`, `action`, `entity_type`, `entity_id`, `metadata jsonb`, `ip`, `created_at` | I | I |
@@ -96,7 +96,9 @@ All are owned by `maiak_owner`, pin `search_path = public, pg_temp`, are not exe
 | `outbox_pending()` | `maiak_worker` | jobs, every 15 s | Count for `maiak_jobs_outbox_pending` |
 
 ## Added later by additive migrations
-`status_pages`, `status_page_components`, `incident_updates`, `api_keys`, plans and billing, more channel types, agent registrations and tokens.
+`incident_updates`, `api_keys`, billing, more channel types, agent registrations and tokens.
+
+Planned in [Phase 4](../tasks/phase4.md), not implemented yet: `invitations` (T-01), `projects` and `project_members` with `project_id` on `monitors` and `notification_channels` (NULL = organization-wide channel) and a Default project per tenant (T-02, [ADR-0102](../adr/0102-teams-roles-projects.md)); `status_pages`, `status_page_components`, `status_page_snapshots` and the `maiak_statuspage` role (P-05, [ADR-0103](../adr/0103-status-page.md)). All tenant-scoped with forced RLS and composite keys; `memberships.role` gets enforced without a schema change.
 
 ## Retention and sizing (design target)
 Raw results 30 days (configurable per tenant or plan later), hourly rollups 13 months (deletion not implemented, L-110). Rough size at 100 000 monitors and one location: 144 M rows per day, about 4.3 B rows over 30 days (0.6-0.8 TB with indexes). Several locations multiply this. See [ADR-0012](../adr/0012-scale-path.md); the load test is L-010.
