@@ -49,6 +49,16 @@ A tenant has exactly one user today: registration creates a tenant with its owne
 - SSO, API tokens, groups and per-user notification preferences are not part of this (L-269). Sharing one channel with a subset of projects is not possible: a channel belongs to one project or to the whole organization (L-271).
 - Phase 3 agent tasks wait; agents are created per project after T-02.
 
+## Implementation notes (T-01, 2026-11-05)
+Choices made while building T-01 within this decision:
+- **Operation table.** `internal/authz` maps every operation id to a minimum role: reads `viewer`; monitor and heartbeat changes `member`; channels (including the test message), members and invitations `admin`; `deleteOrganization` `owner`; the platform admin operations keep their own flag check. A strict-handler middleware applies it after the request validator; `TestAuthzTableCoversSpec` and `TestIntegrationRoleMatrix` (expected roles written down independently of the table) guard it. The role is read from `memberships` on every request (L-279).
+- **Member list** is readable by every role; invitations are admin-only (L-278). An admin changes and removes admins, members and viewers, never owners, and never grants a role above its own; owners are granted only by a role change, never by an invitation. All member changes, invitation creates and acceptances take the tenant row lock, so two owners cannot demote each other at once.
+- **Extra operations** the decision implies: `POST /organization/leave` (any role; refused for the last owner and the platform admin), `DELETE /organization` (owner; soft delete through the definer `org_delete_tenant`, which acts only on the transaction's tenant and refuses `default`), `POST /invitations/lookup` (public, for the invitation page), and revoke as `POST /invitations/{id}/revoke`.
+- **Bearer secret (R-213).** The link is `<MAIAK_PUBLIC_URL>/invite#<token>`: the fragment is never sent to a server, and the web sends the token only in request bodies. Failed token attempts are limited per client IP (L-276).
+- **Platform admin.** It cannot accept invitations (409), because `BootstrapAdmin` refuses to start when the admin belongs to another tenant (L-277); its membership of `default` cannot be changed or removed. `BootstrapAdmin` now retires only previous owners that still carry the platform-admin flag (an earlier configured admin), never owners granted through member management.
+- **Quota.** An open invitation holds its place in `max_members`; accepting re-checks only that the tenant is not above its limit (a lowered plan), with `plans.CheckJoin`.
+- **Sessions.** Switching and accepting create the new session, then delete the old one (L-280). Removing a member deletes its sessions in that tenant through the existing `ON DELETE CASCADE`.
+
 ## Alternatives considered
 - Project-aware RLS (`app.project_ids` set per transaction): stronger, but every definer function, rollup and outbox path would need it, and a member's project list changes at runtime. Kept as the upgrade path if R-212 bites.
 - Invitations bound to an email address: needs outgoing email to mean anything (L-170). The link is single-use, expires, and the admin sees who joined.

@@ -6,7 +6,7 @@ Maiak is a **modular monolith deployed as several processes** from one Go module
 
 | Process | Responsibility | DB role | Scaling |
 |---|---|---|---|
-| `api` (`cmd/api`) | REST for the web app: auth, monitors, notification channels and their test message, dashboard read models, the platform admin panel (`/api/v1/admin/*`, platform admin only, ADR-0097) and the public heartbeat ping (`/api/v1/heartbeat/{token}`, no session, ADR-0094). Upserts the admin from `MAIAK_ADMIN_*` at start and gives it the platform-admin flag | `maiak_api` | stateless, replicas by load (the ping rate limits are per replica, L-200) |
+| `api` (`cmd/api`) | REST for the web app: auth, organizations, members, roles and invitations (ADR-0102), monitors, notification channels and their test message, dashboard read models, the platform admin panel (`/api/v1/admin/*`, platform admin only, ADR-0097) and the public heartbeat ping (`/api/v1/heartbeat/{token}`, no session, ADR-0094). Upserts the admin from `MAIAK_ADMIN_*` at start and gives it the platform-admin flag | `maiak_api` | stateless, replicas by load (the ping rate limits are per replica, L-200) |
 | `worker` (`cmd/worker`) | Claims due (monitor, location) jobs every second, runs HTTPS checks through the SSRF guard, writes result, schedule, incident state and outbox in one transaction per tenant batch. Calls `ensure_partitions()` at start and hourly | `maiak_worker` | replicas (limits are per process, R-030) |
 | `jobs` (`cmd/jobs`) | Outbox delivery to Slack (retries, per-channel rate limit) and singleton housekeeping under advisory locks: heartbeat evaluation (30 s), partitions (daily), rollups (5 min), retention (daily), expired-session purge (hourly) | `maiak_worker` | 1+ replicas (R-060, L-082) |
 | `migrate` (`cmd/migrate`) | Applies migrations (ArgoCD Sync hook Job, wave -1, ADR-0013) | `maiak_owner` | one-shot Job |
@@ -18,7 +18,7 @@ Every process serves `/healthz`, `/readyz` and `/metrics` on the admin port (`:9
 
 Later: `probe` (remote executor, no DB access, pull/push over HTTPS), `agent` (inside a client cluster), ClickHouse for results.
 
-Planned in [Phase 4](../tasks/phase4.md), not implemented: a `statuspage` process (`/status/<slug>`, no sessions, own database role that can only read prepared snapshots built by `jobs`, [ADR-0103](../adr/0103-status-page.md)); roles enforced in one authorization package, invitations, an organization switcher and projects inside an organization, with RLS staying per tenant ([ADR-0102](../adr/0102-teams-roles-projects.md)).
+Planned in [Phase 4](../tasks/phase4.md), not implemented: a `statuspage` process (`/status/<slug>`, no sessions, own database role that can only read prepared snapshots built by `jobs`, [ADR-0103](../adr/0103-status-page.md)); projects inside an organization, with RLS staying per tenant (T-02, [ADR-0102](../adr/0102-teams-roles-projects.md)). Roles, invitations and the organization switcher are implemented (T-01).
 
 ```mermaid
 flowchart LR
@@ -39,7 +39,8 @@ flowchart LR
 | Module | Responsibility | Owns tables |
 |---|---|---|
 | `tenants` | tenant rows and limits | `tenants` |
-| `auth` | admin bootstrap, self-service registration (creates the tenant through `tenants`), login/logout, sessions, CSRF, login rate limit | `users`, `memberships`, `auth_identities`, `sessions` |
+| `auth` | admin bootstrap, self-service registration (creates the tenant through `tenants`, or joins one through an invitation), login/logout, sessions, CSRF, login and invitation rate limits, members and role changes, invitations, the organization switcher, owner-only organization delete (ADR-0102) | `users`, `memberships`, `auth_identities`, `sessions`, `invitations` |
+| `authz` | pure: the operation-to-minimum-role table and the role rules (`Can`, `CanManage`, `CanInvite`); deny by default (ADR-0102) | none |
 | `monitors` | monitor definition and validation (http and heartbeat), lifecycle (pause, resume, URL change, soft delete), location assignment, heartbeat tokens, pings and their evaluation for jobs | `monitors`, `monitor_locations`, `monitor_state` (the incident state machine updates it inside the result transaction), `heartbeat_tokens` |
 | `scheduler` | claims and leases, schedule resets, home location | `monitor_location_state`, `probe_locations` |
 | `safehttp` | SSRF guard: guarded `http.Client` for the prober and the Slack notifier | none |
@@ -52,7 +53,7 @@ flowchart LR
 | `audit` | audit log rows | `audit_log` |
 | `queries` | read models for the dashboard (cross-table SELECT only) | none |
 | `admin` | platform admin panel: tenants across the platform (list, plan, suspension, soft delete), their users, password resets; everything through the `admin_*` definer functions, which check the acting user's flag, enforce the guard rails and write the audit rows (ADR-0097) | none |
-| `api` | HTTP layer generated from `api/openapi.yaml`, error mapping | none |
+| `api` | HTTP layer generated from `api/openapi.yaml`, the role check of every operation (`authorize`, through `internal/authz`), error mapping | none |
 | `dbbootstrap` | database and role bootstrap used by `maiakctl` and tests | none |
 | `platform` | config, `WithTenantTx`/`WithTx`, logging, metrics, crypto, clock, httpx, uuidv7 | none |
 | `e2e` | end-to-end test only (`-tags maiaktest`, ADR-0080) | none |
@@ -100,10 +101,25 @@ The deadline is the newer of the last ping and the start of the wait (creation, 
 ### Monitor lifecycle (api)
 Create inserts the monitor, its home location and the initial state rows in one transaction (limit checked under a tenant row lock). Pause, resume and a URL change call `reset_monitor_runtime(monitor_id)` (schedule back to unknown, lease dropped, next run within 30 s) and reset `monitor_state`; pause, delete and a URL change resolve an open incident without a notification (ADR-0016, ADR-0018).
 
+### Invitation and role check (ADR-0102)
+```
+web     -> any operation with a session       validator: session (+ CSRF on unsafe methods)
+api     -> authorize(operation id)            role of the session's membership, read per request;
+                                              below the operation's minimum -> 403 forbidden
+admin   -> POST /api/v1/invitations           tenant row lock, max_members (members + open invitations),
+                                              row with the token's SHA-256, audit member.invited;
+                                              answer: <public URL>/invite#<token>, shown once
+invitee -> /invite#<token> (web)              the fragment never reaches a server
+        -> POST /invitations/lookup {token}   auth_invitation_lookup(hash): open invitation of an active tenant, else 404
+        -> POST /auth/register {..inviteToken} or POST /invitations/accept {token}
+api     -> one transaction in the inviting tenant: tenant row lock, invitation row lock and re-check,
+           membership, invitation used, audit member.joined, new session (the old one is deleted)
+```
+
 ### Who calls which database function
 | Caller | Functions |
 |---|---|
-| api | `auth_lookup_session`, `auth_login_tenant`, `auth_create_tenant`, `auth_count_other_memberships`, `auth_revoke_user_sessions`, `reset_monitor_runtime`, `heartbeat_ping` |
+| api | `auth_lookup_session`, `auth_login_tenant`, `auth_create_tenant`, `auth_count_other_memberships`, `auth_revoke_user_sessions`, `auth_invitation_lookup`, `auth_user_organizations`, `org_delete_tenant`, `reset_monitor_runtime`, `heartbeat_ping` |
 | worker | `claim_due_monitors`, `ensure_partitions` |
 | jobs | `claim_deliveries`, `finish_delivery`, `outbox_pending`, `ensure_partitions`, `compute_rollups_catch_up`, `list_droppable_partitions`, `detach_expired_partition`, `drop_detached_partition`, `purge_expired_sessions`, `list_due_heartbeats` |
 

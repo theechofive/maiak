@@ -105,7 +105,7 @@ The Claude Design project ("Maiak Monitor Dashboard Directions") is the source o
 | Three locations, a location column | One location, `home-eu-central-1` | Leave out |
 | `#ops-alerts` | Channels have a user-given name since S-01 (ADR-0100), not the Slack channel itself | Show `Channel.name` as typed |
 | "Why" analysis, "HTTP 502 Bad Gateway", "Connection refused" | Only an error kind | `describeErrorKind()` |
-| Starter/Team/Business plans, "See plans", member limits | `free` and `internal`, no plans page, no member limits | Names and limits from the API only |
+| Starter/Team/Business plans, "See plans", member limits | `free` and `internal`, no plans page; the member limit (`max_members`, T-01) counts open invitations too | Names and limits from the API only |
 | Alert after 1-10 | 1-3 | `Segmented` with 1, 2, 3 |
 | Exact status 100-599 | 200-299, 400-599 | Existing `monitorForm.ts` rules |
 | `404 no_service` from Slack | Slack's answer is never returned | A general message |
@@ -121,6 +121,9 @@ Deviations in the kit itself, chosen on purpose:
 - **One focus style**: a 2 px outline everywhere, including inputs, instead of the kit's inset border on inputs.
 - **Type scale** consolidated from about sixteen sizes in the mock-ups to eight.
 - **`light-dark()`** instead of a `.dark` class, so there is no theme script to run before first paint (`script-src 'self'` forbids an inline one).
+
+## Roles in the UI
+The server decides what a role may do (`internal/authz`, ADR-0102); the web mirrors it in `web/src/lib/roles.ts` only to avoid offering what would be refused. A control the role does not allow is left out, and one quiet line says why and who can do it (`ROLE_HINTS`), never a disabled control without a reason. Read-only views stay complete: a viewer sees every monitor, incident and channel. Secrets (heartbeat URLs, invitation links) are shown only to the person who just created them, in a `CopyField`, and live in component state only.
 
 ## Needs the backend
 Good ideas from the mock-ups that the API cannot serve today. Not built; tracked as [L-242](LEDGER.md).
