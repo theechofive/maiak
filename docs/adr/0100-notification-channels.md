@@ -4,7 +4,7 @@
 - Date: 2026-10-27
 
 ## Context
-ADR-0019 allowed one Slack channel per tenant (a partial unique index) and left `monitor_channels` unused; ADR-0050 exposed it as `GET/PUT /settings/slack` and `POST /settings/slack/test`. ADR-0099 (Phase 3, task S-01) asks for several channels per tenant within the plan quota, each with its own events, an optional mention and optional reminders for incidents that stay open, chosen per monitor, and for a way to delete a channel (L-081). Removing `/settings/slack` is a breaking API change, so it needs this ADR.
+ADR-0019 allowed one Slack channel per tenant (a partial unique index) and left `monitor_channels` unused; ADR-0050 exposed it as `GET/PUT /settings/slack` and `POST /settings/slack/test`. ADR-0101 (Phase 3, task S-01) asks for several channels per tenant within the plan quota, each with its own events, an optional mention and optional reminders for incidents that stay open, chosen per monitor, and for a way to delete a channel (L-081). Removing `/settings/slack` is a breaking API change, so it needs this ADR.
 
 ## Decision
 - **API.** `/api/v1/settings/slack` and `/settings/slack/test` are removed and replaced by `/api/v1/channels` (list, create) and `/api/v1/channels/{channelId}` (get, patch, delete) plus `POST /api/v1/channels/{channelId}/test`. The problem type `slack-not-configured` is gone: an unknown channel is 404. The SPA is the only client and changes in the same commit. Spec version 0.5.0.
