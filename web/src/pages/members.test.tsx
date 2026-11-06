@@ -204,6 +204,7 @@ describe("members page", () => {
 describe("role-aware pages", () => {
   const monitor: MonitorDetail = {
     id: "m1",
+    projectId: "p-default",
     name: "Website",
     type: "http",
     url: "https://example.com/",

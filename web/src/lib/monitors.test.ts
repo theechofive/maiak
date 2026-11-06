@@ -18,6 +18,7 @@ const now = Date.parse("2026-10-20T14:30:00Z");
 function item(over: Partial<MonitorListItem>): MonitorListItem {
   return {
     id: "m",
+    projectId: "p-default",
     name: "Website",
     type: "http",
     url: "https://example.com",

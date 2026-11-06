@@ -25,7 +25,12 @@ export interface ChannelFormValues {
   mention: string;
   /** Minutes as typed; empty or 0 turns reminders off. */
   reminderMinutes: string;
+  /** A project id, ORGANIZATION_WIDE, or empty for the Default project (T-02). */
+  project: string;
 }
+
+/** The project choice of an organization-wide channel (no project, every project may use it). */
+export const ORGANIZATION_WIDE = "organization";
 
 export type ChannelFormErrors = Partial<Record<keyof ChannelFormValues, string>>;
 
@@ -35,6 +40,7 @@ export const emptyChannelForm: ChannelFormValues = {
   events: ["down", "recovered", "tls_expiring"],
   mention: "",
   reminderMinutes: "0",
+  project: "",
 };
 
 export function valuesFromChannel(c: Channel): ChannelFormValues {
@@ -44,6 +50,7 @@ export function valuesFromChannel(c: Channel): ChannelFormValues {
     events: c.events,
     mention: c.mention.join(" "),
     reminderMinutes: String(c.reminderMinutes),
+    project: c.projectId ?? ORGANIZATION_WIDE,
   };
 }
 
@@ -87,12 +94,19 @@ export function validateChannelForm(
 }
 
 export function toChannelCreate(v: ChannelFormValues): ChannelCreate {
+  const scope =
+    v.project === ORGANIZATION_WIDE
+      ? { organizationWide: true }
+      : v.project
+        ? { projectId: v.project }
+        : {};
   return {
     name: v.name.trim(),
     webhookUrl: v.webhookUrl.trim(),
     events: v.events,
     mention: [...new Set(parseMention(v.mention))],
     reminderMinutes: reminderOf(v.reminderMinutes) ?? 0,
+    ...scope,
   };
 }
 

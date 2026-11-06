@@ -36,6 +36,7 @@ describe("channel form", () => {
     const errors = validateChannelForm(
       {
         name: "",
+        project: "",
         webhookUrl: "https://example.com/hook",
         events: [],
         mention: "@everyone",

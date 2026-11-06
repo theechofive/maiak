@@ -19,8 +19,10 @@ export interface MonitorFormValues {
   expectedCode: string;
   failureThreshold: number;
   notifySlack: boolean;
-  /** Selected notification channels; none means every active channel (ADR-0100). */
+  /** Selected notification channels; none means the active channels of the project (T-02). */
   channelIds: string[];
+  /** The monitor's project; empty lets the server use the Default project. */
+  projectId: string;
   /** Heartbeat fields, as typed (seconds). */
   expectedIntervalSeconds: string;
   graceSeconds: string;
@@ -34,6 +36,7 @@ export const formFields = [
   "failureThreshold",
   "notifySlack",
   "channelIds",
+  "projectId",
   "expectedIntervalSeconds",
   "graceSeconds",
 ] as const;
@@ -56,6 +59,7 @@ export const emptyMonitorForm: MonitorFormValues = {
   failureThreshold: 2,
   notifySlack: true,
   channelIds: [],
+  projectId: "",
   expectedIntervalSeconds: String(DEFAULT_INTERVAL),
   graceSeconds: String(DEFAULT_GRACE),
 };
@@ -71,6 +75,7 @@ export function valuesFromMonitor(m: MonitorDetail): MonitorFormValues {
     failureThreshold: m.failureThreshold,
     notifySlack: m.notifySlack,
     channelIds: m.channelIds,
+    projectId: m.projectId,
     expectedIntervalSeconds: String(m.expectedIntervalSeconds ?? DEFAULT_INTERVAL),
     graceSeconds: String(m.graceSeconds ?? DEFAULT_GRACE),
   };
@@ -143,6 +148,7 @@ export function validateMonitorForm(v: MonitorFormValues): MonitorFormErrors {
 
 /** The PATCH body (and, for http monitors, the create body). */
 export function toMonitorRequest(v: MonitorFormValues): MonitorUpdate {
+  const project = v.projectId ? { projectId: v.projectId } : {};
   if (v.type === "heartbeat") {
     return {
       name: v.name.trim(),
@@ -150,6 +156,7 @@ export function toMonitorRequest(v: MonitorFormValues): MonitorUpdate {
       graceSeconds: Number(v.graceSeconds.trim()),
       notifySlack: v.notifySlack,
       channelIds: v.channelIds,
+      ...project,
     };
   }
   return {
@@ -159,7 +166,24 @@ export function toMonitorRequest(v: MonitorFormValues): MonitorUpdate {
     failureThreshold: v.failureThreshold,
     notifySlack: v.notifySlack,
     channelIds: v.channelIds,
+    ...project,
   };
+}
+
+/**
+ * Moving to another project keeps only the selected channels that a monitor of that project may
+ * use: organization-wide ones and the new project's (ADR-0102). Unknown ids are kept for the
+ * server to decide.
+ */
+export function channelsForProject(
+  selected: string[],
+  projectId: string,
+  known: Channel[] | undefined,
+): string[] {
+  return selected.filter((id) => {
+    const c = known?.find((k) => k.id === id);
+    return !c || c.projectId === null || c.projectId === projectId;
+  });
 }
 
 /** The create body: a heartbeat names its type, an http monitor keeps the default. */

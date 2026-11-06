@@ -44,16 +44,19 @@ import { withoutHttps } from "../lib/monitorForm";
 import { useNow } from "../lib/useNow";
 import { useAuth } from "../auth/AuthProvider";
 import { abilities, ROLE_HINTS } from "../lib/roles";
+import { useProjectScope } from "../lib/useProjectScope";
 
 export default function Monitors() {
   const now = useNow();
   const [query, setQuery] = useState("");
   const filter = useRef<HTMLInputElement>(null);
+  const { projectId, projects } = useProjectScope();
   const monitors = useQuery({
-    queryKey: queryKeys.monitors,
-    queryFn: listMonitors,
+    queryKey: queryKeys.monitorList(projectId),
+    queryFn: () => listMonitors(projectId),
     refetchInterval: POLL_MS,
   });
+  const projectName = projects.data?.items.find((p) => p.id === projectId)?.name;
   const usage = useUsage();
   const down = monitors.data?.summary.down ?? 0;
   // The sweep marks refreshes, not the first load.
@@ -95,6 +98,9 @@ export default function Monitors() {
           <h1 className="text-headline leading-[1.1] font-semibold tracking-[-0.02em] sm:text-display">
             Monitors
           </h1>
+          {projectName && (
+            <p className="text-caption text-muted-foreground">Project {projectName}</p>
+          )}
           {list && list.items.length > 0 && <Summary list={list} />}
           {monitors.isPending && <Skeleton className="w-60" />}
         </div>

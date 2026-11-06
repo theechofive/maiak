@@ -30,6 +30,9 @@ export type Invitation = Schemas["Invitation"];
 export type InvitationRole = Schemas["InvitationRole"];
 export type InvitationCreated = Schemas["InvitationCreated"];
 export type InvitationPreview = Schemas["InvitationPreview"];
+export type Project = Schemas["Project"];
+export type ProjectMember = Schemas["ProjectMember"];
+export type ProjectRole = Schemas["ProjectRole"];
 
 /** Page size of the admin lists (the API default; at most 100). */
 export const ADMIN_PAGE_SIZE = 25;
@@ -40,11 +43,15 @@ export const POLL_MS = 15_000;
 export const queryKeys = {
   me: ["me"] as const,
   monitors: ["monitors"] as const,
+  monitorList: (projectId: string | undefined) => ["monitors", "list", projectId ?? "all"] as const,
   monitor: (id: string) => ["monitors", id] as const,
   stats: (id: string, range: StatsRange) => ["monitors", id, "stats", range] as const,
   checks: (id: string) => ["monitors", id, "checks"] as const,
   incidents: (id: string) => ["monitors", id, "incidents"] as const,
   channels: ["channels"] as const,
+  channelsFor: (projectId: string | undefined) => ["channels", "for", projectId ?? "all"] as const,
+  projects: ["projects"] as const,
+  projectMembers: (id: string) => ["projects", id, "members"] as const,
   usage: ["usage"] as const,
   publicConfig: ["public-config"] as const,
   adminStats: ["admin", "stats"] as const,
@@ -105,7 +112,9 @@ export async function logout(): Promise<void> {
   }
 }
 
-export const listMonitors = () => unwrap(client.GET("/api/v1/monitors"));
+/** The monitors the user sees; with a project id only that project's. */
+export const listMonitors = (projectId?: string) =>
+  unwrap(client.GET("/api/v1/monitors", { params: { query: projectId ? { projectId } : {} } }));
 
 const monitorPath = (monitorId: string) => ({ params: { path: { monitorId } } });
 
@@ -148,7 +157,9 @@ export const listChecks = (monitorId: string, limit = 20) =>
 export const listIncidents = (monitorId: string) =>
   unwrap(client.GET("/api/v1/monitors/{monitorId}/incidents", monitorPath(monitorId)));
 
-export const listChannels = () => unwrap(client.GET("/api/v1/channels"));
+/** The channels the user sees; with a project id, those a monitor of that project may select. */
+export const listChannels = (projectId?: string) =>
+  unwrap(client.GET("/api/v1/channels", { params: { query: projectId ? { projectId } : {} } }));
 
 const channelPath = (channelId: string) => ({ params: { path: { channelId } } });
 
@@ -260,3 +271,39 @@ export async function leaveOrganization(): Promise<void> {
 }
 
 export const deleteOrganization = () => unwrap(client.DELETE("/api/v1/organization"));
+
+// Projects (T-02, ADR-0102).
+
+export const listProjects = () => unwrap(client.GET("/api/v1/projects"));
+
+const projectPath = (projectId: string) => ({ params: { path: { projectId } } });
+
+export const createProject = (name: string) =>
+  unwrap(client.POST("/api/v1/projects", { body: { name } }));
+
+export const renameProject = (projectId: string, name: string) =>
+  unwrap(
+    client.PATCH("/api/v1/projects/{projectId}", { ...projectPath(projectId), body: { name } }),
+  );
+
+export const deleteProject = (projectId: string) =>
+  unwrap(client.DELETE("/api/v1/projects/{projectId}", projectPath(projectId)));
+
+export const listProjectMembers = (projectId: string) =>
+  unwrap(client.GET("/api/v1/projects/{projectId}/members", projectPath(projectId)));
+
+/** Adds a member to a project; "viewer" makes it read-only there, undefined keeps its role. */
+export const putProjectMember = (projectId: string, userId: string, role?: ProjectRole) =>
+  unwrap(
+    client.PUT("/api/v1/projects/{projectId}/members/{userId}", {
+      params: { path: { projectId, userId } },
+      body: role ? { role } : {},
+    }),
+  );
+
+export const removeProjectMember = (projectId: string, userId: string) =>
+  unwrap(
+    client.DELETE("/api/v1/projects/{projectId}/members/{userId}", {
+      params: { path: { projectId, userId } },
+    }),
+  );

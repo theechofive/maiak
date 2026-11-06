@@ -35,11 +35,13 @@ import {
   WriteOnlyValue,
   Loading,
   Segmented,
+  Select,
 } from "../components/ui";
 import {
   CHANNEL_NAME_MAX,
   channelEvents,
   emptyChannelForm,
+  ORGANIZATION_WIDE,
   eventsLabel,
   REMINDER_MAX,
   reminderLabel,
@@ -52,6 +54,8 @@ import {
 } from "../lib/channels";
 import { formatClock } from "../lib/format";
 import { useTheme } from "../lib/theme";
+import { channelScopeLabel } from "../lib/projects";
+import { useProjectScope } from "../lib/useProjectScope";
 import { countOf, useUsage } from "../lib/usage";
 
 export default function Settings() {
@@ -121,6 +125,7 @@ const usageRows: { key: keyof Usage["limits"]; label: string }[] = [
   { key: "heartbeats", label: "Heartbeat monitors" },
   { key: "channels", label: "Notification channels" },
   { key: "members", label: "Members and open invitations" },
+  { key: "projects", label: "Projects" },
 ];
 
 function PlanUsage() {
@@ -179,7 +184,9 @@ function NotificationChannels() {
   const queryClient = useQueryClient();
   const toast = useToast();
   const usage = useUsage();
-  const channels = useQuery({ queryKey: queryKeys.channels, queryFn: listChannels });
+  const channels = useQuery({ queryKey: queryKeys.channels, queryFn: () => listChannels() });
+  const projects = useProjectScope().projects.data?.items;
+  const multiProject = (projects?.length ?? 0) > 1;
   const [editing, setEditing] = useState<Editing>({ mode: "none" });
   const [deleting, setDeleting] = useState<Channel | undefined>();
   const [result, setResult] = useState<TestResult | undefined>();
@@ -244,6 +251,7 @@ function NotificationChannels() {
           <thead>
             <tr>
               <Th>Name</Th>
+              {multiProject && <Th>Project</Th>}
               <Th>Events</Th>
               <Th>Mention</Th>
               <Th>Reminder</Th>
@@ -261,6 +269,9 @@ function NotificationChannels() {
                 <Td>
                   <span className="font-medium break-words">{c.name}</span>
                 </Td>
+                {multiProject && (
+                  <Td className="text-caption">{channelScopeLabel(c.projectId, projects)}</Td>
+                )}
                 <Td className="text-caption">{eventsLabel(c.events)}</Td>
                 <Td className="font-mono text-caption">
                   {c.mention.length > 0 ? c.mention.join(" ") : "None"}
@@ -395,6 +406,10 @@ function ChannelForm({
   const toast = useToast();
   const queryClient = useQueryClient();
   const creating = channel === undefined;
+  const scope = useProjectScope();
+  const projects = scope.projects.data?.items;
+  // A new channel starts in the project the shell is filtered to, or the Default project.
+  const defaultProject = scope.projectId ?? projects?.find((p) => p.isDefault)?.id ?? "";
   const [values, setValues] = useState<ChannelFormValues>(
     channel ? valuesFromChannel(channel) : emptyChannelForm,
   );
@@ -412,8 +427,13 @@ function ChannelForm({
   }, [replacing, creating]);
 
   const save = useMutation({
-    mutationFn: (v: ChannelFormValues) =>
-      creating ? createChannel(toChannelCreate(v)) : updateChannel(channel.id, toChannelUpdate(v)),
+    mutationFn: (v: ChannelFormValues) => {
+      if (creating)
+        return createChannel(toChannelCreate({ ...v, project: v.project || defaultProject }));
+      // The project is sent only when it changes (a move, ADR-0102).
+      const unchanged = v.project === valuesFromChannel(channel).project;
+      return updateChannel(channel.id, toChannelUpdate(unchanged ? { ...v, project: "" } : v));
+    },
     onSuccess: (saved) => {
       // The URL is a secret: it is never shown again after saving.
       setValues((v) => ({ ...v, webhookUrl: "" }));
@@ -427,7 +447,8 @@ function ChannelForm({
       const fields: ChannelFormErrors = {};
       if (err instanceof ApiError) {
         for (const [field, message] of Object.entries(err.fieldErrorMap())) {
-          const key = field.split(".")[0]!;
+          const raw = field.split(".")[0]!;
+          const key = raw === "projectId" || raw === "organizationWide" ? "project" : raw;
           if (key in values) fields[key as keyof ChannelFormValues] ??= message;
         }
       }
@@ -540,6 +561,30 @@ function ChannelForm({
             </span>
           )}
         </fieldset>
+
+        {projects && projects.length > 0 && (
+          <Field
+            label="Project"
+            hint="Monitors of this project can select the channel, and it gets their alerts when a monitor selects no channel. An organization-wide channel can be selected by every project's monitors. Moving it removes it from monitors of other projects."
+            error={errors.project}
+          >
+            {(c) => (
+              <Select
+                {...c}
+                name="project"
+                value={values.project || defaultProject}
+                onChange={(e) => update("project", e.target.value)}
+              >
+                {(projects ?? []).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+                <option value={ORGANIZATION_WIDE}>Organization-wide</option>
+              </Select>
+            )}
+          </Field>
+        )}
 
         <Field
           label="Mention (optional)"

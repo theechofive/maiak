@@ -9,6 +9,7 @@ import MonitorDetails from "./pages/MonitorDetails";
 import MonitorForm from "./pages/MonitorForm";
 import Monitors from "./pages/Monitors";
 import NotFound from "./pages/NotFound";
+import Projects from "./pages/Projects";
 import Register from "./pages/Register";
 import Settings from "./pages/Settings";
 import AdminOverview from "./pages/admin/AdminOverview";
@@ -29,6 +30,7 @@ export default function App() {
           <Route path="/monitors/:id/edit" element={<MonitorForm mode="edit" />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/members" element={<Members />} />
+          <Route path="/projects" element={<Projects />} />
           <Route path="/admin" element={<RequirePlatformAdmin />}>
             <Route index element={<AdminOverview />} />
             <Route path="tenants" element={<AdminTenants />} />

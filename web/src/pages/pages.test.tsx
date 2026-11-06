@@ -5,6 +5,7 @@ import { json, mockApi, problem, renderApp, signedIn } from "../test/utils";
 
 const listItem = (over: Partial<MonitorListItem>): MonitorListItem => ({
   id: "m1",
+  projectId: "p-default",
   name: "Website",
   type: "http",
   url: "https://example.com/",
@@ -45,6 +46,7 @@ const detail = (over: Partial<MonitorDetail> = {}): MonitorDetail => {
 
 const channel = (over: Partial<Channel> = {}): Channel => ({
   id: "c1",
+  projectId: "p-default",
   name: "#ops",
   type: "slack_webhook",
   events: ["down", "recovered", "tls_expiring"],
@@ -64,8 +66,14 @@ const usageOf = (
   maxHeartbeats = 1,
 ) => ({
   plan,
-  limits: { monitors: maxMonitors, heartbeats: maxHeartbeats, channels: 1, members: 3 },
-  usage: { monitors, heartbeats, channels: 1, members: 1 },
+  limits: {
+    monitors: maxMonitors,
+    heartbeats: maxHeartbeats,
+    channels: 1,
+    members: 3,
+    projects: 50,
+  },
+  usage: { monitors, heartbeats, channels: 1, members: 1, projects: 1 },
 });
 
 describe("monitors list", () => {
@@ -333,7 +341,7 @@ describe("monitor form", () => {
     await userEvent.type(await screen.findByLabelText("Name"), "Shop");
     await userEvent.type(screen.getByLabelText("URL"), "shop.example.com");
     const picker = await screen.findByRole("group", { name: "Notification channels" });
-    expect(picker).toHaveAccessibleDescription(/every active channel/);
+    expect(picker).toHaveAccessibleDescription(/active channels of this project/);
     expect(within(picker).getByLabelText("#on-call")).toHaveAccessibleDescription(/Webhook failed/);
     await userEvent.click(within(picker).getByLabelText("#on-call"));
     await userEvent.click(screen.getByRole("button", { name: "Create monitor" }));
@@ -722,6 +730,7 @@ describe("settings", () => {
       ["Heartbeat monitors", "0", "1"],
       ["Notification channels", "1", "1"],
       ["Members and open invitations", "1", "3"],
+      ["Projects", "1", "50"],
     ]);
     expect(screen.getByText("Limit reached")).toBeInTheDocument();
   });

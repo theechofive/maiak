@@ -27,12 +27,14 @@ import {
   Input,
   ReadOnlyValue,
   Segmented,
+  Select,
   Skeleton,
   Loading,
 } from "../components/ui";
 import { formatDuration } from "../lib/format";
 import { GRACE_MAX, INTERVAL_MAX, INTERVAL_MIN, INTERVAL_PRESETS } from "../lib/heartbeat";
 import {
+  channelsForProject,
   describeSetup,
   emptyMonitorForm,
   keepLiveChannels,
@@ -52,12 +54,16 @@ import {
 import { atHeartbeatLimit, atMonitorLimit, useUsage } from "../lib/usage";
 import { useAuth } from "../auth/AuthProvider";
 import { abilities, ROLE_HINTS } from "../lib/roles";
+import { canEditIn, channelScopeLabel, defaultProjectFor, editableProjects } from "../lib/projects";
+import { useProjectScope } from "../lib/useProjectScope";
+import type { Project } from "../api/endpoints";
 
 const title = "text-headline leading-[1.1] font-semibold tracking-[-0.02em] sm:text-display";
 
 export default function MonitorForm({ mode }: { mode: "create" | "edit" }) {
   const { id = "" } = useParams();
   const canEdit = abilities(useAuth().session).editMonitors;
+  const scope = useProjectScope();
   const monitor = useQuery({
     queryKey: queryKeys.monitor(id),
     queryFn: () => getMonitor(id),
@@ -79,9 +85,21 @@ export default function MonitorForm({ mode }: { mode: "create" | "edit" }) {
   }
 
   if (mode === "create") {
+    if (scope.projects.isPending) {
+      return (
+        <Loading label="Loading projects…" className="pt-10">
+          <Skeleton className="h-8 w-64" />
+        </Loading>
+      );
+    }
+    const projects = scope.projects.data?.items;
     return (
       <Page back={<Link to="/">← Monitors</Link>} title="Add monitor">
-        <MonitorFormBody mode="create" initial={emptyMonitorForm} />
+        <MonitorFormBody
+          mode="create"
+          projects={projects}
+          initial={{ ...emptyMonitorForm, projectId: defaultProjectFor(scope.choice, projects) }}
+        />
       </Page>
     );
   }
@@ -108,6 +126,18 @@ export default function MonitorForm({ mode }: { mode: "create" | "edit" }) {
     );
   }
   const m = monitor.data;
+  const ownProject = scope.projects.data?.items.find((p) => p.id === m.projectId);
+  if (scope.projects.data && !canEditIn(ownProject)) {
+    // A viewer override in this project (ADR-0102): the API would refuse the save.
+    return (
+      <Page back={<Link to={`/monitors/${m.id}`}>← {m.name}</Link>} title={`Edit ${m.name}`}>
+        <Alert tone="neutral" title="Read only.">
+          Your role in the project {ownProject?.name ?? ""} is viewer: you can see this monitor but
+          not change it. Ask an admin to change your role in the project.
+        </Alert>
+      </Page>
+    );
+  }
   return (
     <Page
       back={<Link to={`/monitors/${m.id}`}>← {m.name}</Link>}
@@ -119,7 +149,13 @@ export default function MonitorForm({ mode }: { mode: "create" | "edit" }) {
         </span>
       }
     >
-      <MonitorFormBody key={m.id} mode="edit" id={m.id} initial={valuesFromMonitor(m)} />
+      <MonitorFormBody
+        key={m.id}
+        mode="edit"
+        id={m.id}
+        projects={scope.projects.data?.items}
+        initial={valuesFromMonitor(m)}
+      />
     </Page>
   );
 }
@@ -153,10 +189,12 @@ function MonitorFormBody({
   mode,
   id,
   initial,
+  projects,
 }: {
   mode: "create" | "edit";
   id?: string;
   initial: MonitorFormValues;
+  projects: Project[] | undefined;
 }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -169,18 +207,26 @@ function MonitorFormBody({
   const usage = useUsage();
   // Shared with the channel picker (same query key). A selected channel that was deleted since
   // the monitor was loaded is dropped before saving, instead of failing with 422.
-  const channels = useQuery({ queryKey: queryKeys.channels, queryFn: listChannels });
+  // The channels a monitor of the chosen project may select (its own and organization-wide).
+  const pickerProject = values.projectId || undefined;
+  const channels = useQuery({
+    queryKey: queryKeys.channelsFor(pickerProject),
+    queryFn: () => listChannels(pickerProject),
+  });
 
   const save = useMutation({
     mutationFn: (v: MonitorFormValues) => {
       const saved = keepLiveChannels(v, channels.data?.items);
-      return mode === "create"
-        ? createMonitor(toCreateRequest(saved))
-        : updateMonitor(id!, toMonitorRequest(saved));
+      if (mode === "create") return createMonitor(toCreateRequest(saved));
+      // The project is sent only when it changes (a move, ADR-0102).
+      const body = toMonitorRequest(saved);
+      if (body.projectId === initial.projectId) delete body.projectId;
+      return updateMonitor(id!, body);
     },
     onSuccess: async (saved) => {
       if (mode === "create") void queryClient.invalidateQueries({ queryKey: queryKeys.usage });
       await queryClient.invalidateQueries({ queryKey: queryKeys.monitors });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
       toast(mode === "create" ? "Monitor created" : "Changes saved");
       if (saved.heartbeatUrl) {
         setCreated(saved);
@@ -218,6 +264,7 @@ function MonitorFormBody({
           "expectedStatus",
           "expectedIntervalSeconds",
           "graceSeconds",
+          "projectId",
           "notifySlack",
           "channelIds",
         ] as const
@@ -341,6 +388,20 @@ function MonitorFormBody({
           </>
         )}
 
+        <ProjectField
+          projects={projects}
+          value={values.projectId}
+          error={errors.projectId}
+          onChange={(pid) => {
+            setValues((v) => ({
+              ...v,
+              projectId: pid,
+              channelIds: channelsForProject(v.channelIds, pid, channels.data?.items),
+            }));
+            setErrors((e) => ({ ...e, projectId: undefined, channelIds: undefined }));
+          }}
+        />
+
         <Checkbox
           name="notifySlack"
           label="Notify Slack"
@@ -357,6 +418,7 @@ function MonitorFormBody({
 
         {values.notifySlack && (
           <ChannelPicker
+            projects={projects}
             channels={channels}
             selected={values.channelIds}
             onChange={(ids) => update("channelIds", ids)}
@@ -401,13 +463,59 @@ function MonitorFormBody({
   );
 }
 
-/** Which notification channels get the monitor's alerts; none selected means all of them. */
+/**
+ * The project of the monitor: only projects where the user may change monitors. Hidden while
+ * there is only one choice.
+ */
+function ProjectField({
+  projects,
+  value,
+  error,
+  onChange,
+}: {
+  projects: Project[] | undefined;
+  value: string;
+  error?: string;
+  onChange: (projectId: string) => void;
+}) {
+  const choices = editableProjects(projects);
+  if (choices.length < 2) return null;
+  return (
+    <Field
+      label="Project"
+      hint="Who sees the monitor and which channels it can notify. Moving it drops selected channels of the old project."
+      error={error}
+    >
+      {(control) => (
+        <Select
+          {...control}
+          data-field="projectId"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        >
+          {choices.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </Select>
+      )}
+    </Field>
+  );
+}
+
+/**
+ * Which notification channels get the monitor's alerts: its project's and organization-wide
+ * ones; none selected means the active channels of its project (T-02, L-261).
+ */
 function ChannelPicker({
+  projects,
   channels,
   selected,
   onChange,
   error,
 }: {
+  projects: Project[] | undefined;
   channels: {
     isPending: boolean;
     isError: boolean;
@@ -462,9 +570,14 @@ function ChannelPicker({
           value={c.id}
           label={c.name}
           description={
-            c.status === "failed"
-              ? "Webhook failed: nothing is sent until it is replaced."
-              : undefined
+            [
+              (projects?.length ?? 0) > 1 || c.projectId === null
+                ? channelScopeLabel(c.projectId, projects)
+                : "",
+              c.status === "failed" ? "Webhook failed: nothing is sent until it is replaced." : "",
+            ]
+              .filter(Boolean)
+              .join(" · ") || undefined
           }
           checked={selected.includes(c.id)}
           onChange={(e) =>
@@ -478,7 +591,8 @@ function ChannelPicker({
         </span>
       )}
       <span id="channels-hint" className="text-caption text-muted-foreground">
-        None selected: every active channel gets the alerts.
+        None selected: the active channels of this project get the alerts (organization-wide
+        channels only when selected).
       </span>
     </fieldset>
   );
