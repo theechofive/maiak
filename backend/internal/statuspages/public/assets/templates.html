@@ -1,0 +1,143 @@
+{{define "head"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+{{if .NoIndex}}<meta name="robots" content="noindex, nofollow">{{end}}
+<title>{{.Title}}</title>
+<link rel="stylesheet" href="{{.CSSURL}}">
+{{if .AccentCSS}}<style nonce="{{.Nonce}}">{{.AccentCSS}}</style>{{end}}
+{{end}}
+
+{{define "page"}}{{template "head" .}}
+<link rel="alternate" type="application/rss+xml" title="{{.Title}} incidents" href="{{.RSSURL}}">
+</head>
+<body>
+<div class="wrap">
+<header class="page">
+  <div class="brand">
+    {{if .LogoURL}}<img src="{{.LogoURL}}" alt="" referrerpolicy="no-referrer" decoding="async">{{end}}
+    <h1>{{.Title}}</h1>
+  </div>
+  {{if .Description}}<p class="description">{{.Description}}</p>{{end}}
+</header>
+<main>
+  <div class="banner s-{{.Status}}" role="status">
+    <span class="shape s-{{.Status}}" aria-hidden="true"></span>
+    <strong>{{.StatusText}}</strong>
+    <span class="meta mono">Updated <time datetime="{{.GeneratedISO}}">{{.Generated}}</time></span>
+  </div>
+
+  {{if .Active}}
+  <section class="active" aria-labelledby="active-h">
+    <h2 id="active-h" class="eyebrow">Active incidents</h2>
+    <ul class="incidents">
+      {{range .Active}}<li id="incident-{{.Ref}}">
+        <div class="title"><span class="shape s-outage" aria-hidden="true"></span>{{.Title}}</div>
+        <div class="when mono">Since <time datetime="{{.StartISO}}">{{.Start}}</time> · ongoing for {{.Duration}}</div>
+      </li>{{end}}
+    </ul>
+  </section>
+  {{end}}
+
+  <section aria-labelledby="components-h">
+    <h2 id="components-h" class="eyebrow">Components</h2>
+    {{if not .Groups}}<p class="empty">No components.</p>{{end}}
+    {{range .Groups}}
+    <div class="group">
+      {{if .Name}}<h3 class="eyebrow">{{.Name}}</h3>{{end}}
+      {{range .Components}}
+      <div class="component">
+        <div class="row">
+          <span class="name">{{.Name}}</span>
+          <span class="state"><span class="shape s-{{.Status}}" aria-hidden="true"></span><span class="word s-{{.Status}}">{{.StatusText}}</span></span>
+        </div>
+        <ol class="bars" role="img" aria-label="{{.Summary}}">
+          {{range .Bars}}<li class="s-{{.Status}}" title="{{.Title}}"></li>{{end}}
+        </ol>
+        <div class="axis mono" aria-hidden="true">
+          <span><span class="d90">90 days ago</span><span class="d30">30 days ago</span></span>
+          <span class="uptime">{{.Uptime}}</span>
+          <span>Today</span>
+        </div>
+      </div>
+      {{end}}
+    </div>
+    {{end}}
+  </section>
+
+  <section aria-labelledby="past-h">
+    <h2 id="past-h" class="eyebrow">Past incidents</h2>
+    {{if .Past}}
+    <ul class="incidents">
+      {{range .Past}}<li id="incident-{{.Ref}}">
+        <div class="title">{{.Title}}</div>
+        <div class="when mono"><time datetime="{{.StartISO}}">{{.Start}}</time> to <time datetime="{{.EndISO}}">{{.End}}</time> · resolved after {{.Duration}}</div>
+      </li>{{end}}
+    </ul>
+    {{else}}<p class="empty">No incidents in the last 90 days.</p>{{end}}
+  </section>
+</main>
+<footer class="page">
+  <span class="grow">Times are UTC. Automatic checks; updates within a minute.</span>
+  <a href="{{.RSSURL}}">RSS</a>
+  <a href="{{.JSONURL}}">JSON</a>
+  <span>Powered by Maiak</span>
+</footer>
+</div>
+</body>
+</html>
+{{end}}
+
+{{define "lock"}}{{template "head" .}}
+</head>
+<body>
+<main class="lock">
+  <h1>{{.Title}}</h1>
+  <p>This status page is protected. Enter the password you were given.</p>
+  <form method="post" action="{{.UnlockURL}}">
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="128" autofocus{{if .Error}} aria-describedby="lock-error" aria-invalid="true"{{end}}>
+    {{if .Error}}<p id="lock-error" class="error" role="alert">{{.Error}}</p>{{end}}
+    <button type="submit">Open status page</button>
+  </form>
+</main>
+</body>
+</html>
+{{end}}
+
+{{define "notfound"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<title>Status page not found</title>
+<link rel="stylesheet" href="{{.CSSURL}}">
+</head>
+<body>
+<main class="lock">
+  <h1>Status page not found</h1>
+  <p>There is no public status page at this address. Check the link you were given.</p>
+</main>
+</body>
+</html>
+{{end}}
+
+{{define "badge"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<title>{{.StatusText}}</title>
+<style nonce="{{.Nonce}}">{{.BadgeCSS}}</style>
+</head>
+<body>
+<a href="{{.PageURL}}" target="_blank" rel="noopener noreferrer"><span class="shape s-{{.Status}}" aria-hidden="true"></span><span>{{.StatusText}}</span></a>
+</body>
+</html>
+{{end}}

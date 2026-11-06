@@ -451,3 +451,44 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatalf("login must not be validated in skip mode: %v", err)
 	}
 }
+
+func TestStatuspageCookieKey(t *testing.T) {
+	f := pgtest.NewFakeSecrets()
+	log, buf := captureLog()
+	o := Options{Namespace: ns, AdminMode: ModeSkip, CryptoMode: ModeSkip, StatuspageMode: ModeGenerate,
+		StatuspageSecretName: "maiak-statuspage", Secrets: f, Logger: log}
+	res, err := Run(context.Background(), o)
+	if err != nil || !res.StatuspageCreated {
+		t.Fatalf("run: %+v %v", res, err)
+	}
+	d, found, _ := f.Get(context.Background(), ns, "maiak-statuspage")
+	key, err := base64.StdEncoding.DecodeString(string(d[KeyCookieKey]))
+	if !found || err != nil || len(key) != 32 || len(d) != 1 {
+		t.Fatalf("secret: %v %v", d, err)
+	}
+	if strings.Contains(buf.String(), string(d[KeyCookieKey])) {
+		t.Fatal("key logged")
+	}
+	// A rerun leaves it untouched; an incomplete Secret is refused.
+	if res, err := Run(context.Background(), o); err != nil || res.StatuspageCreated {
+		t.Fatalf("rerun: %+v %v", res, err)
+	}
+	f.Put(ns, "maiak-statuspage", map[string][]byte{"other": []byte("x")})
+	if _, err := Run(context.Background(), o); err == nil || !strings.Contains(err.Error(), KeyCookieKey) {
+		t.Fatalf("incomplete: %v", err)
+	}
+	// Mode skip (the default for callers without the field) creates nothing.
+	f2 := pgtest.NewFakeSecrets()
+	if res, err := Run(context.Background(), Options{Namespace: ns, AdminMode: ModeSkip, CryptoMode: ModeSkip, Secrets: f2}); err != nil || res.StatuspageCreated || f2.Creates != 0 {
+		t.Fatalf("skip: %+v %v", res, err)
+	}
+	c, err := LoadConfig(func(k string) (string, bool) {
+		return map[string]string{"MAIAK_SECRETS_STATUSPAGE_MODE": "generate"}[k], k == "MAIAK_SECRETS_STATUSPAGE_MODE"
+	})
+	if err != nil || c.Options.StatuspageMode != ModeGenerate || c.Options.StatuspageSecretName != "maiak-statuspage" {
+		t.Fatalf("config: %+v %v", c.Options, err)
+	}
+	if _, err := LoadConfig(func(k string) (string, bool) { return "maybe", k == "MAIAK_SECRETS_STATUSPAGE_MODE" }); err == nil {
+		t.Fatal("bad mode accepted")
+	}
+}

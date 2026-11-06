@@ -55,6 +55,14 @@ func LoadConfig(lookup func(string) (string, bool)) (Config, error) {
 		return v
 	}
 
+	modeOr := func(name, def string) string {
+		v := get(name, def)
+		if v != ModeGenerate && v != ModeSkip {
+			fail(name, "must be "+ModeGenerate+" or "+ModeSkip)
+		}
+		return v
+	}
+
 	var c Config
 	level, err := logging.ParseLevel(get("MAIAK_LOG_LEVEL", "info"))
 	if err != nil {
@@ -73,6 +81,8 @@ func LoadConfig(lookup func(string) (string, bool)) (Config, error) {
 		AdminInitialSecretName: label("MAIAK_SECRETS_ADMIN_INITIAL_SECRET_NAME", "maiak-admin-initial"),
 		CryptoSecretName:       label("MAIAK_SECRETS_CRYPTO_SECRET_NAME", "maiak-crypto"),
 		CryptoKeyID:            get("MAIAK_SECRETS_CRYPTO_KEY_ID", "k1"),
+		StatuspageMode:         modeOr("MAIAK_SECRETS_STATUSPAGE_MODE", ModeSkip),
+		StatuspageSecretName:   label("MAIAK_SECRETS_STATUSPAGE_SECRET_NAME", "maiak-statuspage"),
 	}
 	if o.AdminMode == ModeGenerate {
 		login, err := config.NormalizeLogin(o.AdminLogin)

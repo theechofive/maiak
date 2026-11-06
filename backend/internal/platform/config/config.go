@@ -129,6 +129,21 @@ type Jobs struct {
 	PublicURL string
 }
 
+// Statuspage is the configuration of cmd/statuspage, the public status page renderer (ADR-0103).
+// Its database URL logs in as maiak_statuspage, which may only call status_page_snapshot(slug).
+type Statuspage struct {
+	Server
+	HTTPAddr string
+	// PublicURL is MAIAK_PUBLIC_URL: the origin of the badge and embed links and of the password
+	// form's Origin check.
+	PublicURL        string
+	TrustedProxyHops int
+	CookieSecure     bool
+	// CookieKey signs the unlock cookies of password-protected pages
+	// (MAIAK_STATUSPAGE_COOKIE_KEY, standard base64 of at least 32 bytes).
+	CookieKey Secret
+}
+
 // Migrate is the configuration of cmd/migrate.
 type Migrate struct {
 	Base
@@ -195,6 +210,38 @@ func LoadJobs(lookup LookupFunc) (Jobs, error) {
 	l := &loader{lookup: lookup}
 	cfg := Jobs{Server: l.server(5), Encryption: l.encryption(), Guard: l.guard(), PublicURL: l.publicURL("MAIAK_PUBLIC_URL")}
 	return cfg, l.err()
+}
+
+// LoadStatuspage loads the statuspage configuration.
+func LoadStatuspage(lookup LookupFunc) (Statuspage, error) {
+	l := &loader{lookup: lookup}
+	cfg := Statuspage{
+		Server:           l.server(5),
+		HTTPAddr:         l.addr("MAIAK_HTTP_ADDR", ":8080"),
+		PublicURL:        l.publicURL("MAIAK_PUBLIC_URL"),
+		TrustedProxyHops: l.integer("MAIAK_TRUSTED_PROXY_HOPS", 1, 0, 10),
+		CookieSecure:     l.boolean("MAIAK_COOKIE_SECURE", true),
+		CookieKey:        l.base64Key("MAIAK_STATUSPAGE_COOKIE_KEY", 32),
+	}
+	if cfg.HTTPAddr != "" && cfg.HTTPAddr == cfg.AdminAddr {
+		l.fail("MAIAK_HTTP_ADDR", "must differ from MAIAK_ADMIN_ADDR")
+	}
+	return cfg, l.err()
+}
+
+// base64Key reads a required standard-base64 key of at least minBytes bytes; the decoded bytes are
+// returned as a Secret.
+func (l *loader) base64Key(name string, minBytes int) Secret {
+	v := l.required(name)
+	if v == "" {
+		return ""
+	}
+	b, err := base64.StdEncoding.DecodeString(v)
+	if err != nil || len(b) < minBytes {
+		l.fail(name, fmt.Sprintf("must be standard base64 of at least %d random bytes", minBytes))
+		return ""
+	}
+	return Secret(b)
 }
 
 // LoadMigrate loads the migrate configuration.

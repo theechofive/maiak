@@ -16,6 +16,10 @@
 // Crypto: one 32-byte key in the formats config.LoadAPI parses (MAIAK_ENCRYPTION_KEYS and
 // MAIAK_ENCRYPTION_ACTIVE_KEY_ID).
 //
+// Statuspage: one 32-byte key (standard base64) that signs the unlock cookies of
+// password-protected status pages (MAIAK_STATUSPAGE_COOKIE_KEY, ADR-0103). Only cmd/statuspage
+// reads it. Losing it only signs visitors of protected pages out.
+//
 // Only Secret names and key names are logged, never values.
 package secretsbootstrap
 
@@ -44,6 +48,7 @@ const (
 	KeyPassword     = "password"
 	KeyKeys         = "keys"
 	KeyActiveKeyID  = "active_key_id"
+	KeyCookieKey    = "cookie_key"
 )
 
 // NoticeAnnotation is set on the initial admin Secret.
@@ -69,8 +74,12 @@ type Options struct {
 	AdminInitialSecretName string
 	CryptoSecretName       string
 	CryptoKeyID            string
-	Secrets                SecretStore
-	Logger                 *slog.Logger
+	// StatuspageMode and StatuspageSecretName: the status page cookie key (ADR-0103). An empty
+	// mode means skip, so callers written before P-05 keep working.
+	StatuspageMode       string
+	StatuspageSecretName string
+	Secrets              SecretStore
+	Logger               *slog.Logger
 	// Rand defaults to crypto/rand.Reader.
 	Rand io.Reader
 
@@ -84,6 +93,7 @@ type Result struct {
 	AdminCreated        bool
 	AdminInitialCreated bool
 	CryptoCreated       bool
+	StatuspageCreated   bool
 }
 
 // maxAttempts bounds the re-read loop after losing a create race.
@@ -114,6 +124,19 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		}
 	} else {
 		o.Logger.Info("crypto secret skipped (mode skip)", "secret", o.CryptoSecretName)
+	}
+	if o.StatuspageMode == "" {
+		o.StatuspageMode = ModeSkip
+	}
+	if err := checkMode(o.StatuspageMode); err != nil {
+		return res, err
+	}
+	if o.StatuspageMode == ModeGenerate {
+		if err := o.ensureStatuspage(ctx, &res); err != nil {
+			return res, err
+		}
+	} else {
+		o.Logger.Info("statuspage secret skipped (mode skip)", "secret", o.StatuspageSecretName)
 	}
 	if o.AdminMode == ModeGenerate {
 		login, err := config.NormalizeLogin(o.AdminLogin)
@@ -171,6 +194,43 @@ func (o *Options) ensureCrypto(ctx context.Context, res *Result) error {
 		}
 		res.CryptoCreated = true
 		o.Logger.Info("secret created", "secret", name, "keys", []string{KeyActiveKeyID, KeyKeys}, "key_id", o.CryptoKeyID)
+		return nil
+	}
+	return fmt.Errorf("secretsbootstrap: secret %s/%s keeps changing; giving up", o.Namespace, name)
+}
+
+func (o *Options) ensureStatuspage(ctx context.Context, res *Result) error {
+	name := o.StatuspageSecretName
+	if name == "" {
+		return errors.New("secretsbootstrap: statuspage secret name is required")
+	}
+	for range maxAttempts {
+		data, found, err := o.Secrets.Get(ctx, o.Namespace, name)
+		if err != nil {
+			return err
+		}
+		if found {
+			if err := complete(name, data, KeyCookieKey); err != nil {
+				return err
+			}
+			o.Logger.Info("secret exists, left untouched", "secret", name, "keys", sortedKeys(data))
+			return nil
+		}
+		key := make([]byte, 32)
+		if _, err := io.ReadFull(o.Rand, key); err != nil {
+			return fmt.Errorf("secretsbootstrap: random key: %w", err)
+		}
+		err = o.Secrets.CreateAnnotated(ctx, o.Namespace, name, map[string][]byte{
+			KeyCookieKey: []byte(base64.StdEncoding.EncodeToString(key)),
+		}, nil)
+		if errors.Is(err, dbbootstrap.ErrSecretExists) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		res.StatuspageCreated = true
+		o.Logger.Info("secret created", "secret", name, "keys", []string{KeyCookieKey})
 		return nil
 	}
 	return fmt.Errorf("secretsbootstrap: secret %s/%s keeps changing; giving up", o.Namespace, name)

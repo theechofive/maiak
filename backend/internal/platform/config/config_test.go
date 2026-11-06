@@ -336,3 +336,41 @@ func TestAdminLogin(t *testing.T) {
 		t.Fatalf("missing login: %v", err)
 	}
 }
+
+func TestLoadStatuspage(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	e := map[string]string{
+		"MAIAK_DATABASE_URL":          "postgres://maiak_statuspage:pw@db:5432/maiak?sslmode=require",
+		"MAIAK_PUBLIC_URL":            "https://maiak.example.com",
+		"MAIAK_STATUSPAGE_COOKIE_KEY": key,
+	}
+	cfg, err := LoadStatuspage(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HTTPAddr != ":8080" || cfg.AdminAddr != ":9090" || cfg.DatabaseMaxConns != 5 || !cfg.CookieSecure || cfg.TrustedProxyHops != 1 ||
+		len(cfg.CookieKey.Value()) != 32 || cfg.PublicURL != "https://maiak.example.com" {
+		t.Fatalf("statuspage config = %+v", cfg)
+	}
+	if s := fmt.Sprintf("%v %+v %#v", cfg.CookieKey, cfg, cfg); strings.Contains(s, "0123456789abcdef") {
+		t.Fatal("cookie key printed")
+	}
+	// No encryption keys or admin credentials are needed (or read).
+	for _, bad := range []map[string]string{
+		{"MAIAK_STATUSPAGE_COOKIE_KEY": ""},
+		{"MAIAK_STATUSPAGE_COOKIE_KEY": base64.StdEncoding.EncodeToString(make([]byte, 16))},
+		{"MAIAK_STATUSPAGE_COOKIE_KEY": "not base64!"},
+		{"MAIAK_PUBLIC_URL": "http://maiak.example.com"},
+	} {
+		m := map[string]string{}
+		for k, v := range e {
+			m[k] = v
+		}
+		for k, v := range bad {
+			m[k] = v
+		}
+		if _, err := LoadStatuspage(env(m)); err == nil {
+			t.Errorf("accepted %v", bad)
+		}
+	}
+}
