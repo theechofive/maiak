@@ -19,6 +19,9 @@ const (
 	OwnerRole  = "maiak_owner"
 	APIRole    = "maiak_api"
 	WorkerRole = "maiak_worker"
+	// StatuspageRole serves the public status page (ADR-0103): it may only execute
+	// status_page_snapshot(slug).
+	StatuspageRole = "maiak_statuspage"
 )
 
 // Secret keys (see the package documentation).
@@ -29,6 +32,9 @@ const (
 	KeyOwnerURL       = "owner_url"
 	KeyAPIURL         = "api_url"
 	KeyWorkerURL      = "worker_url"
+	// Added by P-05; generated into an existing Secret that lacks them (see addedLater).
+	KeyStatuspagePassword = "statuspage_password"
+	KeyStatuspageURL      = "statuspage_url"
 )
 
 // lockKey identifies the cluster-wide advisory lock (taken in database "postgres") that
@@ -42,6 +48,10 @@ type roleSpec struct {
 	urlKey        string
 	settings      [][2]string
 	runtimeAccess bool // gets USAGE on schema public
+	// addedLater marks a role introduced after the first deployments: an existing Secret without
+	// its password key gets one generated and stored (a merge patch) before the role is changed,
+	// instead of failing the run.
+	addedLater bool
 }
 
 var roles = []roleSpec{
@@ -51,7 +61,13 @@ var roles = []roleSpec{
 		settings: [][2]string{{"statement_timeout", "15s"}, {"idle_in_transaction_session_timeout", "30s"}}},
 	{name: WorkerRole, connLimit: 20, passwordKey: KeyWorkerPassword, urlKey: KeyWorkerURL, runtimeAccess: true,
 		settings: [][2]string{{"statement_timeout", "30s"}, {"idle_in_transaction_session_timeout", "30s"}}},
+	// Read-only by default: it only calls one STABLE definer function.
+	{name: StatuspageRole, connLimit: 10, passwordKey: KeyStatuspagePassword, urlKey: KeyStatuspageURL, runtimeAccess: true, addedLater: true,
+		settings: [][2]string{{"statement_timeout", "5s"}, {"idle_in_transaction_session_timeout", "10s"}, {"default_transaction_read_only", "on"}}},
 }
+
+// runtimeRoleNames are the roles that must never be members of the owner role.
+var runtimeRoleNames = []string{APIRole, StatuspageRole, WorkerRole}
 
 // Options configure a bootstrap run.
 type Options struct {
@@ -205,7 +221,14 @@ func (o *Options) passwords(ctx context.Context) (map[string]string, bool, error
 		return nil, false, err
 	}
 	if found {
-		pw, err := passwordsFrom(data)
+		// The original keys must all be there before anything is added to the Secret.
+		if _, err := passwordsFrom(data, false); err != nil {
+			return nil, false, err
+		}
+		if data, err = o.addMissingRoles(ctx, data); err != nil {
+			return nil, false, err
+		}
+		pw, err := passwordsFrom(data, true)
 		if err != nil {
 			return nil, false, err
 		}
@@ -230,14 +253,49 @@ func (o *Options) passwords(ctx context.Context) (map[string]string, bool, error
 		if !found {
 			return nil, false, errors.New("dbbootstrap: secret reported as existing but cannot be read")
 		}
-		pw, err := passwordsFrom(data)
+		pw, err := passwordsFrom(data, true)
 		return pw, false, err
 	}
 	if err != nil {
 		return nil, false, err
 	}
-	pw, err := passwordsFrom(data)
+	pw, err := passwordsFrom(data, true)
 	return pw, true, err
+}
+
+// addMissingRoles generates the password and URL of every addedLater role whose password key the
+// existing Secret lacks, and stores them before any role is changed, so a password is never set in
+// the database without being stored. Only key names are logged.
+func (o *Options) addMissingRoles(ctx context.Context, data map[string][]byte) (map[string][]byte, error) {
+	add := map[string][]byte{}
+	var keys []string
+	for _, r := range roles {
+		if !r.addedLater || strings.TrimSpace(string(data[r.passwordKey])) != "" {
+			continue
+		}
+		pw, err := o.GeneratePassword()
+		if err != nil {
+			return nil, err
+		}
+		add[r.passwordKey] = []byte(pw)
+		add[r.urlKey] = []byte(RoleURL(r.name, pw, o.Host, o.Port, o.DBName, o.SSLMode))
+		keys = append(keys, r.passwordKey, r.urlKey)
+	}
+	if len(add) == 0 {
+		return data, nil
+	}
+	o.Logger.Info("secret lacks the credentials of a newer role; adding them", "secret", o.Namespace+"/"+o.SecretName, "keys", keys)
+	if err := o.Secrets.Update(ctx, o.Namespace, o.SecretName, add); err != nil {
+		return nil, fmt.Errorf("dbbootstrap: add new role credentials to the secret: %w", err)
+	}
+	out := make(map[string][]byte, len(data)+len(add))
+	for k, v := range data {
+		out[k] = v
+	}
+	for k, v := range add {
+		out[k] = v
+	}
+	return out, nil
 }
 
 // urlDrift returns the *_url keys that are missing or do not match the passwords and the
@@ -272,10 +330,15 @@ func (o *Options) repairURLs(ctx context.Context, data map[string][]byte, passwo
 	return nil
 }
 
-func passwordsFrom(data map[string][]byte) (map[string]string, error) {
+// passwordsFrom returns the role passwords of the Secret; with includeLater false the keys of
+// addedLater roles are not required (and not returned).
+func passwordsFrom(data map[string][]byte, includeLater bool) (map[string]string, error) {
 	out := map[string]string{}
 	var missing []string
 	for _, r := range roles {
+		if r.addedLater && !includeLater {
+			continue
+		}
 		v := strings.TrimSpace(string(data[r.passwordKey]))
 		if v == "" {
 			missing = append(missing, r.passwordKey)
@@ -388,7 +451,7 @@ func createDatabaseSQL(dbName string) string {
 func databaseGrantsSQL(dbName string) []string {
 	return []string{
 		fmt.Sprintf("REVOKE ALL ON DATABASE %s FROM PUBLIC", ident(dbName)),
-		fmt.Sprintf("GRANT CONNECT ON DATABASE %s TO %s, %s, %s", ident(dbName), ident(OwnerRole), ident(APIRole), ident(WorkerRole)),
+		fmt.Sprintf("GRANT CONNECT ON DATABASE %s TO %s, %s, %s, %s", ident(dbName), ident(OwnerRole), ident(APIRole), ident(WorkerRole), ident(StatuspageRole)),
 	}
 }
 
@@ -396,15 +459,26 @@ func schemaSQL() []string {
 	return []string{
 		"ALTER SCHEMA public OWNER TO " + ident(OwnerRole),
 		"REVOKE ALL ON SCHEMA public FROM PUBLIC",
-		fmt.Sprintf("GRANT USAGE ON SCHEMA public TO %s, %s", ident(APIRole), ident(WorkerRole)),
+		fmt.Sprintf("GRANT USAGE ON SCHEMA public TO %s, %s, %s", ident(APIRole), ident(WorkerRole), ident(StatuspageRole)),
 		// citext is a trusted extension (PG13+), so the database owner may create it. Creating it
 		// as maiak_owner (not as the admin, on RDS Grafana's login) keeps every object in the
 		// database owned by maiak_owner. Created here so migrations need no extra rights.
 		"SET ROLE " + ident(OwnerRole),
 		"CREATE EXTENSION IF NOT EXISTS citext",
+		// The status page migration grants EXECUTE only when the role already exists; a role
+		// created after that migration ran gets it here (ADR-0103). Nothing else is granted.
+		statuspageGrantSQL,
 		"RESET ROLE",
 	}
 }
+
+const statuspageGrantSQL = `DO $do$
+BEGIN
+  IF to_regprocedure('public.status_page_snapshot(text)') IS NOT NULL THEN
+    GRANT EXECUTE ON FUNCTION public.status_page_snapshot(text) TO "maiak_statuspage";
+  END IF;
+END
+$do$`
 
 func ensureInDatabase(ctx context.Context, admin *pgx.ConnConfig, dbName string) error {
 	cfg := admin.Copy()
@@ -429,7 +503,7 @@ SELECT r.rolname, r.rolcanlogin, r.rolsuper, r.rolcreatedb, r.rolcreaterole, r.r
 FROM pg_catalog.pg_roles r
 LEFT JOIN pg_catalog.pg_db_role_setting s ON s.setrole = r.oid AND s.setdatabase = 0
 WHERE r.rolname = ANY($1)
-ORDER BY r.rolname`, []string{APIRole, OwnerRole, WorkerRole})
+ORDER BY r.rolname`, roleNames())
 	if err != nil {
 		return fmt.Errorf("dbbootstrap: verify roles: %w", err)
 	}
@@ -462,7 +536,7 @@ ORDER BY r.rolname`, []string{APIRole, OwnerRole, WorkerRole})
 	// A runtime role inside maiak_owner would inherit table ownership, and FORCE RLS would not
 	// stop a SET ROLE to the owner.
 	rows, err = conn.Query(ctx, `SELECT rolname FROM pg_catalog.pg_roles
-WHERE rolname = ANY($1) AND pg_catalog.pg_has_role(oid, $2, 'MEMBER') ORDER BY 1`, []string{APIRole, WorkerRole}, OwnerRole)
+WHERE rolname = ANY($1) AND pg_catalog.pg_has_role(oid, $2, 'MEMBER') ORDER BY 1`, runtimeRoleNames, OwnerRole)
 	if err != nil {
 		return fmt.Errorf("dbbootstrap: verify memberships: %w", err)
 	}
@@ -480,6 +554,14 @@ WHERE m.roleid = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = $1)
 		return fmt.Errorf("dbbootstrap: verify admin membership: %w", err)
 	}
 	return nil
+}
+
+func roleNames() []string {
+	out := make([]string, len(roles))
+	for i, r := range roles {
+		out[i] = r.name
+	}
+	return out
 }
 
 func printSummary(w io.Writer, dbName string, res *Result) {

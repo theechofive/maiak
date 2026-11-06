@@ -38,6 +38,8 @@ const (
 	ResourceMember Resource = "members"
 	// ResourceProject counts live projects, the Default project included (T-02).
 	ResourceProject Resource = "projects"
+	// ResourceStatusPage counts status pages that are not deleted (ADR-0103).
+	ResourceStatusPage Resource = "statusPages"
 )
 
 // JSON keys in plans.limits and tenants.limits.
@@ -47,6 +49,7 @@ const (
 	keyMaxChannels   = "max_channels"
 	keyMaxMembers    = "max_members"
 	keyMaxProjects   = "max_projects"
+	keyMaxStatusPage = "max_status_pages"
 )
 
 var (
@@ -59,11 +62,12 @@ var (
 
 // Limits are the effective quotas of a tenant.
 type Limits struct {
-	MaxMonitors   int
-	MaxHeartbeats int
-	MaxChannels   int
-	MaxMembers    int
-	MaxProjects   int
+	MaxMonitors    int
+	MaxHeartbeats  int
+	MaxChannels    int
+	MaxMembers     int
+	MaxProjects    int
+	MaxStatusPages int
 }
 
 // Of returns the limit for r.
@@ -79,17 +83,20 @@ func (l Limits) Of(r Resource) int {
 		return l.MaxMembers
 	case ResourceProject:
 		return l.MaxProjects
+	case ResourceStatusPage:
+		return l.MaxStatusPages
 	}
 	panic(fmt.Sprintf("plans: unknown resource %q", r))
 }
 
 // Counts is the current use of each resource.
 type Counts struct {
-	Monitors   int
-	Heartbeats int
-	Channels   int
-	Members    int
-	Projects   int
+	Monitors    int
+	Heartbeats  int
+	Channels    int
+	Members     int
+	Projects    int
+	StatusPages int
 }
 
 // Plan identifies a plan.
@@ -130,7 +137,8 @@ func Resolve(planKey string, planLimits, overrides []byte) (Limits, error) {
 	for _, f := range []struct {
 		key string
 		dst *int
-	}{{keyMaxMonitors, &l.MaxMonitors}, {keyMaxHeartbeats, &l.MaxHeartbeats}, {keyMaxChannels, &l.MaxChannels}, {keyMaxMembers, &l.MaxMembers}, {keyMaxProjects, &l.MaxProjects}} {
+	}{{keyMaxMonitors, &l.MaxMonitors}, {keyMaxHeartbeats, &l.MaxHeartbeats}, {keyMaxChannels, &l.MaxChannels}, {keyMaxMembers, &l.MaxMembers}, {keyMaxProjects, &l.MaxProjects},
+		{keyMaxStatusPage, &l.MaxStatusPages}} {
 		v, ok := over[f.key]
 		if !ok {
 			if v, ok = base[f.key]; !ok {
@@ -152,7 +160,7 @@ func parse(raw []byte) (map[string]int, error) {
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidLimits, err)
 	}
-	for _, key := range []string{keyMaxMonitors, keyMaxHeartbeats, keyMaxChannels, keyMaxMembers, keyMaxProjects} {
+	for _, key := range []string{keyMaxMonitors, keyMaxHeartbeats, keyMaxChannels, keyMaxMembers, keyMaxProjects, keyMaxStatusPage} {
 		v, ok := obj[key]
 		if !ok {
 			continue
@@ -258,6 +266,8 @@ func count(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, r Resource) (int,
 		n, err = q.CountMembers(ctx, tenantID)
 	case ResourceProject:
 		n, err = q.CountProjects(ctx, tenantID)
+	case ResourceStatusPage:
+		n, err = q.CountStatusPages(ctx, tenantID)
 	default:
 		return 0, fmt.Errorf("plans: unknown resource %q", r)
 	}
@@ -299,7 +309,7 @@ func (s *Service) Usage(ctx context.Context, tenantID uuid.UUID) (Usage, error) 
 			r   Resource
 			dst *int
 		}{{ResourceMonitor, &u.Counts.Monitors}, {ResourceHeartbeat, &u.Counts.Heartbeats}, {ResourceChannel, &u.Counts.Channels},
-			{ResourceMember, &u.Counts.Members}, {ResourceProject, &u.Counts.Projects}} {
+			{ResourceMember, &u.Counts.Members}, {ResourceProject, &u.Counts.Projects}, {ResourceStatusPage, &u.Counts.StatusPages}} {
 			if *c.dst, err = count(ctx, tx, tenantID, c.r); err != nil {
 				return err
 			}

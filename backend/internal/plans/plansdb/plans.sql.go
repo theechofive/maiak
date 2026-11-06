@@ -84,6 +84,20 @@ func (q *Queries) CountProjects(ctx context.Context, tenantID uuid.UUID) (int64,
 	return count, err
 }
 
+const countStatusPages = `-- name: CountStatusPages :one
+SELECT count(*)
+FROM status_pages
+WHERE tenant_id = $1 AND deleted_at IS NULL
+`
+
+// Read-only count for the status page quota (status pages are owned by internal/statuspages).
+func (q *Queries) CountStatusPages(ctx context.Context, tenantID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countStatusPages, tenantID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getPlan = `-- name: GetPlan :one
 SELECT key, name, limits
 FROM plans

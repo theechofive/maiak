@@ -32,13 +32,15 @@ const (
 	OwnerPassword  = "test-owner-password-not-secret"
 	APIPassword    = "test-api-password-not-secret"
 	WorkerPassword = "test-worker-password-not-secret"
+	// StatuspagePassword is the fixed password of maiak_statuspage (ADR-0103).
+	StatuspagePassword = "test-statuspage-password-not-secret"
 )
 
 // Passwords returns the fixed test passwords in the order dbbootstrap generates them
-// (owner, api, worker), for use as Options.GeneratePassword.
+// (owner, api, worker, statuspage), for use as Options.GeneratePassword.
 func Passwords() func() (string, error) {
 	var mu sync.Mutex
-	pws := []string{OwnerPassword, APIPassword, WorkerPassword}
+	pws := []string{OwnerPassword, APIPassword, WorkerPassword, StatuspagePassword}
 	i := 0
 	return func() (string, error) {
 		mu.Lock()
@@ -86,7 +88,9 @@ type Env struct {
 	OwnerURL  string
 	APIURL    string
 	WorkerURL string
-	admin     *pgx.ConnConfig
+	// StatuspageURL logs in as maiak_statuspage (ADR-0103).
+	StatuspageURL string
+	admin         *pgx.ConnConfig
 }
 
 // New drops and recreates database name through dbbootstrap and applies all migrations.
@@ -122,11 +126,12 @@ func New(t testing.TB, name string) *Env {
 	}
 	data, _, _ := secrets.Get(ctx, "test", "maiak-db")
 	env := &Env{
-		DBName:    name,
-		OwnerURL:  string(data[dbbootstrap.KeyOwnerURL]),
-		APIURL:    string(data[dbbootstrap.KeyAPIURL]),
-		WorkerURL: string(data[dbbootstrap.KeyWorkerURL]),
-		admin:     admin,
+		DBName:        name,
+		OwnerURL:      string(data[dbbootstrap.KeyOwnerURL]),
+		APIURL:        string(data[dbbootstrap.KeyAPIURL]),
+		WorkerURL:     string(data[dbbootstrap.KeyWorkerURL]),
+		StatuspageURL: string(data[dbbootstrap.KeyStatuspageURL]),
+		admin:         admin,
 	}
 	if _, err := env.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)

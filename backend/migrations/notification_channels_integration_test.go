@@ -66,11 +66,12 @@ func TestIntegrationNotificationChannels(t *testing.T) {
 	}
 
 	t.Run("replay over an existing channel", func(t *testing.T) {
+		pgtest.MustExec(t, admin, rollbackStatusPages...)
 		pgtest.MustExec(t, admin, rollbackProjects...)
 		pgtest.MustExec(t, admin, rollbackInvitationsRoles...)
 		pgtest.MustExec(t, admin, rollbackNotificationChannels...)
 		old := channel(tenantA, "", "")
-		if n, err := env.Migrate(ctx); err != nil || n != 4 {
+		if n, err := env.Migrate(ctx); err != nil || n != 5 {
 			t.Fatalf("re-applied %d migrations, err=%v; want 4 (S-01, T-01 and T-02)", n, err)
 		}
 		var got string

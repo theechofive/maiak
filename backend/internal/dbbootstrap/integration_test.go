@@ -49,10 +49,10 @@ func TestIntegrationBootstrapTwice(t *testing.T) {
 	}
 
 	data, found, _ := secrets.Get(ctx, "maiak", "maiak-db")
-	if !found || len(data) != 6 {
+	if !found || len(data) != 8 {
 		t.Fatalf("secret keys: %d", len(data))
 	}
-	for _, pw := range []string{pgtest.OwnerPassword, pgtest.APIPassword, pgtest.WorkerPassword} {
+	for _, pw := range []string{pgtest.OwnerPassword, pgtest.APIPassword, pgtest.WorkerPassword, pgtest.StatuspagePassword} {
 		if strings.Contains(out1.String(), pw) {
 			t.Fatal("summary output contains a password")
 		}
@@ -109,7 +109,7 @@ func TestIntegrationBootstrapTwice(t *testing.T) {
 		if ri.Superuser || ri.BypassRLS || ri.Replication || ri.CreateDB || ri.CreateRole || !ri.CanLogin {
 			t.Errorf("%s has unsafe attributes: %+v", ri.Name, ri)
 		}
-		want := map[string]int{"maiak_owner": 3, "maiak_api": 20, "maiak_worker": 20}[ri.Name]
+		want := map[string]int{"maiak_owner": 3, "maiak_api": 20, "maiak_worker": 20, "maiak_statuspage": 10}[ri.Name]
 		if ri.ConnLimit != want {
 			t.Errorf("%s connection limit = %d, want %d", ri.Name, ri.ConnLimit, want)
 		}
@@ -126,7 +126,7 @@ func TestIntegrationBootstrapTwice(t *testing.T) {
 	}
 
 	// Every role logs in with the URL from the Secret (proves the SCRAM verifier).
-	for _, key := range []string{dbbootstrap.KeyOwnerURL, dbbootstrap.KeyAPIURL, dbbootstrap.KeyWorkerURL} {
+	for _, key := range []string{dbbootstrap.KeyOwnerURL, dbbootstrap.KeyAPIURL, dbbootstrap.KeyWorkerURL, dbbootstrap.KeyStatuspageURL} {
 		conn, err := pgx.Connect(ctx, string(data[key]))
 		if err != nil {
 			t.Fatalf("%s: connect: %v", key, err)
@@ -142,8 +142,13 @@ func TestIntegrationBootstrapTwice(t *testing.T) {
 		if user == "maiak_owner" && createErr != nil {
 			t.Errorf("owner cannot create tables: %v", createErr)
 		}
-		if user != "maiak_owner" && !denied {
+		if user != "maiak_owner" && user != "maiak_statuspage" && !denied {
 			t.Errorf("%s can create tables in public (err=%v)", user, createErr)
+		}
+		// The status page role runs read-only transactions by default (25006), on top of the
+		// missing privilege.
+		if user == "maiak_statuspage" && (createErr == nil || !errors.As(createErr, &pgErr) || (pgErr.Code != "25006" && pgErr.Code != "42501")) {
+			t.Errorf("maiak_statuspage can create tables (err=%v)", createErr)
 		}
 	}
 
@@ -165,6 +170,61 @@ func TestIntegrationBootstrapTwice(t *testing.T) {
 	}
 }
 
+// TestIntegrationBootstrapAddsStatuspageRole runs the bootstrap over a Secret written before P-05
+// (six keys): the statuspage credentials are generated and stored, the old passwords stay.
+func TestIntegrationBootstrapAddsStatuspageRole(t *testing.T) {
+	admin := pgtest.AdminConfig(t)
+	pgtest.Lock(t)
+	ctx := context.Background()
+	name := pgtest.DBName("bootstrap_addrole")
+	adminConn, err := pgx.ConnectConfig(ctx, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = adminConn.Close(ctx) }()
+	pgtest.MustExec(t, adminConn, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)")
+
+	host, port, ssl := admin.Host, int(admin.Port), pgtest.SSLMode()
+	old := map[string][]byte{
+		dbbootstrap.KeyOwnerPassword:  []byte(pgtest.OwnerPassword),
+		dbbootstrap.KeyAPIPassword:    []byte(pgtest.APIPassword),
+		dbbootstrap.KeyWorkerPassword: []byte(pgtest.WorkerPassword),
+		dbbootstrap.KeyOwnerURL:       []byte(dbbootstrap.RoleURL("maiak_owner", pgtest.OwnerPassword, host, port, name, ssl)),
+		dbbootstrap.KeyAPIURL:         []byte(dbbootstrap.RoleURL("maiak_api", pgtest.APIPassword, host, port, name, ssl)),
+		dbbootstrap.KeyWorkerURL:      []byte(dbbootstrap.RoleURL("maiak_worker", pgtest.WorkerPassword, host, port, name, ssl)),
+	}
+	secrets := pgtest.NewFakeSecrets()
+	secrets.Put("maiak", "maiak-db", old)
+	var logs bytes.Buffer
+	_, err = dbbootstrap.Run(ctx, dbbootstrap.Options{
+		Admin: admin, Host: host, Port: port, DBName: name, SSLMode: ssl,
+		Namespace: "maiak", SecretName: "maiak-db", Secrets: secrets,
+		GeneratePassword: func() (string, error) { return pgtest.StatuspagePassword, nil },
+		Logger:           slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	data, _, _ := secrets.Get(ctx, "maiak", "maiak-db")
+	if len(data) != 8 || secrets.Creates != 0 || secrets.Updates != 1 {
+		t.Fatalf("keys=%d creates=%d updates=%d", len(data), secrets.Creates, secrets.Updates)
+	}
+	for k, v := range old {
+		if string(data[k]) != string(v) {
+			t.Errorf("%s changed", k)
+		}
+	}
+	if string(data[dbbootstrap.KeyStatuspagePassword]) != pgtest.StatuspagePassword || !strings.Contains(logs.String(), "statuspage_url") ||
+		strings.Contains(logs.String(), pgtest.StatuspagePassword) {
+		t.Fatalf("statuspage keys not added as expected; logs:\n%s", logs.String())
+	}
+	conn, err := pgx.Connect(ctx, string(data[dbbootstrap.KeyStatuspageURL]))
+	if err != nil {
+		t.Fatalf("statuspage login: %v", err)
+	}
+	_ = conn.Close(ctx)
+}
+
 func TestIntegrationBootstrapRefusesIncompleteSecret(t *testing.T) {
 	admin := pgtest.AdminConfig(t)
 	secrets := pgtest.NewFakeSecrets()
@@ -176,8 +236,8 @@ func TestIntegrationBootstrapRefusesIncompleteSecret(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
 		t.Fatalf("err = %v", err)
 	}
-	if secrets.Creates != 0 {
-		t.Fatal("incomplete secret must not be replaced")
+	if secrets.Creates != 0 || secrets.Updates != 0 {
+		t.Fatal("incomplete secret must not be replaced or patched")
 	}
 }
 
@@ -231,7 +291,7 @@ func TestIntegrationBootstrapNonSuperuser(t *testing.T) {
 	pgtest.MustExec(t, superConn,
 		"CREATE ROLE "+adminRole+" LOGIN NOSUPERUSER CREATEROLE CREATEDB NOREPLICATION NOBYPASSRLS PASSWORD 'not-secret-test-only'")
 	if version >= 160000 {
-		for _, r := range []string{dbbootstrap.OwnerRole, dbbootstrap.APIRole, dbbootstrap.WorkerRole} {
+		for _, r := range []string{dbbootstrap.OwnerRole, dbbootstrap.APIRole, dbbootstrap.WorkerRole, dbbootstrap.StatuspageRole} {
 			var exists bool
 			if err := superConn.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)", r).Scan(&exists); err != nil {
 				t.Fatal(err)

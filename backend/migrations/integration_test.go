@@ -30,7 +30,8 @@ func TestIntegrationMigrateFromScratchAndRerun(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "audit_log,auth_identities,check_results,heartbeat_tokens,incident_monitors,incidents,invitations,memberships,monitor_channels,monitor_location_state," +
-		"monitor_locations,monitor_state,monitors,notification_channels,notification_deliveries,plans,probe_locations,project_members,projects,result_rollups_hourly,rollup_state,sessions,tenants,users"
+		"monitor_locations,monitor_state,monitors,notification_channels,notification_deliveries,plans,probe_locations,project_members,projects,result_rollups_hourly,rollup_state,sessions," +
+		"status_page_components,status_page_snapshots,status_pages,tenants,users"
 	if got := strings.Join(tables, ","); got != want {
 		t.Fatalf("tables = %s, want %s", got, want)
 	}
@@ -88,6 +89,10 @@ var definerAllowList = map[string][]string{
 	"auth_invitation_lookup":  {"maiak_api"},
 	"auth_user_organizations": {"maiak_api"},
 	"org_delete_tenant":       {"maiak_api"},
+	// Status page (P-05, ADR-0103): jobs lists the published pages across tenants to rebuild their
+	// snapshots, and the public renderer reads one prepared snapshot by slug, its only privilege.
+	"status_page_published_pages": {"maiak_worker"},
+	"status_page_snapshot":        {"maiak_statuspage"},
 }
 
 // extraPolicies are the permissive policies on tenant tables that are not tenant isolation
@@ -120,9 +125,12 @@ var extraPolicies = map[string]struct {
 	"notification_deliveries.owner_reminder_insert": {cmd: "a", roles: []string{"maiak_owner"}},
 	// auth_invitation_lookup (T-01, ADR-0102).
 	"invitations.owner_invitation_lookup": {cmd: "r", roles: []string{"maiak_owner"}},
+	// status_page_published_pages and status_page_snapshot (P-05, ADR-0103).
+	"status_pages.owner_statuspage_read":          {cmd: "r", roles: []string{"maiak_owner"}},
+	"status_page_snapshots.owner_statuspage_read": {cmd: "r", roles: []string{"maiak_owner"}},
 }
 
-var runtimeRoles = []string{"maiak_api", "maiak_worker"}
+var runtimeRoles = []string{"maiak_api", "maiak_statuspage", "maiak_worker"}
 
 // TestIntegrationSchemaLint is the guard rail for new migrations: a tenant table without forced
 // RLS and a tenant isolation policy, an extra permissive policy, a runtime role owning objects,

@@ -35,3 +35,9 @@ SELECT ((SELECT count(*) FROM memberships AS m WHERE m.tenant_id = @tenant_id)
 SELECT count(*)
 FROM projects
 WHERE tenant_id = @tenant_id AND deleted_at IS NULL;
+
+-- name: CountStatusPages :one
+-- Read-only count for the status page quota (status pages are owned by internal/statuspages).
+SELECT count(*)
+FROM status_pages
+WHERE tenant_id = @tenant_id AND deleted_at IS NULL;

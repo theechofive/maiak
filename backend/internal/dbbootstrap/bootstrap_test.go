@@ -98,7 +98,7 @@ func TestSQLBuilders(t *testing.T) {
 	}
 	grants := strings.Join(databaseGrantsSQL("maiak"), ";")
 	if !strings.Contains(grants, `REVOKE ALL ON DATABASE "maiak" FROM PUBLIC`) ||
-		!strings.Contains(grants, `GRANT CONNECT ON DATABASE "maiak" TO "maiak_owner", "maiak_api", "maiak_worker"`) {
+		!strings.Contains(grants, `GRANT CONNECT ON DATABASE "maiak" TO "maiak_owner", "maiak_api", "maiak_worker", "maiak_statuspage"`) {
 		t.Errorf("databaseGrantsSQL = %s", grants)
 	}
 	if got := ident(`we"ird`); got != `"we""ird"` {
@@ -113,21 +113,42 @@ func TestSQLBuilders(t *testing.T) {
 }
 
 func TestRoleSpecs(t *testing.T) {
-	want := map[string]int{OwnerRole: 3, APIRole: 20, WorkerRole: 20}
+	want := map[string]int{OwnerRole: 3, APIRole: 20, WorkerRole: 20, StatuspageRole: 10}
 	for _, r := range roles {
 		if want[r.name] != r.connLimit {
 			t.Errorf("%s connection limit = %d", r.name, r.connLimit)
 		}
 	}
+	// The status page role only reads: read-only transactions by default, short timeouts.
+	sp := roles[len(roles)-1]
+	if sp.name != StatuspageRole || !sp.addedLater || !sp.runtimeAccess {
+		t.Fatalf("statuspage role spec: %+v", sp)
+	}
+	settings := map[string]string{}
+	for _, kv := range sp.settings {
+		settings[kv[0]] = kv[1]
+	}
+	if settings["default_transaction_read_only"] != "on" || settings["statement_timeout"] != "5s" {
+		t.Errorf("statuspage settings: %v", settings)
+	}
+	schema := strings.Join(schemaSQL(), ";")
+	if !strings.Contains(schema, `GRANT USAGE ON SCHEMA public TO "maiak_api", "maiak_worker", "maiak_statuspage"`) ||
+		!strings.Contains(schema, `GRANT EXECUTE ON FUNCTION public.status_page_snapshot(text) TO "maiak_statuspage"`) {
+		t.Errorf("schemaSQL = %s", schema)
+	}
 }
 
 func TestPasswordsFromRequiresAllKeys(t *testing.T) {
 	full := map[string][]byte{KeyOwnerPassword: []byte("a"), KeyAPIPassword: []byte("b"), KeyWorkerPassword: []byte("c")}
-	if pw, err := passwordsFrom(full); err != nil || pw[KeyAPIPassword] != "b" {
+	if pw, err := passwordsFrom(full, false); err != nil || pw[KeyAPIPassword] != "b" {
 		t.Fatalf("pw=%v err=%v", pw, err)
 	}
+	// A Secret of the first deployments lacks the statuspage keys: required only once added.
+	if _, err := passwordsFrom(full, true); err == nil || !strings.Contains(err.Error(), KeyStatuspagePassword) {
+		t.Fatalf("includeLater err = %v", err)
+	}
 	partial := map[string][]byte{KeyOwnerPassword: []byte("a"), "api_url": []byte("x")}
-	_, err := passwordsFrom(partial)
+	_, err := passwordsFrom(partial, false)
 	if err == nil || !strings.Contains(err.Error(), "api_password") || !strings.Contains(err.Error(), "worker_password") {
 		t.Fatalf("err = %v", err)
 	}
@@ -234,10 +255,11 @@ func TestKubeSecretsClient(t *testing.T) {
 
 func TestURLDrift(t *testing.T) {
 	o := &Options{Host: "db.internal", Port: 5432, DBName: "maiak", SSLMode: "require"}
-	pw := map[string]string{KeyOwnerPassword: "o", KeyAPIPassword: "a", KeyWorkerPassword: "w"}
+	pw := map[string]string{KeyOwnerPassword: "o", KeyAPIPassword: "a", KeyWorkerPassword: "w", KeyStatuspagePassword: "s"}
 	data := map[string][]byte{
-		KeyOwnerURL: []byte(RoleURL(OwnerRole, "o", "db.internal", 5432, "maiak", "require")),
-		KeyAPIURL:   []byte(RoleURL(APIRole, "a", "old.internal", 5432, "maiak", "require")),
+		KeyOwnerURL:      []byte(RoleURL(OwnerRole, "o", "db.internal", 5432, "maiak", "require")),
+		KeyAPIURL:        []byte(RoleURL(APIRole, "a", "old.internal", 5432, "maiak", "require")),
+		KeyStatuspageURL: []byte(RoleURL(StatuspageRole, "s", "db.internal", 5432, "maiak", "require")),
 	}
 	drift := o.urlDrift(data, pw)
 	if len(drift) != 2 || drift[KeyOwnerURL] != nil {
