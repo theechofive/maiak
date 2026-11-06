@@ -308,7 +308,7 @@ func TestIntegrationAdminPanel(t *testing.T) {
 			t.Fatalf("downgrade: %d %s", r.code, r.raw)
 		}
 		u := c.do(http.MethodGet, "/api/v1/usage", "", userCookie)
-		if fmt.Sprint(u.body["usage"]) != "map[channels:0 heartbeats:1 members:1 monitors:4 projects:1]" || fmt.Sprint(u.body["limits"]) != "map[channels:1 heartbeats:1 members:3 monitors:3 projects:50]" {
+		if fmt.Sprint(u.body["usage"]) != "map[channels:0 heartbeats:1 members:1 monitors:4 projects:1 statusPages:0]" || fmt.Sprint(u.body["limits"]) != "map[channels:1 heartbeats:1 members:3 monitors:3 projects:50 statusPages:1]" {
 			t.Fatalf("usage over the limit: %s", u.raw)
 		}
 		if r := c.do(http.MethodPost, "/api/v1/monitors", `{"name":"one more","url":"https://example.com/x"}`, uh); r.code != http.StatusConflict || r.body["type"] != "urn:maiak:problem:plan-limit-reached" {

@@ -334,8 +334,8 @@ func TestIntegrationChannelQuota(t *testing.T) {
 		t.Fatalf("second on free: %d %s", r.code, r.raw)
 	}
 	u := c.do(http.MethodGet, "/api/v1/usage", "", cookie)
-	if u.code != http.StatusOK || !strings.Contains(u.raw, `"usage":{"channels":1,"heartbeats":0,"members":1,"monitors":0,"projects":1}`) ||
-		!strings.Contains(u.raw, `"limits":{"channels":1,"heartbeats":1,"members":3,"monitors":3,"projects":50}`) {
+	if u.code != http.StatusOK || !strings.Contains(u.raw, `"usage":{"channels":1,"heartbeats":0,"members":1,"monitors":0,"projects":1,"statusPages":0}`) ||
+		!strings.Contains(u.raw, `"limits":{"channels":1,"heartbeats":1,"members":3,"monitors":3,"projects":50,"statusPages":1}`) {
 		t.Fatalf("usage: %d %s", u.code, u.raw)
 	}
 	if d := c.do(http.MethodDelete, "/api/v1/channels/"+first.body["id"].(string), "", unsafe); d.code != http.StatusNoContent {

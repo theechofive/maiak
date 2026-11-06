@@ -15,7 +15,7 @@ Monitor the availability of websites (and later internal services in client Kube
 - Slack notifications (Incoming Webhook) for opened and resolved incidents.
 - Private dashboard: monitor list with status, monitor details (uptime %, latency chart, incidents). Status refresh by polling every 15-30 s.
 
-**Out of the MVP** (all tracked in the ledger): public status page (L-004), in-cluster agent (L-005), regional probes (L-006), multiple users and OAuth (L-007), billing and plans (L-008), TCP/DNS/Kubernetes checks and SSE (L-014), self-monitoring of Maiak (L-003), SSRF policy details (L-001).
+**Out of the MVP** (all tracked in the ledger): public status page (L-004, done in P-05), in-cluster agent (L-005), regional probes (L-006), multiple users and OAuth (L-007), billing and plans (L-008), TCP/DNS/Kubernetes checks and SSE (L-014), self-monitoring of Maiak (L-003), SSRF policy details (L-001).
 
 ## Decisions at a glance
 | Topic | Decision | Where |

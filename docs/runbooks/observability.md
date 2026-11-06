@@ -46,10 +46,21 @@ No metric is labelled per tenant, monitor, incident, user, channel, URL, host, p
 | `maiak_jobs_delivery_duration_seconds` | histogram | | One Slack send |
 | `maiak_jobs_outbox_pending` | gauge | | Outbox rows waiting (including retries), all tenants; refreshed every 15 s |
 | `maiak_jobs_claim_errors_total` | counter | | Failed `claim_deliveries` calls |
-| `maiak_jobs_housekeeping_runs_total` | counter | `task`, `result` (`ok`, `skipped`, `error`) | Housekeeping runs; `task` is `ensure_partitions`, `compute_rollups`, `drop_expired_partitions` (the retention task, implemented by `list_droppable_partitions` / `detach_expired_partition` / `drop_detached_partition`), `purge_expired_sessions`, `evaluate_heartbeats` (every 30 s, ADR-0094) or `enqueue_incident_reminders` (every minute, ADR-0100) |
+| `maiak_jobs_housekeeping_runs_total` | counter | `task`, `result` (`ok`, `skipped`, `error`) | Housekeeping runs; `task` is `ensure_partitions`, `compute_rollups`, `drop_expired_partitions` (the retention task, implemented by `list_droppable_partitions` / `detach_expired_partition` / `drop_detached_partition`), `purge_expired_sessions`, `evaluate_heartbeats` (every 30 s, ADR-0094), `enqueue_incident_reminders` (every minute, ADR-0100) or `rebuild_status_pages` (every 30 s, ADR-0103) |
 | `maiak_jobs_housekeeping_last_success_timestamp_seconds` | gauge | `task` | Unix time of the last successful run of each task |
 | `maiak_jobs_partitions_kept_total` | counter | `reason` (`rollups_incomplete`, `error`) | Expired `check_results` partitions the retention task kept back; each one is also logged at warn level with the partition name (ADR-0090) |
 | `maiak_jobs_heartbeats_missed_total` | counter | | Missed heartbeat deadlines applied as failures by `evaluate_heartbeats` (one per deadline; a heartbeat that stays silent is not counted again) |
+| `maiak_jobs_status_page_snapshots_total` | counter | | Status page snapshots rebuilt and stored by `rebuild_status_pages` (one per published page and run); a failing page is logged at error level with its tenant and page id |
+
+### statuspage
+The public renderer (ADR-0103) also has `maiak_http_requests_total` and `maiak_http_request_duration_seconds` with route templates such as `/status/{slug:[a-z0-9-]+}` (never the slug itself).
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `maiak_statuspage_cache_lookups_total` | counter | `result` (`hit`, `miss`) | Snapshot lookups; a miss calls `status_page_snapshot` (cache 15 s per slug and replica, unknown slugs included) |
+| `maiak_statuspage_rate_limited_total` | counter | `kind` (`view`, `unlock`) | Requests refused with 429: page views per client IP (60 burst, 2/s), password attempts per IP (10 per 15 min) and per page (100 per 15 min) |
+| `maiak_statuspage_unlock_attempts_total` | counter | `result` (`ok`, `wrong`) | Password attempts on protected pages |
+| `maiak_statuspage_snapshot_errors_total` | counter | | Lookups that failed (database or decoding); the visitor gets the 404 page |
 
 ## Logs
 All processes write one JSON object per line to stdout (`log/slog`, level from `MAIAK_LOG_LEVEL`). Every line has `time`, `level`, `msg`, `service` and `version`.

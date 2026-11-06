@@ -8,9 +8,10 @@ Maiak is a **modular monolith deployed as several processes** from one Go module
 |---|---|---|---|
 | `api` (`cmd/api`) | REST for the web app: auth, organizations, members, roles and invitations (ADR-0102), projects (T-02), monitors, notification channels and their test message, dashboard read models, the platform admin panel (`/api/v1/admin/*`, platform admin only, ADR-0097) and the public heartbeat ping (`/api/v1/heartbeat/{token}`, no session, ADR-0094). Upserts the admin from `MAIAK_ADMIN_*` at start and gives it the platform-admin flag | `maiak_api` | stateless, replicas by load (the ping rate limits are per replica, L-200) |
 | `worker` (`cmd/worker`) | Claims due (monitor, location) jobs every second, runs HTTPS checks through the SSRF guard, writes result, schedule, incident state and outbox in one transaction per tenant batch. Calls `ensure_partitions()` at start and hourly | `maiak_worker` | replicas (limits are per process, R-030) |
-| `jobs` (`cmd/jobs`) | Outbox delivery to Slack (retries, per-channel rate limit) and singleton housekeeping under advisory locks: heartbeat evaluation (30 s), partitions (daily), rollups (5 min), retention (daily), expired-session purge (hourly) | `maiak_worker` | 1+ replicas (R-060, L-082) |
+| `jobs` (`cmd/jobs`) | Outbox delivery to Slack (retries, per-channel rate limit) and singleton housekeeping under advisory locks: heartbeat evaluation (30 s), partitions (daily), rollups (5 min), retention (daily), expired-session purge (hourly), status page snapshots (30 s) | `maiak_worker` | 1+ replicas (R-060, L-082) |
 | `migrate` (`cmd/migrate`) | Applies migrations (ArgoCD Sync hook Job, wave -1, ADR-0013) | `maiak_owner` | one-shot Job |
 | `maiakctl` (`cmd/maiakctl`) | Admin CLI: `hashpw`, `db bootstrap` (also the hook Job `maiak-db-bootstrap`, wave -3, ADR-0014), `secrets bootstrap` (hook Job `maiak-secrets-bootstrap`, wave -3, generates the admin and encryption Secrets when absent, ADR-0091) | RDS admin login (db bootstrap only) | local / one-shot Job |
+| `statuspage` (`cmd/statuspage`) | Public status pages under `/status/<slug>` (HTML, `.json`, `/feed.rss`, `/badge`, `/embed.js`, ADR-0103) from snapshots the api and jobs prepare; no sessions, optional password with a signed cookie, in-process cache and limits | `maiak_statuspage` (may only execute `status_page_snapshot(slug)`) | stateless; cache and limits per replica (L-274) |
 | `web` | Static React SPA served by nginx | none | 1-2 replicas |
 | Postgres | Only datastore (database `maiak` in RDS) | | external |
 
@@ -18,14 +19,16 @@ Every process serves `/healthz`, `/readyz` and `/metrics` on the admin port (`:9
 
 Later: `probe` (remote executor, no DB access, pull/push over HTTPS), `agent` (inside a client cluster), ClickHouse for results.
 
-Planned in [Phase 4](../tasks/phase4.md), not implemented: a `statuspage` process (`/status/<slug>`, no sessions, own database role that can only read prepared snapshots built by `jobs`, [ADR-0103](../adr/0103-status-page.md)). Roles, invitations and the organization switcher (T-01) and projects inside an organization (T-02, RLS stays per tenant, [ADR-0102](../adr/0102-teams-roles-projects.md)) are implemented.
+The public status page (P-05, [ADR-0103](../adr/0103-status-page.md)) is implemented: the `statuspage` process above and the `statuspages` module. Roles, invitations and the organization switcher (T-01) and projects inside an organization (T-02, RLS stays per tenant, [ADR-0102](../adr/0102-teams-roles-projects.md)) are implemented.
 
 ```mermaid
 flowchart LR
   user[Browser] -->|https maiak.klr-ops.net| gw[Envoy Gateway internal]
   am[Client Alertmanager] -->|heartbeat ping| gw
   gw -->|/api| api
+  gw -->|/status| statuspage
   gw -->|/| web
+  statuspage -->|status_page_snapshot only| pg
   api --> pg[(Postgres)]
   worker --> pg
   jobs --> pg
@@ -52,6 +55,7 @@ flowchart LR
 | `notify` | notification channels (Slack webhooks, encrypted; events, mention, reminders), the channel selection of monitors, message formats, Slack notifier (ADR-0100) | `notification_channels`, `monitor_channels` |
 | `jobs` | outbox delivery loop (`Notifier` seam) and housekeeping | none |
 | `audit` | audit log rows | `audit_log` |
+| `statuspages` | the organization's status page (ADR-0103): configuration, components from any project, write-only password, preview, and the snapshot builder (`Build`), the only code that decides what is public; `statuspages/public` is the renderer of `cmd/statuspage` | `status_pages`, `status_page_components`, `status_page_snapshots` |
 | `queries` | read models for the dashboard (cross-table SELECT only), filtered by the actor's projects (`authz.Scope`) | none |
 | `admin` | platform admin panel: tenants across the platform (list, plan, suspension, soft delete), their users, password resets; everything through the `admin_*` definer functions, which check the acting user's flag, enforce the guard rails and write the audit rows (ADR-0097) | none |
 | `api` | HTTP layer generated from `api/openapi.yaml`, the role check of every operation (`authorize`, through `internal/authz`), error mapping | none |
@@ -130,12 +134,27 @@ incidents -> ListDeliveryChannels             selected channels of the monitor's
                                               no selection: active channels of the monitor's project
 ```
 
+### Public status page (ADR-0103)
+```
+admin   -> PATCH /api/v1/status-pages/{id}      owner/admin; tenant transaction: change, audit row, and
+                                                statuspages.Refresh: Build (allow-list) -> upsert snapshot,
+                                                or delete it when the page is not published
+jobs    -> status_page_published_pages()        every 30 s; per page one tenant transaction: drop components
+                                                of deleted monitors, Refresh
+visitor -> GET /status/<slug> (gateway)         statuspage: per-IP limit, cache 15 s per slug, else
+                                                status_page_snapshot(slug) as maiak_statuspage -> payload,
+                                                etag, password hash; unknown/unpublished/suspended -> one 404
+        -> html/template render                 strict CSP with a nonce for the accent; JSON re-encoded from
+                                                the typed snapshot; a protected page needs the signed cookie
+```
+
 ### Who calls which database function
 | Caller | Functions |
 |---|---|
 | api | `auth_lookup_session`, `auth_login_tenant`, `auth_create_tenant`, `auth_count_other_memberships`, `auth_revoke_user_sessions`, `auth_invitation_lookup`, `auth_user_organizations`, `org_delete_tenant`, `reset_monitor_runtime`, `heartbeat_ping` |
 | worker | `claim_due_monitors`, `ensure_partitions` |
-| jobs | `claim_deliveries`, `finish_delivery`, `outbox_pending`, `ensure_partitions`, `compute_rollups_catch_up`, `list_droppable_partitions`, `detach_expired_partition`, `drop_detached_partition`, `purge_expired_sessions`, `list_due_heartbeats` |
+| jobs | `claim_deliveries`, `finish_delivery`, `outbox_pending`, `ensure_partitions`, `compute_rollups_catch_up`, `list_droppable_partitions`, `detach_expired_partition`, `drop_detached_partition`, `purge_expired_sessions`, `list_due_heartbeats`, `status_page_published_pages` |
+| statuspage | `status_page_snapshot` (nothing else) |
 
 Grantees and purposes are in the [data model](data-model.md#security-definer-functions).
 
