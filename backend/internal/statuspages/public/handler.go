@@ -400,7 +400,7 @@ func (h *handler) unlock(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, c)
 	w.Header().Set("Cache-Control", "no-store")
-	http.Redirect(w, r, "/status/"+slug, http.StatusSeeOther)
+	http.Redirect(w, r, "/status/"+slug, http.StatusSeeOther) //nolint:gosec // slug is matched against the slug pattern before this point
 }
 
 // sameOrigin refuses a cross-site form post (login CSRF) when the browser tells the origin.
@@ -503,9 +503,10 @@ func (h *handler) serveBadge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nonce := newNonce()
+	badgeStyle := template.CSS(badgeCSS) //nolint:gosec // badgeCSS is a constant
 	var buf bytes.Buffer
 	if err := templates.ExecuteTemplate(&buf, "badge", map[string]any{
-		"Nonce": nonce, "BadgeCSS": template.CSS(badgeCSS), "Status": e.Snapshot.Status, "StatusText": overallText(e.Snapshot.Status),
+		"Nonce": nonce, "BadgeCSS": badgeStyle, "Status": e.Snapshot.Status, "StatusText": overallText(e.Snapshot.Status),
 		"PageURL": h.cfg.PublicURL + "/status/" + slug,
 	}); err != nil {
 		h.notFound(w, r)

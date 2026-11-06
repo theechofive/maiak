@@ -537,7 +537,10 @@ export interface paths {
       };
       cookie?: never;
     };
-    /** One notification channel */
+    /**
+     * One notification channel
+     * @description Returns one notification channel of the organization. The webhook URL is never returned.
+     */
     get: operations["getChannel"];
     put?: never;
     post?: never;
@@ -950,7 +953,10 @@ export interface paths {
       };
       cookie?: never;
     };
-    /** One status page */
+    /**
+     * One status page
+     * @description Returns the settings of one status page of the organization. The password is never returned.
+     */
     get: operations["getStatusPage"];
     put?: never;
     post?: never;

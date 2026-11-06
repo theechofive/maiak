@@ -850,6 +850,7 @@ paths:
     get:
       operationId: getChannel
       summary: One notification channel
+      description: Returns one notification channel of the organization. The webhook URL is never returned.
       tags: [channels]
       responses:
         "200":
@@ -1591,6 +1592,7 @@ paths:
     get:
       operationId: getStatusPage
       summary: One status page
+      description: Returns the settings of one status page of the organization. The password is never returned.
       tags: [status-page]
       responses:
         "200":

@@ -205,7 +205,7 @@ func ValidateSlug(slug string) string {
 		return "must be 1 to 63 characters"
 	}
 	for i, c := range slug {
-		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' && i > 0) {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && (c != '-' || i == 0) {
 			return "may contain lowercase letters, digits and hyphens and must not start with a hyphen"
 		}
 	}
