@@ -33,6 +33,7 @@ A deleted page's address, and the old address after a rename, stay reserved for 
 - Wrong passwords and 429s are counted in `maiak_statuspage_unlock_attempts_total` and `maiak_statuspage_rate_limited_total{kind="unlock"}`: 10 attempts per client (IPv4 address or IPv6 /64) and 100 wrong passwords per page per 15 minutes, per replica. When the page budget is used up, each client still has 3 wrong passwords of its own, so a visitor with the right password gets in during an attack.
 - Changing the password signs every visitor out; so does rotating the cookie key (delete the Secret `maiak-statuspage`, sync, restart the `statuspage` Deployment).
 - Behind the gateway the client IP comes from `X-Forwarded-For` (`config.trustedProxyHops`); without it every visitor shares one limit.
+- Limits trust `X-Forwarded-For` as the api does: requests without it all share one `unknown` bucket, and a pod inside the cluster can reach the `statuspage` Service directly (NetworkPolicy is not enforced, R-002) and send a forged `X-Forwarded-For` to get a fresh bucket for every request. The limits therefore only hold for traffic through the gateway; treat them as a cost bound, not a protection against in-cluster clients.
 
 ## Abuse
 - A page shows only what its admin published: public names, groups, states, daily bars and generated incident titles (R-211). Ask the organization's admin to rename or remove a component, or unpublish the page. As a last resort the platform admin suspends the organization (its page then answers 404).
