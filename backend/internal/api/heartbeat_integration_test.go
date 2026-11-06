@@ -24,6 +24,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
+	"github.com/theechofive/maiak/backend/internal/projects"
 	"github.com/theechofive/maiak/backend/internal/queries"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
 	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
@@ -52,7 +53,7 @@ func newHeartbeatServer(t *testing.T, env *pgtest.Env, logs *lockedBuffer, clk c
 	sched := scheduler.New()
 	h, err := api.NewHandler(api.Config{Version: "test", Commit: "test", CookieSecure: true, TrustedProxyHops: 1, PublicURL: heartbeatPublicURL},
 		api.Deps{Auth: svc, Monitors: monitors.NewService(pool, sched, incidents.NewService(sched)), Queries: queries.New(pool, nil),
-			Plans: plans.NewService(pool), Logger: log, Clock: clk, Pings: api.NewPingMetrics(prometheus.NewRegistry())})
+			Plans: plans.NewService(pool), Projects: projects.NewService(pool), Logger: log, Clock: clk, Pings: api.NewPingMetrics(prometheus.NewRegistry())})
 	if err != nil {
 		t.Fatal(err)
 	}

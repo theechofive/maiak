@@ -29,3 +29,9 @@ WHERE tenant_id = @tenant_id AND deleted_at IS NULL;
 SELECT ((SELECT count(*) FROM memberships AS m WHERE m.tenant_id = @tenant_id)
       + (SELECT count(*) FROM invitations AS i
          WHERE i.tenant_id = @tenant_id AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > now()))::bigint AS n;
+
+-- name: CountProjects :one
+-- Read-only count for the project cap (projects are owned by internal/projects).
+SELECT count(*)
+FROM projects
+WHERE tenant_id = @tenant_id AND deleted_at IS NULL;

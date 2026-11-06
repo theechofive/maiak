@@ -36,6 +36,8 @@ const (
 	ResourceChannel   Resource = "channels"
 	// ResourceMember counts memberships plus open invitations (ADR-0102).
 	ResourceMember Resource = "members"
+	// ResourceProject counts live projects, the Default project included (T-02).
+	ResourceProject Resource = "projects"
 )
 
 // JSON keys in plans.limits and tenants.limits.
@@ -44,6 +46,7 @@ const (
 	keyMaxHeartbeats = "max_heartbeats"
 	keyMaxChannels   = "max_channels"
 	keyMaxMembers    = "max_members"
+	keyMaxProjects   = "max_projects"
 )
 
 var (
@@ -60,6 +63,7 @@ type Limits struct {
 	MaxHeartbeats int
 	MaxChannels   int
 	MaxMembers    int
+	MaxProjects   int
 }
 
 // Of returns the limit for r.
@@ -73,6 +77,8 @@ func (l Limits) Of(r Resource) int {
 		return l.MaxChannels
 	case ResourceMember:
 		return l.MaxMembers
+	case ResourceProject:
+		return l.MaxProjects
 	}
 	panic(fmt.Sprintf("plans: unknown resource %q", r))
 }
@@ -83,6 +89,7 @@ type Counts struct {
 	Heartbeats int
 	Channels   int
 	Members    int
+	Projects   int
 }
 
 // Plan identifies a plan.
@@ -123,7 +130,7 @@ func Resolve(planKey string, planLimits, overrides []byte) (Limits, error) {
 	for _, f := range []struct {
 		key string
 		dst *int
-	}{{keyMaxMonitors, &l.MaxMonitors}, {keyMaxHeartbeats, &l.MaxHeartbeats}, {keyMaxChannels, &l.MaxChannels}, {keyMaxMembers, &l.MaxMembers}} {
+	}{{keyMaxMonitors, &l.MaxMonitors}, {keyMaxHeartbeats, &l.MaxHeartbeats}, {keyMaxChannels, &l.MaxChannels}, {keyMaxMembers, &l.MaxMembers}, {keyMaxProjects, &l.MaxProjects}} {
 		v, ok := over[f.key]
 		if !ok {
 			if v, ok = base[f.key]; !ok {
@@ -145,7 +152,7 @@ func parse(raw []byte) (map[string]int, error) {
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidLimits, err)
 	}
-	for _, key := range []string{keyMaxMonitors, keyMaxHeartbeats, keyMaxChannels, keyMaxMembers} {
+	for _, key := range []string{keyMaxMonitors, keyMaxHeartbeats, keyMaxChannels, keyMaxMembers, keyMaxProjects} {
 		v, ok := obj[key]
 		if !ok {
 			continue
@@ -249,6 +256,8 @@ func count(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, r Resource) (int,
 		n, err = q.CountLiveHeartbeats(ctx, tenantID)
 	case ResourceMember:
 		n, err = q.CountMembers(ctx, tenantID)
+	case ResourceProject:
+		n, err = q.CountProjects(ctx, tenantID)
 	default:
 		return 0, fmt.Errorf("plans: unknown resource %q", r)
 	}
@@ -290,7 +299,7 @@ func (s *Service) Usage(ctx context.Context, tenantID uuid.UUID) (Usage, error) 
 			r   Resource
 			dst *int
 		}{{ResourceMonitor, &u.Counts.Monitors}, {ResourceHeartbeat, &u.Counts.Heartbeats}, {ResourceChannel, &u.Counts.Channels},
-			{ResourceMember, &u.Counts.Members}} {
+			{ResourceMember, &u.Counts.Members}, {ResourceProject, &u.Counts.Projects}} {
 			if *c.dst, err = count(ctx, tx, tenantID, c.r); err != nil {
 				return err
 			}

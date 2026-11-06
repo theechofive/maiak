@@ -95,6 +95,9 @@ func (s *Service) RegenerateHeartbeatToken(ctx context.Context, a Actor, id uuid
 		if err != nil {
 			return fmt.Errorf("lock monitor: %w", err)
 		}
+		if err := a.checkAccess(cur.ProjectID); err != nil {
+			return err
+		}
 		if cur.Type != TypeHeartbeat {
 			return ErrNotHeartbeat
 		}

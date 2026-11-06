@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/theechofive/maiak/backend/internal/audit"
+	"github.com/theechofive/maiak/backend/internal/authz"
 	"github.com/theechofive/maiak/backend/internal/incidents"
 	"github.com/theechofive/maiak/backend/internal/monitors/monitorsdb"
 	"github.com/theechofive/maiak/backend/internal/notify"
@@ -25,6 +26,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/platform/db"
 	"github.com/theechofive/maiak/backend/internal/platform/uuidv7"
 	"github.com/theechofive/maiak/backend/internal/platform/validation"
+	"github.com/theechofive/maiak/backend/internal/projects"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
 )
 
@@ -59,18 +61,38 @@ var (
 	ErrNotHeartbeat = errors.New("monitors: not a heartbeat monitor")
 )
 
-// Actor is who performs a change; it scopes every operation to one tenant.
+// Actor is who performs a change; it scopes every operation to one tenant, and Access to the
+// projects the user may change monitors in (ADR-0102, T-02).
 type Actor struct {
 	TenantID uuid.UUID
 	UserID   uuid.UUID
 	IP       netip.Addr
+	Access   authz.Actor
+}
+
+// checkAccess refuses a change of a monitor in project: ErrNotFound when the actor does not see
+// the project (so ids of other projects reveal nothing), authz.ErrProjectForbidden when its role
+// there is below member.
+func (a Actor) checkAccess(project *uuid.UUID) error {
+	var p uuid.UUID
+	if project != nil {
+		p = *project
+	}
+	if !a.Access.Sees(p) {
+		return ErrNotFound
+	}
+	if !a.Access.CanEditIn(p) {
+		return authz.ErrProjectForbidden
+	}
+	return nil
 }
 
 // Monitor is a monitor with its aggregated state.
 type Monitor struct {
-	ID   uuid.UUID
-	Type string
-	Name string
+	ID        uuid.UUID
+	ProjectID *uuid.UUID
+	Type      string
+	Name      string
 	// URL and ExpectedStatus are empty for a heartbeat.
 	URL            string
 	ExpectedStatus string
@@ -109,7 +131,10 @@ type CreateInput struct {
 	NotifySlack             *bool
 	ExpectedIntervalSeconds *int
 	GraceSeconds            *int
-	// ChannelIDs selects notification channels (none: every active channel, ADR-0100).
+	// ProjectID is the monitor's project; nil means the Default project.
+	ProjectID *uuid.UUID
+	// ChannelIDs selects notification channels of the project or organization-wide ones (none:
+	// the active channels of the project, ADR-0100, T-02).
 	ChannelIDs *[]uuid.UUID
 }
 
@@ -124,6 +149,8 @@ type UpdateInput struct {
 	NotifySlack             *bool
 	ExpectedIntervalSeconds *int
 	GraceSeconds            *int
+	// ProjectID moves the monitor; selected channels of the old project are dropped.
+	ProjectID *uuid.UUID
 	// ChannelIDs replaces the channel selection.
 	ChannelIDs *[]uuid.UUID
 }
@@ -232,6 +259,17 @@ func (s *Service) Create(ctx context.Context, a Actor, in CreateInput) (Monitor,
 			return err
 		}
 		q := monitorsdb.New(tx)
+		project, err := projects.ForUse(ctx, tx, a.TenantID, in.ProjectID)
+		if errors.Is(err, projects.ErrNotFound) || (err == nil && !a.Access.Sees(project)) {
+			return projectFieldError()
+		}
+		if err != nil {
+			return err
+		}
+		if !a.Access.CanEditIn(project) {
+			return authz.ErrProjectForbidden
+		}
+		row.ProjectID = &project
 		location, err := s.sched.HomeLocation(ctx, tx)
 		if err != nil {
 			return err
@@ -257,11 +295,11 @@ func (s *Service) Create(ctx context.Context, a Actor, in CreateInput) (Monitor,
 			return fmt.Errorf("insert monitor state: %w", err)
 		}
 		if in.ChannelIDs != nil {
-			if _, err := notify.SetMonitorChannels(ctx, tx, a.TenantID, id, *in.ChannelIDs); err != nil {
+			if _, err := notify.SetMonitorChannels(ctx, tx, a.TenantID, id, project, *in.ChannelIDs); err != nil {
 				return err
 			}
 		}
-		if err := s.audit(ctx, tx, a, ActionCreated, id, map[string]any{"type": row.Type}); err != nil {
+		if err := s.audit(ctx, tx, a, ActionCreated, id, map[string]any{"type": row.Type, "projectId": project.String()}); err != nil {
 			return err
 		}
 		m, err = get(ctx, q, a.TenantID, id)
@@ -287,6 +325,9 @@ func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateIn
 		}
 		if err != nil {
 			return fmt.Errorf("lock monitor: %w", err)
+		}
+		if err := a.checkAccess(cur.ProjectID); err != nil {
+			return err
 		}
 		name, interval, threshold, notifySlack := cur.Name, int(cur.IntervalSeconds), int(cur.FailureThreshold), cur.NotifySlack
 
@@ -353,8 +394,35 @@ func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateIn
 		if err := verr.Err(); err != nil {
 			return err
 		}
+		project := uuid.Nil
+		if cur.ProjectID != nil {
+			project = *cur.ProjectID
+		}
+		var moveMeta map[string]any
+		if in.ProjectID != nil && *in.ProjectID != project {
+			target, err := projects.ForUse(ctx, tx, a.TenantID, in.ProjectID)
+			if errors.Is(err, projects.ErrNotFound) || (err == nil && !a.Access.Sees(target)) {
+				return projectFieldError()
+			}
+			if err != nil {
+				return err
+			}
+			if !a.Access.CanEditIn(target) {
+				return authz.ErrProjectForbidden
+			}
+			if err := q.SetMonitorProject(ctx, monitorsdb.SetMonitorProjectParams{TenantID: a.TenantID, ID: id, ProjectID: &target}); err != nil {
+				return fmt.Errorf("move monitor: %w", err)
+			}
+			// Channels of the old project are not allowed in the new one (ADR-0102, T-02).
+			detached, err := notify.DetachForeignChannels(ctx, tx, a.TenantID, id, target)
+			if err != nil {
+				return err
+			}
+			moveMeta = map[string]any{"from": project.String(), "to": target.String(), "channelsDetached": detached}
+			changed, project = append(changed, "projectId"), target
+		}
 		if in.ChannelIDs != nil {
-			selected, err := notify.SetMonitorChannels(ctx, tx, a.TenantID, id, *in.ChannelIDs)
+			selected, err := notify.SetMonitorChannels(ctx, tx, a.TenantID, id, project, *in.ChannelIDs)
 			if err != nil {
 				return err
 			}
@@ -382,7 +450,11 @@ func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateIn
 				return fmt.Errorf("update monitor: %w", err)
 			}
 			// Only field names: the URL may carry tokens in its query string.
-			if err := s.audit(ctx, tx, a, ActionUpdated, id, map[string]any{"fields": changed}); err != nil {
+			meta := map[string]any{"fields": changed}
+			if moveMeta != nil {
+				meta["move"] = moveMeta
+			}
+			if err := s.audit(ctx, tx, a, ActionUpdated, id, meta); err != nil {
 				return err
 			}
 		}
@@ -405,6 +477,9 @@ func (s *Service) Delete(ctx context.Context, a Actor, id uuid.UUID) error {
 			return ErrNotFound
 		} else if err != nil {
 			return fmt.Errorf("lock monitor: %w", err)
+		}
+		if err := a.checkAccess(cur.ProjectID); err != nil {
+			return err
 		}
 		if cur.Type == TypeHeartbeat {
 			if err := lockHeartbeat(ctx, q, a.TenantID, id); err != nil {
@@ -444,6 +519,9 @@ func (s *Service) setPaused(ctx context.Context, a Actor, id uuid.UUID, paused b
 		}
 		if err != nil {
 			return fmt.Errorf("lock monitor: %w", err)
+		}
+		if err := a.checkAccess(cur.ProjectID); err != nil {
+			return err
 		}
 		if cur.Paused != paused {
 			if cur.Type == TypeHeartbeat {
@@ -527,7 +605,7 @@ func fromRow(r monitorsdb.GetMonitorRow) (Monitor, error) {
 		return Monitor{}, fmt.Errorf("monitor %s config: %w", r.ID, err)
 	}
 	return Monitor{
-		ID: r.ID, Type: r.Type, Name: r.Name, URL: cfg.URL, ExpectedStatus: cfg.ExpectedStatus,
+		ID: r.ID, ProjectID: r.ProjectID, Type: r.Type, Name: r.Name, URL: cfg.URL, ExpectedStatus: cfg.ExpectedStatus,
 		IntervalSeconds: int(r.IntervalSeconds), TimeoutSeconds: int(r.TimeoutSeconds), GraceSeconds: cfg.GraceSeconds,
 		FailureThreshold: int(r.FailureThreshold), NotifySlack: r.NotifySlack, Paused: r.Paused,
 		Status: r.Status, StatusSince: r.StatusChangedAt, LastErrorKind: r.LastErrorKind,
@@ -540,10 +618,17 @@ func fromRow(r monitorsdb.GetMonitorRow) (Monitor, error) {
 func wrap(op string, err error) error {
 	var verr *validation.Error
 	var lerr *plans.LimitError
-	if err == nil || errors.Is(err, ErrNotFound) || errors.Is(err, ErrNotHeartbeat) || errors.As(err, &verr) || errors.As(err, &lerr) {
+	if err == nil || errors.Is(err, ErrNotFound) || errors.Is(err, ErrNotHeartbeat) || errors.Is(err, authz.ErrProjectForbidden) ||
+		errors.As(err, &verr) || errors.As(err, &lerr) {
 		return err
 	}
 	return fmt.Errorf("monitors: %s: %w", op, err)
+}
+
+func projectFieldError() error {
+	var verr validation.Error
+	verr.Add("projectId", "does not exist")
+	return &verr
 }
 
 func checkFixed(verr *validation.Error, field string, got *int, want int) {

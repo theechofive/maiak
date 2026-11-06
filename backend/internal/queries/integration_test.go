@@ -10,10 +10,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/theechofive/maiak/backend/internal/authz"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/queries"
 	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
 )
+
+// all is the scope of an owner or admin: every project.
+var everyProject = authz.Scope{All: true}
 
 const homeLocation = "01920000-0000-7000-8000-000000000001"
 
@@ -154,7 +158,7 @@ func TestIntegrationListAndDetail(t *testing.T) {
 	f := newFixture(t)
 	f.seed()
 
-	list, sum, err := f.svc.ListMonitors(f.ctx, tenantA)
+	list, sum, err := f.svc.ListMonitors(f.ctx, tenantA, everyProject)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +188,7 @@ func TestIntegrationListAndDetail(t *testing.T) {
 		t.Fatalf("never checked = %+v", n)
 	}
 
-	d, err := f.svc.Monitor(f.ctx, tenantA, mUp)
+	d, err := f.svc.Monitor(f.ctx, tenantA, everyProject, mUp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +200,7 @@ func TestIntegrationListAndDetail(t *testing.T) {
 	if d.TLSExpiresAt == nil || d.Ongoing == nil {
 		t.Fatalf("detail = %+v", d)
 	}
-	nd, err := f.svc.Monitor(f.ctx, tenantA, mNew)
+	nd, err := f.svc.Monitor(f.ctx, tenantA, everyProject, mNew)
 	if err != nil || nd.Uptime24h != nil || nd.Uptime7d != nil || nd.Uptime30d != nil {
 		t.Fatalf("new monitor uptime: %+v %v", nd, err)
 	}
@@ -205,21 +209,21 @@ func TestIntegrationListAndDetail(t *testing.T) {
 func TestIntegrationTenantIsolationAndNotFound(t *testing.T) {
 	f := newFixture(t)
 	f.seed()
-	list, sum, err := f.svc.ListMonitors(f.ctx, tenantB)
+	list, sum, err := f.svc.ListMonitors(f.ctx, tenantB, everyProject)
 	if err != nil || len(list) != 1 || list[0].ID != mOther || sum != (queries.Summary{Up: 1}) || !near(list[0].Uptime24h, 100) {
 		t.Fatalf("tenant B list: %+v %+v %v", list, sum, err)
 	}
 	for _, id := range []uuid.UUID{mOther, mDeleted, uuid.New()} {
-		if _, err := f.svc.Monitor(f.ctx, tenantA, id); !errors.Is(err, queries.ErrNotFound) {
+		if _, err := f.svc.Monitor(f.ctx, tenantA, everyProject, id); !errors.Is(err, queries.ErrNotFound) {
 			t.Errorf("monitor %s: %v", id, err)
 		}
-		if _, err := f.svc.Stats(f.ctx, tenantA, id, queries.Range24h); !errors.Is(err, queries.ErrNotFound) {
+		if _, err := f.svc.Stats(f.ctx, tenantA, everyProject, id, queries.Range24h); !errors.Is(err, queries.ErrNotFound) {
 			t.Errorf("stats %s: %v", id, err)
 		}
-		if _, err := f.svc.Checks(f.ctx, tenantA, id, 10); !errors.Is(err, queries.ErrNotFound) {
+		if _, err := f.svc.Checks(f.ctx, tenantA, everyProject, id, 10); !errors.Is(err, queries.ErrNotFound) {
 			t.Errorf("checks %s: %v", id, err)
 		}
-		if _, err := f.svc.Incidents(f.ctx, tenantA, id); !errors.Is(err, queries.ErrNotFound) {
+		if _, err := f.svc.Incidents(f.ctx, tenantA, everyProject, id); !errors.Is(err, queries.ErrNotFound) {
 			t.Errorf("incidents %s: %v", id, err)
 		}
 	}
@@ -230,7 +234,7 @@ func TestIntegrationStats(t *testing.T) {
 	f.seed()
 
 	// 24 h from raw rows: latencies 100, 200, 300, 400, 50, 123 (timeouts have none).
-	s, err := f.svc.Stats(f.ctx, tenantA, mUp, queries.Range24h)
+	s, err := f.svc.Stats(f.ctx, tenantA, everyProject, mUp, queries.Range24h)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +262,7 @@ func TestIntegrationStats(t *testing.T) {
 
 	// 7 d from rollups and the merged histogram: (100,250]: 60 + 1 (123 ms), (25,50]: 1,
 	// (250,500]: 2, (5000,10000]: 10; n = 74, rank 71 falls into the 10000 ms bucket.
-	s, err = f.svc.Stats(f.ctx, tenantA, mUp, queries.Range7d)
+	s, err = f.svc.Stats(f.ctx, tenantA, everyProject, mUp, queries.Range7d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +277,7 @@ func TestIntegrationStats(t *testing.T) {
 	}
 
 	// 30 d: the T-10d rollup adds checks but no latency; p95 unchanged, 6-hour buckets.
-	s, err = f.svc.Stats(f.ctx, tenantA, mUp, queries.Range30d)
+	s, err = f.svc.Stats(f.ctx, tenantA, everyProject, mUp, queries.Range30d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +295,7 @@ func TestIntegrationStats(t *testing.T) {
 	}
 
 	// No data at all: nulls, but every bucket is listed.
-	s, err = f.svc.Stats(f.ctx, tenantA, mNew, queries.Range7d)
+	s, err = f.svc.Stats(f.ctx, tenantA, everyProject, mNew, queries.Range7d)
 	if err != nil || s.AvgMs != nil || s.P95Ms != nil || len(s.Series) != 169 || s.Series[0].OKRatio != nil {
 		t.Fatalf("empty stats: %+v %v", s, err)
 	}
@@ -301,7 +305,7 @@ func TestIntegrationChecksAndIncidents(t *testing.T) {
 	f := newFixture(t)
 	f.seed()
 
-	all, err := f.svc.Checks(f.ctx, tenantA, mUp, 1000) // clamped to MaxCheckLimit
+	all, err := f.svc.Checks(f.ctx, tenantA, everyProject, mUp, 1000) // clamped to MaxCheckLimit
 	if err != nil || len(all) != 8 {
 		t.Fatalf("checks: %d %v", len(all), err)
 	}
@@ -316,15 +320,15 @@ func TestIntegrationChecksAndIncidents(t *testing.T) {
 	if c := all[2]; c.OK || c.ResponseMs != nil || c.HTTPStatus != nil || c.ErrorKind == nil || *c.ErrorKind != "timeout" {
 		t.Fatalf("timeout check = %+v", c)
 	}
-	two, err := f.svc.Checks(f.ctx, tenantA, mUp, 2)
+	two, err := f.svc.Checks(f.ctx, tenantA, everyProject, mUp, 2)
 	if err != nil || len(two) != 2 || !two[0].CheckedAt.Equal(all[0].CheckedAt) {
 		t.Fatalf("limit 2: %+v %v", two, err)
 	}
-	if none, err := f.svc.Checks(f.ctx, tenantA, mNew, 50); err != nil || none == nil || len(none) != 0 {
+	if none, err := f.svc.Checks(f.ctx, tenantA, everyProject, mNew, 50); err != nil || none == nil || len(none) != 0 {
 		t.Fatalf("no checks: %v %v", none, err)
 	}
 
-	inc, err := f.svc.Incidents(f.ctx, tenantA, mUp)
+	inc, err := f.svc.Incidents(f.ctx, tenantA, everyProject, mUp)
 	if err != nil || len(inc) != 2 {
 		t.Fatalf("incidents: %+v %v", inc, err)
 	}
@@ -343,7 +347,7 @@ func TestIntegrationChecksAndIncidents(t *testing.T) {
 			id, tenantA, at, at.Add(time.Minute))
 		f.exec(`INSERT INTO incident_monitors (tenant_id, incident_id, monitor_id) VALUES ($1, $2, $3)`, tenantA, id, mNew)
 	}
-	if inc, err := f.svc.Incidents(f.ctx, tenantA, mNew); err != nil || len(inc) != queries.MaxIncidents {
+	if inc, err := f.svc.Incidents(f.ctx, tenantA, everyProject, mNew); err != nil || len(inc) != queries.MaxIncidents {
 		t.Fatalf("incident limit: %d %v", len(inc), err)
 	}
 }

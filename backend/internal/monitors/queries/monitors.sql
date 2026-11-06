@@ -1,6 +1,6 @@
 -- name: InsertMonitor :exec
-INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, timeout_seconds, failure_threshold, notify_slack)
-VALUES (@id, @tenant_id, @name, @type, @config, @interval_seconds, @timeout_seconds, @failure_threshold, @notify_slack);
+INSERT INTO monitors (id, tenant_id, project_id, name, type, config, interval_seconds, timeout_seconds, failure_threshold, notify_slack)
+VALUES (@id, @tenant_id, @project_id, @name, @type, @config, @interval_seconds, @timeout_seconds, @failure_threshold, @notify_slack);
 
 -- name: InsertMonitorLocation :exec
 INSERT INTO monitor_locations (tenant_id, monitor_id, location_id)
@@ -11,7 +11,7 @@ INSERT INTO monitor_state (tenant_id, monitor_id)
 VALUES (@tenant_id, @monitor_id);
 
 -- name: GetMonitor :one
-SELECT m.id, m.name, m.type, m.config, m.interval_seconds, m.timeout_seconds, m.failure_threshold,
+SELECT m.id, m.project_id, m.name, m.type, m.config, m.interval_seconds, m.timeout_seconds, m.failure_threshold,
        m.notify_slack, m.paused, m.created_at, m.updated_at,
        s.status, s.status_changed_at, s.last_error_kind, s.last_checked_at, s.tls_expires_at,
        s.current_incident_id
@@ -20,7 +20,7 @@ JOIN monitor_state AS s ON s.tenant_id = m.tenant_id AND s.monitor_id = m.id
 WHERE m.tenant_id = @tenant_id AND m.id = @id AND m.deleted_at IS NULL;
 
 -- name: LockMonitor :one
-SELECT id, name, type, config, interval_seconds, timeout_seconds, failure_threshold, notify_slack, paused
+SELECT id, project_id, name, type, config, interval_seconds, timeout_seconds, failure_threshold, notify_slack, paused
 FROM monitors
 WHERE tenant_id = @tenant_id AND id = @id AND deleted_at IS NULL
 FOR UPDATE;
@@ -79,3 +79,8 @@ WHERE tenant_id = @tenant_id AND monitor_id = @monitor_id;
 UPDATE heartbeat_tokens
 SET applied_ping_at = sqlc.narg('applied_ping_at'), missed_deadline = sqlc.narg('missed_deadline')
 WHERE tenant_id = @tenant_id AND monitor_id = @monitor_id;
+
+-- name: SetMonitorProject :exec
+UPDATE monitors
+SET project_id = @project_id, updated_at = now()
+WHERE tenant_id = @tenant_id AND id = @id;

@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/theechofive/maiak/backend/internal/authz"
 	"github.com/theechofive/maiak/backend/internal/platform/db"
 	"github.com/theechofive/maiak/backend/internal/results"
 )
@@ -60,7 +61,7 @@ type agg struct {
 // Stats returns average and p95 response time and the latency series of a monitor for rng
 // (Range24h, Range7d or Range30d). Latency statistics cover checks that got a response, the
 // same population as the rollup histogram (ADR-0021).
-func (s *Service) Stats(ctx context.Context, tenantID, id uuid.UUID, rng string) (Stats, error) {
+func (s *Service) Stats(ctx context.Context, tenantID uuid.UUID, sc authz.Scope, id uuid.UUID, rng string) (Stats, error) {
 	spec, ok := rangeSpec[rng]
 	if !ok {
 		return Stats{}, fmt.Errorf("queries: unknown stats range %q", rng)
@@ -69,7 +70,7 @@ func (s *Service) Stats(ctx context.Context, tenantID, id uuid.UUID, rng string)
 	out := Stats{Range: rng}
 	buckets := map[int64]*agg{}
 	err := db.WithTenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
-		if err := exists(ctx, tx, tenantID, id); err != nil {
+		if err := exists(ctx, tx, tenantID, sc, id); err != nil {
 			return err
 		}
 		if rng == Range24h {

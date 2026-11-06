@@ -42,6 +42,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
 	"github.com/theechofive/maiak/backend/internal/platform/metrics"
+	"github.com/theechofive/maiak/backend/internal/projects"
 	"github.com/theechofive/maiak/backend/internal/queries"
 	"github.com/theechofive/maiak/backend/internal/safehttp"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
@@ -260,7 +261,7 @@ func TestIntegrationEndToEnd(t *testing.T) {
 	apiClock := clock.NewFake(time.Now())
 	handler, err := api.NewHandler(api.Config{Version: "e2e", Commit: "e2e", CookieSecure: true, PublicURL: publicURL}, api.Deps{
 		Auth: authSvc, Monitors: monitors.NewService(apiPool, sched, incidents.NewService(sched)),
-		Queries: queries.New(apiPool, nil), Slack: notify.NewService(apiPool, keys, notifier, publicURL), Plans: plans.NewService(apiPool),
+		Queries: queries.New(apiPool, nil), Slack: notify.NewService(apiPool, keys, notifier, publicURL), Plans: plans.NewService(apiPool), Projects: projects.NewService(apiPool),
 		Logger: log, Metrics: metrics.NewHTTP(prometheus.NewRegistry()), Clock: apiClock,
 	})
 	if err != nil {

@@ -209,8 +209,10 @@ export interface paths {
     };
     /**
      * List monitors with their current status
-     * @description All monitors of the tenant that are not deleted, with the current status and summary
-     *     counts. Answered from the state tables and rollups, never by scanning raw results.
+     * @description The monitors of the tenant that are not deleted and that the caller sees (the projects it
+     *     belongs to; every project for owners and admins), with the current status and summary
+     *     counts. `projectId` limits the list to one project (404 when the caller does not see it).
+     *     Answered from the state tables and rollups, never by scanning raw results.
      */
     get: operations["listMonitors"];
     put?: never;
@@ -227,9 +229,12 @@ export interface paths {
      *     `unknown` until its first ping (then `up`) or until its first deadline passes (then
      *     `down`).
      *
+     *     `projectId` is the monitor's project (the Default project when omitted); the caller needs
+     *     the `member` role in it (403 with a viewer override, 422 for a project it does not see).
      *     `channelIds` selects the notification channels of the monitor (at most 10, each a channel
-     *     of the tenant, 422 otherwise); with no selection, `notifySlack` sends to every active
-     *     channel of the tenant.
+     *     of the monitor's project or an organization-wide one, 422 otherwise); with no selection,
+     *     `notifySlack` sends to the active channels of the monitor's own project only (not to
+     *     organization-wide ones).
      *
      *     Fails with 409 `urn:maiak:problem:plan-limit-reached` (`limit` is `monitors` or
      *     `heartbeats`) when the tenant already has as many monitors of that type as its plan allows
@@ -276,7 +281,10 @@ export interface paths {
      *     `expectedIntervalSeconds`, `graceSeconds` and `notifySlack` (its deadline follows the new
      *     values); `failureThreshold` is ignored and the http fields fail with 422, as do the
      *     heartbeat fields on an http monitor. `channelIds` replaces the monitor's channel selection
-     *     (an empty list selects none, which means every active channel).
+     *     (an empty list selects none, which means the active channels of the monitor's project).
+     *     `projectId` moves the monitor to another project; the caller needs the `member` role in
+     *     both. Selected channels of the old project are dropped from the selection (organization-wide
+     *     ones stay); `channelIds` sent in the same request is checked against the new project.
      */
     patch: operations["updateMonitor"];
     trace?: never;
@@ -491,7 +499,11 @@ export interface paths {
     };
     /**
      * List notification channels
-     * @description The tenant's notification channels that are not deleted, oldest first. The webhook URL is a secret and is never returned.
+     * @description The tenant's notification channels that are not deleted and that the caller sees (the
+     *     channels of its projects and the organization-wide ones; all for owners and admins),
+     *     oldest first. With `projectId`, the channels a monitor of that project may select: the
+     *     project's channels and the organization-wide ones (404 when the caller does not see the
+     *     project). The webhook URL is a secret and is never returned.
      */
     get: operations["listChannels"];
     put?: never;
@@ -505,7 +517,8 @@ export interface paths {
      *     open, the channel gets a reminder every that many minutes. Business-rule failures are 422
      *     with `fieldErrors`. Fails with 409 `urn:maiak:problem:plan-limit-reached` (`limit` is
      *     `channels`) when the tenant already has as many channels as its plan allows (deleted
-     *     channels do not count).
+     *     channels do not count). The channel belongs to `projectId` (the Default project when
+     *     omitted) or, with `organizationWide: true`, to the whole organization.
      */
     post: operations["createChannel"];
     delete?: never;
@@ -531,7 +544,8 @@ export interface paths {
     /**
      * Delete a notification channel
      * @description Deletes the channel and its stored webhook URL. Monitors that selected it lose it from
-     *     their selection (a monitor left with no selection then notifies every active channel), and
+     *     their selection (a monitor left with no selection then notifies the active channels of its
+     *     own project), and
      *     its deliveries that are still queued are not sent (they end as failed, `channel_deleted`).
      */
     delete: operations["deleteChannel"];
@@ -541,7 +555,9 @@ export interface paths {
      * Edit a notification channel
      * @description Changes the given fields, with the rules of create. A new `webhookUrl` replaces the stored
      *     one and makes a `failed` channel `active` again; deliveries already queued for the channel
-     *     go to the new URL.
+     *     go to the new URL. `projectId` moves the channel to a project and drops it from the
+     *     selection of monitors of other projects; `organizationWide: true` makes it
+     *     organization-wide (both together are 422).
      */
     patch: operations["updateChannel"];
     trace?: never;
@@ -564,6 +580,125 @@ export interface paths {
      */
     post: operations["testChannel"];
     delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Projects of the organization
+     * @description The projects the caller sees (every project for owners and admins), Default first, then by name.
+     */
+    get: operations["listProjects"];
+    put?: never;
+    /**
+     * Create a project
+     * @description Admin or owner. `slug` is derived from `name` when omitted; a slug in use is 409
+     *     `urn:maiak:problem:slug-taken`. At most 50 projects per organization: 409
+     *     `urn:maiak:problem:plan-limit-reached` (`limit` is `projects`). Audited as `project.created`.
+     */
+    post: operations["createProject"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{projectId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id; a value that is not a UUID is answered with 400 */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    /**
+     * One project
+     * @description 404 when the project does not exist or the caller does not see it.
+     */
+    get: operations["getProject"];
+    put?: never;
+    post?: never;
+    /**
+     * Delete a project
+     * @description Admin or owner. Only an empty project can be deleted: one with monitors or channels that
+     *     are not deleted is 409 `urn:maiak:problem:project-not-empty`; the Default project is 409
+     *     `urn:maiak:problem:default-project`. Soft delete; its member list is removed. Audited as
+     *     `project.deleted`.
+     */
+    delete: operations["deleteProject"];
+    options?: never;
+    head?: never;
+    /**
+     * Rename a project
+     * @description Admin or owner. Changes `name` and `slug` (409 `urn:maiak:problem:slug-taken`). Audited as `project.updated`.
+     */
+    patch: operations["updateProject"];
+    trace?: never;
+  };
+  "/api/v1/projects/{projectId}/members": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id; a value that is not a UUID is answered with 400 */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    /**
+     * Members of a project
+     * @description The people with access to the project: owners and admins (they see every project,
+     *     `allProjects` true), the explicit members with their optional role override, and for a
+     *     project with `allMembers` (the Default project) every other member of the organization.
+     *     404 when the caller does not see the project.
+     */
+    get: operations["listProjectMembers"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{projectId}/members/{userId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id; a value that is not a UUID is answered with 400 */
+        projectId: components["parameters"]["ProjectId"];
+        /** @description User id of the member; a value that is not a UUID is answered with 400 */
+        userId: components["parameters"]["MemberUserId"];
+      };
+      cookie?: never;
+    };
+    get?: never;
+    /**
+     * Add a member to a project or change its override
+     * @description Admin or owner. Makes a member of the organization a member of the project. `role`
+     *     `viewer` makes it read-only in this project; omitted (or `member`) keeps its organization
+     *     role. An override never raises the organization role: a viewer stays a viewer. In a project
+     *     with `allMembers` the row only carries the override. Audited as `project.member_changed`.
+     */
+    put: operations["putProjectMember"];
+    post?: never;
+    /**
+     * Remove a member from a project
+     * @description Admin or owner. The member loses access to the project at its next request (in a project
+     *     with `allMembers` only the override is removed). Audited as `project.member_changed`.
+     */
+    delete: operations["removeProjectMember"];
     options?: never;
     head?: never;
     patch?: never;
@@ -1041,7 +1176,12 @@ export interface components {
       failureThreshold?: number;
       /** @default true */
       notifySlack?: boolean;
-      /** @description The notification channels of the monitor; empty or omitted means every active channel of the tenant */
+      /**
+       * Format: uuid
+       * @description The monitor's project; the Default project when omitted
+       */
+      projectId?: string;
+      /** @description The notification channels of the monitor (of its project or organization-wide); empty or omitted means the active channels of its project */
       channelIds?: string[];
     };
     /** @description Only the given fields change. `intervalSeconds` and `timeoutSeconds` are accepted only with their current value. */
@@ -1055,7 +1195,12 @@ export interface components {
       notifySlack?: boolean;
       expectedIntervalSeconds?: number;
       graceSeconds?: number;
-      /** @description The notification channels of the monitor; replaces the selection; an empty list means every active channel of the tenant */
+      /**
+       * Format: uuid
+       * @description Moves the monitor to this project
+       */
+      projectId?: string;
+      /** @description The notification channels of the monitor; replaces the selection; an empty list means the active channels of the monitor's project */
       channelIds?: string[];
     };
     Incident: {
@@ -1079,6 +1224,11 @@ export interface components {
     MonitorListItem: {
       /** Format: uuid */
       id: string;
+      /**
+       * Format: uuid
+       * @description The project the monitor belongs to
+       */
+      projectId: string;
       type: components["schemas"]["MonitorType"];
       name: string;
       /** @description The checked URL; empty for a heartbeat */
@@ -1145,6 +1295,11 @@ export interface components {
     MonitorDetail: {
       /** Format: uuid */
       id: string;
+      /**
+       * Format: uuid
+       * @description The project the monitor belongs to
+       */
+      projectId: string;
       type: components["schemas"]["MonitorType"];
       name: string;
       /** @description The checked URL; empty for a heartbeat */
@@ -1174,7 +1329,7 @@ export interface components {
       /** @description Heartbeat only (null for http monitors) */
       graceSeconds: number | null;
       uptime: components["schemas"]["Uptime"];
-      /** @description The selected notification channels; empty means every active channel of the tenant */
+      /** @description The selected notification channels; empty means the active channels of the monitor's project */
       channelIds: string[];
       /** Format: date-time */
       createdAt: string;
@@ -1259,6 +1414,11 @@ export interface components {
     Channel: {
       /** Format: uuid */
       id: string;
+      /**
+       * Format: uuid
+       * @description The project of the channel; null for an organization-wide channel, which every project's monitors may select
+       */
+      projectId: string | null;
       /** @example #ops-alerts */
       name: string;
       type: components["schemas"]["ChannelType"];
@@ -1283,6 +1443,13 @@ export interface components {
       name: string;
       type?: components["schemas"]["ChannelType"];
       /**
+       * Format: uuid
+       * @description The channel's project; the Default project when omitted
+       */
+      projectId?: string;
+      /** @description `true` creates an organization-wide channel; not together with `projectId` */
+      organizationWide?: boolean;
+      /**
        * Format: password
        * @description Slack Incoming Webhook URL, `https://hooks.slack.com/services/...`; write-only
        */
@@ -1294,6 +1461,13 @@ export interface components {
     /** @description Only the given fields change. */
     ChannelUpdate: {
       name?: string;
+      /**
+       * Format: uuid
+       * @description Moves the channel to this project
+       */
+      projectId?: string;
+      /** @description `true` makes the channel organization-wide; not together with `projectId`; `false` changes nothing */
+      organizationWide?: boolean;
       /**
        * Format: password
        * @description A new Slack Incoming Webhook URL; write-only
@@ -1323,6 +1497,8 @@ export interface components {
       channels: number;
       /** @description Members plus open invitations (an open invitation reserves a place) */
       members: number;
+      /** @description Projects (deleted projects do not count); the Default project counts */
+      projects: number;
     };
     /**
      * @description `suspended`: the tenant's users cannot log in and nothing of it is checked. A deleted tenant is also `suspended` and has `deletedAt`.
@@ -1502,6 +1678,65 @@ export interface components {
       /** Format: date-time */
       expiresAt: string;
     };
+    /**
+     * @description A project role override; `viewer` makes a member read-only in the project
+     * @enum {string}
+     */
+    ProjectRole: "member" | "viewer";
+    Project: {
+      /** Format: uuid */
+      id: string;
+      /** @example Payments */
+      name: string;
+      /** @example payments */
+      slug: string;
+      /** @description The Default project of the organization; it cannot be deleted */
+      isDefault: boolean;
+      /** @description Every member of the organization belongs to it without being listed (the Default project) */
+      allMembers: boolean;
+      role: components["schemas"]["MembershipRole"];
+      /** @description Monitors and heartbeats that are not deleted */
+      monitorCount: number;
+      /** @description Notification channels of the project that are not deleted */
+      channelCount: number;
+      /** Format: date-time */
+      createdAt: string;
+      /** Format: date-time */
+      updatedAt: string;
+    };
+    ProjectList: {
+      items: components["schemas"]["Project"][];
+    };
+    ProjectCreate: {
+      name: string;
+      /** @description Lowercase letters, digits and hyphens, unique in the organization; derived from the name when omitted */
+      slug?: string;
+    };
+    /** @description Only the given fields change. */
+    ProjectUpdate: {
+      name?: string;
+      slug?: string;
+    };
+    ProjectMember: {
+      /** Format: uuid */
+      userId: string;
+      login: string;
+      displayName: string;
+      organizationRole: components["schemas"]["MembershipRole"];
+      /** @description The override in this project; null keeps the organization role */
+      projectRole: components["schemas"]["ProjectRole"] | null;
+      effectiveRole: components["schemas"]["MembershipRole"];
+      /** @description Listed as a member of the project (false for owners, admins and members through `allMembers`) */
+      explicit: boolean;
+      /** @description An owner or admin, who sees every project */
+      allProjects: boolean;
+    };
+    ProjectMemberList: {
+      items: components["schemas"]["ProjectMember"][];
+    };
+    ProjectMemberPut: {
+      role?: components["schemas"]["ProjectRole"];
+    };
     FieldError: {
       /**
        * @description Dotted path of the request body field
@@ -1648,6 +1883,10 @@ export interface components {
     ChannelId: string;
     /** @description Tenant id; a value that is not a UUID is answered with 400 */
     TenantId: string;
+    /** @description Project id; a value that is not a UUID is answered with 400 */
+    ProjectId: string;
+    /** @description Only this project; 404 when the caller does not see it */
+    ProjectFilter: string;
     /** @description User id of the member; a value that is not a UUID is answered with 400 */
     MemberUserId: string;
     /** @description Invitation id; a value that is not a UUID is answered with 400 */
@@ -1915,7 +2154,10 @@ export interface operations {
   };
   listMonitors: {
     parameters: {
-      query?: never;
+      query?: {
+        /** @description Only this project; 404 when the caller does not see it */
+        projectId?: components["parameters"]["ProjectFilter"];
+      };
       header?: never;
       path?: never;
       cookie?: never;
@@ -1931,7 +2173,9 @@ export interface operations {
           "application/json": components["schemas"]["MonitorList"];
         };
       };
+      400: components["responses"]["BadRequest"];
       401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
       default: components["responses"]["Error"];
     };
   };
@@ -2314,7 +2558,10 @@ export interface operations {
   };
   listChannels: {
     parameters: {
-      query?: never;
+      query?: {
+        /** @description Only this project; 404 when the caller does not see it */
+        projectId?: components["parameters"]["ProjectFilter"];
+      };
       header?: never;
       path?: never;
       cookie?: never;
@@ -2330,7 +2577,9 @@ export interface operations {
           "application/json": components["schemas"]["ChannelList"];
         };
       };
+      400: components["responses"]["BadRequest"];
       401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
       default: components["responses"]["Error"];
     };
   };
@@ -2486,6 +2735,250 @@ export interface operations {
       403: components["responses"]["Forbidden"];
       404: components["responses"]["NotFound"];
       429: components["responses"]["TooManyRequests"];
+      default: components["responses"]["Error"];
+    };
+  };
+  listProjects: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The projects */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      default: components["responses"]["Error"];
+    };
+  };
+  createProject: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ProjectCreate"];
+      };
+    };
+    responses: {
+      /** @description The created project */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Project"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      409: components["responses"]["Conflict"];
+      422: components["responses"]["UnprocessableEntity"];
+      default: components["responses"]["Error"];
+    };
+  };
+  getProject: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id; a value that is not a UUID is answered with 400 */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The project */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Project"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      default: components["responses"]["Error"];
+    };
+  };
+  deleteProject: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description Project id; a value that is not a UUID is answered with 400 */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Deleted */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      default: components["responses"]["Error"];
+    };
+  };
+  updateProject: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description Project id; a value that is not a UUID is answered with 400 */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ProjectUpdate"];
+      };
+    };
+    responses: {
+      /** @description The project after the change */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Project"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      422: components["responses"]["UnprocessableEntity"];
+      default: components["responses"]["Error"];
+    };
+  };
+  listProjectMembers: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id; a value that is not a UUID is answered with 400 */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The members */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectMemberList"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      default: components["responses"]["Error"];
+    };
+  };
+  putProjectMember: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description Project id; a value that is not a UUID is answered with 400 */
+        projectId: components["parameters"]["ProjectId"];
+        /** @description User id of the member; a value that is not a UUID is answered with 400 */
+        userId: components["parameters"]["MemberUserId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ProjectMemberPut"];
+      };
+    };
+    responses: {
+      /** @description The member after the change */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectMember"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      default: components["responses"]["Error"];
+    };
+  };
+  removeProjectMember: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description Project id; a value that is not a UUID is answered with 400 */
+        projectId: components["parameters"]["ProjectId"];
+        /** @description User id of the member; a value that is not a UUID is answered with 400 */
+        userId: components["parameters"]["MemberUserId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Removed */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
       default: components["responses"]["Error"];
     };
   };

@@ -13,7 +13,7 @@ import (
 )
 
 const getMonitor = `-- name: GetMonitor :one
-SELECT m.id, m.name, m.type, m.config, m.interval_seconds, m.timeout_seconds, m.failure_threshold,
+SELECT m.id, m.project_id, m.name, m.type, m.config, m.interval_seconds, m.timeout_seconds, m.failure_threshold,
        m.notify_slack, m.paused, m.created_at, m.updated_at,
        s.status, s.status_changed_at, s.last_error_kind, s.last_checked_at, s.tls_expires_at,
        s.current_incident_id
@@ -29,6 +29,7 @@ type GetMonitorParams struct {
 
 type GetMonitorRow struct {
 	ID                uuid.UUID
+	ProjectID         *uuid.UUID
 	Name              string
 	Type              string
 	Config            []byte
@@ -52,6 +53,7 @@ func (q *Queries) GetMonitor(ctx context.Context, arg GetMonitorParams) (GetMoni
 	var i GetMonitorRow
 	err := row.Scan(
 		&i.ID,
+		&i.ProjectID,
 		&i.Name,
 		&i.Type,
 		&i.Config,
@@ -89,13 +91,14 @@ func (q *Queries) InsertHeartbeatToken(ctx context.Context, arg InsertHeartbeatT
 }
 
 const insertMonitor = `-- name: InsertMonitor :exec
-INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, timeout_seconds, failure_threshold, notify_slack)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+INSERT INTO monitors (id, tenant_id, project_id, name, type, config, interval_seconds, timeout_seconds, failure_threshold, notify_slack)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 `
 
 type InsertMonitorParams struct {
 	ID               uuid.UUID
 	TenantID         uuid.UUID
+	ProjectID        *uuid.UUID
 	Name             string
 	Type             string
 	Config           []byte
@@ -109,6 +112,7 @@ func (q *Queries) InsertMonitor(ctx context.Context, arg InsertMonitorParams) er
 	_, err := q.db.Exec(ctx, insertMonitor,
 		arg.ID,
 		arg.TenantID,
+		arg.ProjectID,
 		arg.Name,
 		arg.Type,
 		arg.Config,
@@ -185,7 +189,7 @@ func (q *Queries) LockHeartbeat(ctx context.Context, arg LockHeartbeatParams) (L
 }
 
 const lockMonitor = `-- name: LockMonitor :one
-SELECT id, name, type, config, interval_seconds, timeout_seconds, failure_threshold, notify_slack, paused
+SELECT id, project_id, name, type, config, interval_seconds, timeout_seconds, failure_threshold, notify_slack, paused
 FROM monitors
 WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
 FOR UPDATE
@@ -198,6 +202,7 @@ type LockMonitorParams struct {
 
 type LockMonitorRow struct {
 	ID               uuid.UUID
+	ProjectID        *uuid.UUID
 	Name             string
 	Type             string
 	Config           []byte
@@ -213,6 +218,7 @@ func (q *Queries) LockMonitor(ctx context.Context, arg LockMonitorParams) (LockM
 	var i LockMonitorRow
 	err := row.Scan(
 		&i.ID,
+		&i.ProjectID,
 		&i.Name,
 		&i.Type,
 		&i.Config,
@@ -322,6 +328,23 @@ type SetMonitorPausedParams struct {
 
 func (q *Queries) SetMonitorPaused(ctx context.Context, arg SetMonitorPausedParams) error {
 	_, err := q.db.Exec(ctx, setMonitorPaused, arg.Paused, arg.TenantID, arg.ID)
+	return err
+}
+
+const setMonitorProject = `-- name: SetMonitorProject :exec
+UPDATE monitors
+SET project_id = $1, updated_at = now()
+WHERE tenant_id = $2 AND id = $3
+`
+
+type SetMonitorProjectParams struct {
+	ProjectID *uuid.UUID
+	TenantID  uuid.UUID
+	ID        uuid.UUID
+}
+
+func (q *Queries) SetMonitorProject(ctx context.Context, arg SetMonitorProjectParams) error {
+	_, err := q.db.Exec(ctx, setMonitorProject, arg.ProjectID, arg.TenantID, arg.ID)
 	return err
 }
 

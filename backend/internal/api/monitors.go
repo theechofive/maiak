@@ -20,22 +20,30 @@ func (s *server) actor(ctx context.Context) (monitors.Actor, error) {
 	if err != nil {
 		return monitors.Actor{}, err
 	}
-	return monitors.Actor{TenantID: p.TenantID, UserID: p.UserID, IP: httpx.ClientIP(httpRequest(ctx), s.cfg.TrustedProxyHops)}, nil
+	access, err := s.access(ctx)
+	if err != nil {
+		return monitors.Actor{}, err
+	}
+	return monitors.Actor{TenantID: p.TenantID, UserID: p.UserID, IP: httpx.ClientIP(httpRequest(ctx), s.cfg.TrustedProxyHops), Access: access}, nil
 }
 
-func (s *server) ListMonitors(ctx context.Context, _ gen.ListMonitorsRequestObject) (gen.ListMonitorsResponseObject, error) {
+func (s *server) ListMonitors(ctx context.Context, req gen.ListMonitorsRequestObject) (gen.ListMonitorsResponseObject, error) {
 	p, err := s.principal(ctx)
 	if err != nil {
 		return nil, err
 	}
-	list, sum, err := s.queries.ListMonitors(ctx, p.TenantID)
+	sc, err := s.projectFilter(ctx, req.Params.ProjectId)
+	if err != nil {
+		return nil, err
+	}
+	list, sum, err := s.queries.ListMonitors(ctx, p.TenantID, sc)
 	if err != nil {
 		return nil, err
 	}
 	items := make([]gen.MonitorListItem, len(list))
 	for i, m := range list {
 		items[i] = gen.MonitorListItem{
-			Id: m.ID, Type: gen.MonitorType(m.Type), Name: m.Name, Url: m.URL, ExpectedStatus: m.ExpectedStatus,
+			Id: m.ID, ProjectId: projectIDOf(m), Type: gen.MonitorType(m.Type), Name: m.Name, Url: m.URL, ExpectedStatus: m.ExpectedStatus,
 			IntervalSeconds: m.IntervalSeconds, TimeoutSeconds: m.TimeoutSeconds,
 			FailureThreshold: m.FailureThreshold, NotifySlack: m.NotifySlack, Paused: m.Paused,
 			Status: gen.MonitorStatus(m.Status), StatusSince: m.StatusSince, LastErrorKind: m.LastErrorKind,
@@ -60,6 +68,7 @@ func (s *server) CreateMonitor(ctx context.Context, req gen.CreateMonitorRequest
 		Name: b.Name, URL: b.Url, IntervalSeconds: b.IntervalSeconds, TimeoutSeconds: b.TimeoutSeconds,
 		ExpectedStatus: b.ExpectedStatus, FailureThreshold: b.FailureThreshold, NotifySlack: b.NotifySlack,
 		ExpectedIntervalSeconds: b.ExpectedIntervalSeconds, GraceSeconds: b.GraceSeconds, ChannelIDs: b.ChannelIds,
+		ProjectID: b.ProjectId,
 	}
 	if b.Type != nil {
 		in.Type = string(*b.Type)
@@ -68,7 +77,7 @@ func (s *server) CreateMonitor(ctx context.Context, req gen.CreateMonitorRequest
 	if err != nil {
 		return nil, err
 	}
-	d, err := s.detail(ctx, a.TenantID, m.ID)
+	d, err := s.detail(ctx, m.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -80,11 +89,7 @@ func (s *server) CreateMonitor(ctx context.Context, req gen.CreateMonitorRequest
 }
 
 func (s *server) GetMonitor(ctx context.Context, req gen.GetMonitorRequestObject) (gen.GetMonitorResponseObject, error) {
-	p, err := s.principal(ctx)
-	if err != nil {
-		return nil, err
-	}
-	d, err := s.detail(ctx, p.TenantID, req.MonitorId)
+	d, err := s.detail(ctx, req.MonitorId)
 	if err != nil {
 		return nil, err
 	}
@@ -101,10 +106,11 @@ func (s *server) UpdateMonitor(ctx context.Context, req gen.UpdateMonitorRequest
 		Name: b.Name, URL: b.Url, IntervalSeconds: b.IntervalSeconds, TimeoutSeconds: b.TimeoutSeconds,
 		ExpectedStatus: b.ExpectedStatus, FailureThreshold: b.FailureThreshold, NotifySlack: b.NotifySlack,
 		ExpectedIntervalSeconds: b.ExpectedIntervalSeconds, GraceSeconds: b.GraceSeconds, ChannelIDs: b.ChannelIds,
+		ProjectID: b.ProjectId,
 	}); err != nil {
 		return nil, err
 	}
-	d, err := s.detail(ctx, a.TenantID, req.MonitorId)
+	d, err := s.detail(ctx, req.MonitorId)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +136,7 @@ func (s *server) PauseMonitor(ctx context.Context, req gen.PauseMonitorRequestOb
 	if _, err := s.monitors.Pause(ctx, a, req.MonitorId); err != nil {
 		return nil, err
 	}
-	d, err := s.detail(ctx, a.TenantID, req.MonitorId)
+	d, err := s.detail(ctx, req.MonitorId)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +151,7 @@ func (s *server) ResumeMonitor(ctx context.Context, req gen.ResumeMonitorRequest
 	if _, err := s.monitors.Resume(ctx, a, req.MonitorId); err != nil {
 		return nil, err
 	}
-	d, err := s.detail(ctx, a.TenantID, req.MonitorId)
+	d, err := s.detail(ctx, req.MonitorId)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +170,11 @@ func (s *server) GetMonitorStats(ctx context.Context, req gen.GetMonitorStatsReq
 	if !queries.ValidRange(string(rng)) {
 		return nil, &badRequestError{detail: "range must be 24h, 7d or 30d"}
 	}
-	st, err := s.queries.Stats(ctx, p.TenantID, req.MonitorId, string(rng))
+	sc, err := s.scope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	st, err := s.queries.Stats(ctx, p.TenantID, sc, req.MonitorId, string(rng))
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +194,11 @@ func (s *server) ListMonitorChecks(ctx context.Context, req gen.ListMonitorCheck
 	if req.Params.Limit != nil {
 		limit = *req.Params.Limit
 	}
-	list, err := s.queries.Checks(ctx, p.TenantID, req.MonitorId, limit)
+	sc, err := s.scope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	list, err := s.queries.Checks(ctx, p.TenantID, sc, req.MonitorId, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +215,11 @@ func (s *server) ListMonitorIncidents(ctx context.Context, req gen.ListMonitorIn
 	if err != nil {
 		return nil, err
 	}
-	list, err := s.queries.Incidents(ctx, p.TenantID, req.MonitorId)
+	sc, err := s.scope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	list, err := s.queries.Incidents(ctx, p.TenantID, sc, req.MonitorId)
 	if err != nil {
 		return nil, err
 	}
@@ -212,14 +230,24 @@ func (s *server) ListMonitorIncidents(ctx context.Context, req gen.ListMonitorIn
 	return gen.ListMonitorIncidents200JSONResponse{Items: items}, nil
 }
 
-func (s *server) detail(ctx context.Context, tenantID, id uuid.UUID) (gen.MonitorDetail, error) {
-	d, err := s.queries.Monitor(ctx, tenantID, id)
+// detail reads a monitor back in the request's scope, so a response never shows a monitor the
+// caller cannot read.
+func (s *server) detail(ctx context.Context, id uuid.UUID) (gen.MonitorDetail, error) {
+	p, err := s.principal(ctx)
+	if err != nil {
+		return gen.MonitorDetail{}, err
+	}
+	sc, err := s.scope(ctx)
+	if err != nil {
+		return gen.MonitorDetail{}, err
+	}
+	d, err := s.queries.Monitor(ctx, p.TenantID, sc, id)
 	if err != nil {
 		return gen.MonitorDetail{}, err
 	}
 	m := d.Monitor
 	return gen.MonitorDetail{
-		Id: m.ID, Type: gen.MonitorType(m.Type), Name: m.Name, Url: m.URL, ExpectedStatus: m.ExpectedStatus,
+		Id: m.ID, ProjectId: projectIDOf(m), Type: gen.MonitorType(m.Type), Name: m.Name, Url: m.URL, ExpectedStatus: m.ExpectedStatus,
 		IntervalSeconds: m.IntervalSeconds, TimeoutSeconds: m.TimeoutSeconds,
 		FailureThreshold: m.FailureThreshold, NotifySlack: m.NotifySlack, Paused: m.Paused,
 		Status: gen.MonitorStatus(m.Status), StatusSince: m.StatusSince, LastErrorKind: m.LastErrorKind,
@@ -229,6 +257,14 @@ func (s *server) detail(ctx context.Context, tenantID, id uuid.UUID) (gen.Monito
 		ChannelIds: d.ChannelIDs,
 		CreatedAt:  m.CreatedAt, UpdatedAt: m.UpdatedAt,
 	}, nil
+}
+
+// projectIDOf is the monitor's project; uuid.Nil only before the T-02 contract step (L-285).
+func projectIDOf(m queries.Monitor) uuid.UUID {
+	if m.ProjectID == nil {
+		return uuid.Nil
+	}
+	return *m.ProjectID
 }
 
 // expectedInterval is a heartbeat's expected ping interval (its interval_seconds), nil for http.

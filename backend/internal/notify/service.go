@@ -13,12 +13,14 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/theechofive/maiak/backend/internal/audit"
+	"github.com/theechofive/maiak/backend/internal/authz"
 	"github.com/theechofive/maiak/backend/internal/notify/notifydb"
 	"github.com/theechofive/maiak/backend/internal/plans"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
 	"github.com/theechofive/maiak/backend/internal/platform/db"
 	"github.com/theechofive/maiak/backend/internal/platform/uuidv7"
 	"github.com/theechofive/maiak/backend/internal/platform/validation"
+	"github.com/theechofive/maiak/backend/internal/projects"
 )
 
 // Channel statuses (notification_channels.status).
@@ -66,6 +68,8 @@ type Channel struct {
 	Events          []string
 	Mention         []string
 	ReminderMinutes int
+	// ProjectID is the channel's project; nil for an organization-wide channel (T-02).
+	ProjectID *uuid.UUID
 	// Status is StatusActive or StatusFailed.
 	Status    string
 	CreatedAt time.Time
@@ -73,22 +77,29 @@ type Channel struct {
 }
 
 // CreateInput is a new channel; nil fields take their defaults (every event, no mention, no
-// reminders).
+// reminders, the Default project).
 type CreateInput struct {
-	Name            string
-	WebhookURL      string
-	Events          *[]string
-	Mention         *[]string
-	ReminderMinutes *int
+	// ProjectID is the channel's project (the Default project when nil); OrganizationWide makes
+	// the channel organization-wide instead.
+	ProjectID        *uuid.UUID
+	OrganizationWide bool
+	Name             string
+	WebhookURL       string
+	Events           *[]string
+	Mention          *[]string
+	ReminderMinutes  *int
 }
 
-// UpdateInput changes the non-nil fields.
+// UpdateInput changes the non-nil fields. ProjectID moves the channel to a project,
+// OrganizationWide makes it organization-wide.
 type UpdateInput struct {
-	Name            *string
-	WebhookURL      *string
-	Events          *[]string
-	Mention         *[]string
-	ReminderMinutes *int
+	ProjectID        *uuid.UUID
+	OrganizationWide bool
+	Name             *string
+	WebhookURL       *string
+	Events           *[]string
+	Mention          *[]string
+	ReminderMinutes  *int
 }
 
 // Target is a channel resolved for delivery.
@@ -120,8 +131,15 @@ func channelAAD(id uuid.UUID) []byte {
 	return []byte("notification_channels.config_encrypted:" + id.String())
 }
 
-// List returns the tenant's live channels, oldest first.
-func (s *Service) List(ctx context.Context, tenantID uuid.UUID) ([]Channel, error) {
+// Visible reports whether a channel is visible within scope: organization-wide channels are
+// visible to everyone, the others to those who see their project (T-02).
+func (c Channel) Visible(scope authz.Scope) bool {
+	return c.ProjectID == nil || scope.Includes(*c.ProjectID)
+}
+
+// List returns the tenant's live channels visible in scope, oldest first. With forProject, only
+// the channels a monitor of that project may select: its own and the organization-wide ones.
+func (s *Service) List(ctx context.Context, tenantID uuid.UUID, scope authz.Scope, forProject *uuid.UUID) ([]Channel, error) {
 	out := []Channel{}
 	err := db.WithTenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
 		rows, err := notifydb.New(tx).ListChannels(ctx, tenantID)
@@ -129,19 +147,29 @@ func (s *Service) List(ctx context.Context, tenantID uuid.UUID) ([]Channel, erro
 			return fmt.Errorf("notify: list channels: %w", err)
 		}
 		for _, r := range rows {
-			out = append(out, toChannel(r))
+			c := toChannel(r)
+			if !c.Visible(scope) {
+				continue
+			}
+			if forProject != nil && c.ProjectID != nil && *c.ProjectID != *forProject {
+				continue
+			}
+			out = append(out, c)
 		}
 		return nil
 	})
 	return out, err
 }
 
-// Get returns one live channel or ErrChannelNotFound.
-func (s *Service) Get(ctx context.Context, tenantID, id uuid.UUID) (Channel, error) {
+// Get returns one live channel visible in scope, or ErrChannelNotFound.
+func (s *Service) Get(ctx context.Context, tenantID uuid.UUID, scope authz.Scope, id uuid.UUID) (Channel, error) {
 	var out Channel
 	err := db.WithTenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
 		var err error
 		out, err = get(ctx, notifydb.New(tx), tenantID, id)
+		if err == nil && !out.Visible(scope) {
+			err = ErrChannelNotFound
+		}
 		return err
 	})
 	return out, err
@@ -160,7 +188,7 @@ func get(ctx context.Context, q *notifydb.Queries, tenantID, id uuid.UUID) (Chan
 
 func toChannel(r notifydb.ListChannelsRow) Channel {
 	c := Channel{ID: r.ID, Name: r.Name, Type: r.Type, Events: r.Events, Mention: r.Mention,
-		ReminderMinutes: int(r.ReminderMinutes), Status: r.Status, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
+		ReminderMinutes: int(r.ReminderMinutes), Status: r.Status, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, ProjectID: r.ProjectID}
 	if c.Events == nil {
 		c.Events = []string{}
 	}
@@ -223,6 +251,7 @@ func (s *Service) Create(ctx context.Context, a Actor, in CreateInput) (Channel,
 	var verr validation.Error
 	f.apply(&verr, &in.Name, in.Events, in.Mention, in.ReminderMinutes)
 	checkWebhook(&verr, &in.WebhookURL)
+	checkProject(&verr, in.ProjectID, in.OrganizationWide)
 	if err := verr.Err(); err != nil {
 		return Channel{}, err
 	}
@@ -239,13 +268,17 @@ func (s *Service) Create(ctx context.Context, a Actor, in CreateInput) (Channel,
 			return err
 		}
 		q := notifydb.New(tx)
+		project, err := channelProject(ctx, tx, a.TenantID, in.ProjectID, in.OrganizationWide)
+		if err != nil {
+			return err
+		}
 		if err := q.InsertChannel(ctx, notifydb.InsertChannelParams{
-			ID: id, TenantID: a.TenantID, Name: f.name, ConfigEncrypted: sealed,
+			ID: id, TenantID: a.TenantID, Name: f.name, ConfigEncrypted: sealed, ProjectID: project,
 			Events: f.events, Mention: f.mention, ReminderMinutes: int32(f.reminder), //nolint:gosec // validated 0..1440
 		}); err != nil {
 			return fmt.Errorf("notify: insert channel: %w", err)
 		}
-		if err := s.audit(ctx, tx, a, ActionChannelCreated, id, map[string]any{"keyId": s.keys.ActiveKeyID()}); err != nil {
+		if err := s.audit(ctx, tx, a, ActionChannelCreated, id, map[string]any{"keyId": s.keys.ActiveKeyID(), "project": projectMeta(project)}); err != nil {
 			return err
 		}
 		out, err = get(ctx, q, a.TenantID, id)
@@ -264,6 +297,7 @@ func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateIn
 	var upd channelFields
 	upd.apply(&verr, in.Name, in.Events, in.Mention, in.ReminderMinutes)
 	checkWebhook(&verr, in.WebhookURL)
+	checkProject(&verr, in.ProjectID, in.OrganizationWide)
 	if err := verr.Err(); err != nil {
 		return Channel{}, err
 	}
@@ -312,6 +346,26 @@ func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateIn
 			}
 		}
 		meta := map[string]any{}
+		if in.ProjectID != nil || in.OrganizationWide {
+			project, err := channelProject(ctx, tx, a.TenantID, in.ProjectID, in.OrganizationWide)
+			if err != nil {
+				return err
+			}
+			if !sameProject(project, cur.ProjectID) {
+				if err := q.SetChannelProject(ctx, notifydb.SetChannelProjectParams{TenantID: a.TenantID, ID: id, ProjectID: project}); err != nil {
+					return fmt.Errorf("notify: move channel: %w", err)
+				}
+				changed = append(changed, "projectId")
+				meta["project"] = projectMeta(project)
+				if project != nil {
+					detached, err := q.DetachChannelFromOtherProjects(ctx, notifydb.DetachChannelFromOtherProjectsParams{TenantID: a.TenantID, ChannelID: id, ProjectID: *project})
+					if err != nil {
+						return fmt.Errorf("notify: detach channel: %w", err)
+					}
+					meta["monitorsDetached"] = detached
+				}
+			}
+		}
 		if in.WebhookURL != nil {
 			sealed, err := s.keys.Encrypt([]byte(*in.WebhookURL), channelAAD(id))
 			if err != nil {
@@ -462,12 +516,61 @@ func (s *Service) MarkFailed(ctx context.Context, tx pgx.Tx, tenantID, channelID
 	return n == 1, nil
 }
 
+func checkProject(verr *validation.Error, project *uuid.UUID, orgWide bool) {
+	if project != nil && orgWide {
+		verr.Add("organizationWide", "cannot be combined with projectId")
+	}
+}
+
+// channelProject resolves the project of a created or moved channel (nil = organization-wide).
+func channelProject(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, project *uuid.UUID, orgWide bool) (*uuid.UUID, error) {
+	if orgWide {
+		return nil, nil
+	}
+	id, err := projects.ForUse(ctx, tx, tenantID, project)
+	if errors.Is(err, projects.ErrNotFound) {
+		var verr validation.Error
+		verr.Add("projectId", "does not exist")
+		return nil, &verr
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &id, nil
+}
+
+func sameProject(a, b *uuid.UUID) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+func projectMeta(p *uuid.UUID) string {
+	if p == nil {
+		return "organization"
+	}
+	return p.String()
+}
+
+// DetachForeignChannels drops from a monitor's selection the channels of projects other than
+// projectID (organization-wide channels stay); monitors calls it when a monitor moves (T-02).
+// It returns the number of channels dropped.
+func DetachForeignChannels(ctx context.Context, tx pgx.Tx, tenantID, monitorID, projectID uuid.UUID) (int64, error) {
+	n, err := notifydb.New(tx).DetachForeignChannels(ctx, notifydb.DetachForeignChannelsParams{TenantID: tenantID, MonitorID: monitorID, ProjectID: projectID})
+	if err != nil {
+		return 0, fmt.Errorf("notify: detach channels of other projects: %w", err)
+	}
+	return n, nil
+}
+
 // SetMonitorChannels replaces the channel selection of a monitor (monitor_channels, owned by
 // this module) inside the caller's tenant transaction; monitors calls it on create and update.
-// ids must name live channels of the tenant, at most MaxMonitorChannels after deduplication; a
-// *validation.Error on field channelIds otherwise. An empty selection means every active
-// channel (ADR-0100). It reports whether the selection changed.
-func SetMonitorChannels(ctx context.Context, tx pgx.Tx, tenantID, monitorID uuid.UUID, ids []uuid.UUID) (bool, error) {
+// ids must name live channels of the monitor's project or organization-wide ones, at most
+// MaxMonitorChannels after deduplication; a *validation.Error on field channelIds otherwise. An
+// empty selection means the active channels of the monitor's project (ADR-0100, T-02). It
+// reports whether the selection changed.
+func SetMonitorChannels(ctx context.Context, tx pgx.Tx, tenantID, monitorID, projectID uuid.UUID, ids []uuid.UUID) (bool, error) {
 	want := []uuid.UUID{}
 	for _, id := range ids {
 		if !slices.Contains(want, id) {
@@ -489,6 +592,13 @@ func SetMonitorChannels(ctx context.Context, tx pgx.Tx, tenantID, monitorID uuid
 			var verr validation.Error
 			verr.Add("channelIds", "contains a channel that does not exist")
 			return false, &verr
+		}
+		for _, c := range live {
+			if c.ProjectID != nil && *c.ProjectID != projectID {
+				var verr validation.Error
+				verr.Add("channelIds", "contains a channel of another project")
+				return false, &verr
+			}
 		}
 	}
 	cur, err := MonitorChannelIDs(ctx, tx, tenantID, monitorID)

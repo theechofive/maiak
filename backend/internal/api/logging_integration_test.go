@@ -22,6 +22,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
 	"github.com/theechofive/maiak/backend/internal/platform/metrics"
+	"github.com/theechofive/maiak/backend/internal/projects"
 	"github.com/theechofive/maiak/backend/internal/queries"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
 	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
@@ -54,7 +55,7 @@ func TestIntegrationRequestLogsCarryNoSecrets(t *testing.T) {
 	sched := scheduler.New()
 	h, err := api.NewHandler(api.Config{Version: "test", Commit: "test", CookieSecure: true}, api.Deps{
 		Auth: svc, Monitors: monitors.NewService(pool, sched, incidents.NewService(sched)), Queries: queries.New(pool, nil),
-		Slack: notify.NewService(pool, keys, &fakeSlack{}, "https://maiak.example.com"), Plans: plans.NewService(pool), Logger: log,
+		Slack: notify.NewService(pool, keys, &fakeSlack{}, "https://maiak.example.com"), Plans: plans.NewService(pool), Projects: projects.NewService(pool), Logger: log,
 		Metrics: metrics.NewHTTP(prometheus.NewRegistry()),
 	})
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/theechofive/maiak/backend/internal/authz"
 	"github.com/theechofive/maiak/backend/internal/incidents"
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/plans"
@@ -45,7 +46,7 @@ func newHBFixture(t *testing.T, name string) *hbFixture {
 		t: t, ctx: context.Background(), admin: admin,
 		api:   monitors.NewService(env.Pool(t, env.APIURL, 8), sched, incidents.NewService(sched)),
 		jobs:  monitors.NewService(env.Pool(t, env.WorkerURL, 4), sched, incidents.NewService(sched)),
-		actor: monitors.Actor{TenantID: uuid.MustParse(tenantA), UserID: user},
+		actor: monitors.Actor{TenantID: uuid.MustParse(tenantA), UserID: user, Access: authz.Actor{UserID: user, Role: authz.Owner}},
 	}
 }
 
@@ -143,8 +144,9 @@ func (f *hbFixture) state(id uuid.UUID) hbState {
 
 func (f *hbFixture) addSlack(tenant string) {
 	f.t.Helper()
-	pgtest.MustExec(f.t, f.admin, `INSERT INTO notification_channels (id, tenant_id, type, config_encrypted)
-		VALUES (gen_random_uuid(), '`+tenant+`', 'slack_webhook', '\x01')`)
+	// In the tenant's Default project, where monitors without a project choice live (T-02).
+	pgtest.MustExec(f.t, f.admin, `INSERT INTO notification_channels (id, tenant_id, type, config_encrypted, project_id)
+		VALUES (gen_random_uuid(), '`+tenant+`', 'slack_webhook', '\x01', (SELECT id FROM projects WHERE tenant_id = '`+tenant+`' AND is_default))`)
 }
 
 // TestIntegrationHeartbeatEvaluation drives a heartbeat through ping, missed deadline, recovery,

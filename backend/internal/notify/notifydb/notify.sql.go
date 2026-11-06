@@ -45,6 +45,53 @@ func (q *Queries) DetachChannel(ctx context.Context, arg DetachChannelParams) (i
 	return result.RowsAffected(), nil
 }
 
+const detachChannelFromOtherProjects = `-- name: DetachChannelFromOtherProjects :execrows
+DELETE FROM monitor_channels AS mc
+USING monitors AS m
+WHERE mc.tenant_id = $1 AND mc.channel_id = $2
+  AND m.tenant_id = mc.tenant_id AND m.id = mc.monitor_id
+  AND m.project_id IS DISTINCT FROM $3::uuid
+`
+
+type DetachChannelFromOtherProjectsParams struct {
+	TenantID  uuid.UUID
+	ChannelID uuid.UUID
+	ProjectID uuid.UUID
+}
+
+// A channel moved to a project stays selected only by monitors of that project (T-02).
+func (q *Queries) DetachChannelFromOtherProjects(ctx context.Context, arg DetachChannelFromOtherProjectsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, detachChannelFromOtherProjects, arg.TenantID, arg.ChannelID, arg.ProjectID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const detachForeignChannels = `-- name: DetachForeignChannels :execrows
+DELETE FROM monitor_channels AS mc
+USING notification_channels AS c
+WHERE mc.tenant_id = $1 AND mc.monitor_id = $2
+  AND c.tenant_id = mc.tenant_id AND c.id = mc.channel_id
+  AND c.project_id IS NOT NULL AND c.project_id <> $3::uuid
+`
+
+type DetachForeignChannelsParams struct {
+	TenantID  uuid.UUID
+	MonitorID uuid.UUID
+	ProjectID uuid.UUID
+}
+
+// A monitor moved to a project keeps only the selected channels of that project and the
+// organization-wide ones (T-02).
+func (q *Queries) DetachForeignChannels(ctx context.Context, arg DetachForeignChannelsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, detachForeignChannels, arg.TenantID, arg.MonitorID, arg.ProjectID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const failDeletedChannelDeliveries = `-- name: FailDeletedChannelDeliveries :one
 SELECT fail_deleted_channel_deliveries($1::uuid)::integer
 `
@@ -91,7 +138,7 @@ func (q *Queries) GetChannel(ctx context.Context, arg GetChannelParams) (GetChan
 }
 
 const getChannelInfo = `-- name: GetChannelInfo :one
-SELECT id, name, type, events, mention, reminder_minutes, status, created_at, updated_at
+SELECT id, name, type, events, mention, reminder_minutes, status, created_at, updated_at, project_id
 FROM notification_channels
 WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
 `
@@ -111,6 +158,7 @@ type GetChannelInfoRow struct {
 	Status          string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	ProjectID       *uuid.UUID
 }
 
 func (q *Queries) GetChannelInfo(ctx context.Context, arg GetChannelInfoParams) (GetChannelInfoRow, error) {
@@ -126,13 +174,14 @@ func (q *Queries) GetChannelInfo(ctx context.Context, arg GetChannelInfoParams) 
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ProjectID,
 	)
 	return i, err
 }
 
 const insertChannel = `-- name: InsertChannel :exec
-INSERT INTO notification_channels (id, tenant_id, type, name, config_encrypted, events, mention, reminder_minutes)
-VALUES ($1, $2, 'slack_webhook', $3, $4, $5, $6, $7)
+INSERT INTO notification_channels (id, tenant_id, type, name, config_encrypted, events, mention, reminder_minutes, project_id)
+VALUES ($1, $2, 'slack_webhook', $3, $4, $5, $6, $7, $8)
 `
 
 type InsertChannelParams struct {
@@ -143,6 +192,7 @@ type InsertChannelParams struct {
 	Events          []string
 	Mention         []string
 	ReminderMinutes int32
+	ProjectID       *uuid.UUID
 }
 
 func (q *Queries) InsertChannel(ctx context.Context, arg InsertChannelParams) error {
@@ -154,6 +204,7 @@ func (q *Queries) InsertChannel(ctx context.Context, arg InsertChannelParams) er
 		arg.Events,
 		arg.Mention,
 		arg.ReminderMinutes,
+		arg.ProjectID,
 	)
 	return err
 }
@@ -175,7 +226,7 @@ func (q *Queries) InsertMonitorChannel(ctx context.Context, arg InsertMonitorCha
 }
 
 const listChannels = `-- name: ListChannels :many
-SELECT id, name, type, events, mention, reminder_minutes, status, created_at, updated_at
+SELECT id, name, type, events, mention, reminder_minutes, status, created_at, updated_at, project_id
 FROM notification_channels
 WHERE tenant_id = $1 AND deleted_at IS NULL
 ORDER BY created_at, id
@@ -191,6 +242,7 @@ type ListChannelsRow struct {
 	Status          string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	ProjectID       *uuid.UUID
 }
 
 func (q *Queries) ListChannels(ctx context.Context, tenantID uuid.UUID) ([]ListChannelsRow, error) {
@@ -212,6 +264,7 @@ func (q *Queries) ListChannels(ctx context.Context, tenantID uuid.UUID) ([]ListC
 			&i.Status,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ProjectID,
 		); err != nil {
 			return nil, err
 		}
@@ -284,7 +337,7 @@ func (q *Queries) LockChannel(ctx context.Context, arg LockChannelParams) (LockC
 }
 
 const lockLiveChannels = `-- name: LockLiveChannels :many
-SELECT id
+SELECT id, project_id
 FROM notification_channels
 WHERE tenant_id = $1 AND id = ANY($2::uuid[]) AND deleted_at IS NULL
 FOR SHARE
@@ -295,21 +348,26 @@ type LockLiveChannelsParams struct {
 	Ids      []uuid.UUID
 }
 
-// Channels a monitor may select. FOR SHARE waits for a concurrent delete and then sees it, so a
-// monitor is never linked to a channel deleted meanwhile.
-func (q *Queries) LockLiveChannels(ctx context.Context, arg LockLiveChannelsParams) ([]uuid.UUID, error) {
+type LockLiveChannelsRow struct {
+	ID        uuid.UUID
+	ProjectID *uuid.UUID
+}
+
+// Channels a monitor may select. FOR SHARE waits for a concurrent delete or move and then sees
+// it, so a monitor is never linked to a channel deleted or moved meanwhile.
+func (q *Queries) LockLiveChannels(ctx context.Context, arg LockLiveChannelsParams) ([]LockLiveChannelsRow, error) {
 	rows, err := q.db.Query(ctx, lockLiveChannels, arg.TenantID, arg.Ids)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []uuid.UUID
+	var items []LockLiveChannelsRow
 	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
+		var i LockLiveChannelsRow
+		if err := rows.Scan(&i.ID, &i.ProjectID); err != nil {
 			return nil, err
 		}
-		items = append(items, id)
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -352,6 +410,24 @@ type ReplaceChannelConfigParams struct {
 // the new URL.
 func (q *Queries) ReplaceChannelConfig(ctx context.Context, arg ReplaceChannelConfigParams) error {
 	_, err := q.db.Exec(ctx, replaceChannelConfig, arg.ConfigEncrypted, arg.TenantID, arg.ID)
+	return err
+}
+
+const setChannelProject = `-- name: SetChannelProject :exec
+UPDATE notification_channels
+SET project_id = $1, updated_at = now()
+WHERE tenant_id = $2 AND id = $3 AND deleted_at IS NULL
+`
+
+type SetChannelProjectParams struct {
+	ProjectID *uuid.UUID
+	TenantID  uuid.UUID
+	ID        uuid.UUID
+}
+
+// NULL makes the channel organization-wide (T-02).
+func (q *Queries) SetChannelProject(ctx context.Context, arg SetChannelProjectParams) error {
+	_, err := q.db.Exec(ctx, setChannelProject, arg.ProjectID, arg.TenantID, arg.ID)
 	return err
 }
 

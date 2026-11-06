@@ -2,6 +2,8 @@ package authz
 
 import (
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 var roles = []Role{Owner, Admin, Member, Viewer}
@@ -94,5 +96,54 @@ func TestCanInvite(t *testing.T) {
 func TestRoleAtLeast(t *testing.T) {
 	if !Owner.AtLeast(Viewer) || Viewer.AtLeast(Member) || Role("").AtLeast(Viewer) {
 		t.Fatal("AtLeast ordering")
+	}
+}
+
+func TestProjectAccess(t *testing.T) {
+	p1, p2, p3 := uuid.New(), uuid.New(), uuid.New()
+	viewer := Viewer
+	member := Member
+	if got := ProjectRole(Member, &viewer); got != Viewer {
+		t.Errorf("member with viewer override = %s", got)
+	}
+	if got := ProjectRole(Viewer, &member); got != Viewer {
+		t.Errorf("an override raised a viewer to %s", got)
+	}
+	if got := ProjectRole(Member, nil); got != Member {
+		t.Errorf("no override = %s", got)
+	}
+
+	m := Actor{Role: Member, Projects: map[uuid.UUID]Role{p1: Member, p2: Viewer}}
+	for _, c := range []struct {
+		project    uuid.UUID
+		sees, edit bool
+	}{{p1, true, true}, {p2, true, false}, {p3, false, false}} {
+		if m.Sees(c.project) != c.sees || m.CanEditIn(c.project) != c.edit {
+			t.Errorf("member in %v: sees=%v edit=%v", c.project, m.Sees(c.project), m.CanEditIn(c.project))
+		}
+	}
+	// An entry above the organization role is capped.
+	v := Actor{Role: Viewer, Projects: map[uuid.UUID]Role{p1: Owner}}
+	if r, ok := v.RoleIn(p1); !ok || r != Viewer || v.CanEditIn(p1) {
+		t.Errorf("viewer capped: %s %v", r, ok)
+	}
+	if (Actor{Role: "nobody", Projects: map[uuid.UUID]Role{p1: Member}}).Sees(p1) {
+		t.Error("unknown role sees a project")
+	}
+	for _, r := range []Role{Owner, Admin} {
+		a := Actor{Role: r}
+		if !a.Sees(p3) || !a.CanEditIn(p3) || !a.Scope().All {
+			t.Errorf("%s does not see every project", r)
+		}
+	}
+	sc := m.Scope()
+	if sc.All || !sc.Includes(p1) || !sc.Includes(p2) || sc.Includes(p3) {
+		t.Errorf("member scope %+v", sc)
+	}
+	if n := sc.Narrow(p3); n.All || len(n.IDs) != 0 {
+		t.Errorf("narrow to an unseen project = %+v", n)
+	}
+	if n := (Scope{All: true}).Narrow(p3); n.All || len(n.IDs) != 1 {
+		t.Errorf("narrow all = %+v", n)
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
 	"github.com/theechofive/maiak/backend/internal/platform/validation"
+	"github.com/theechofive/maiak/backend/internal/projects"
 	"github.com/theechofive/maiak/backend/internal/queries"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
 )
@@ -53,6 +54,9 @@ const (
 	problemInvitationAccepted = "urn:maiak:problem:invitation-accepted"
 	problemAlreadyMember      = "urn:maiak:problem:already-member"
 	problemLastOwner          = "urn:maiak:problem:last-owner"
+	problemSlugTaken          = "urn:maiak:problem:slug-taken"
+	problemProjectNotEmpty    = "urn:maiak:problem:project-not-empty"
+	problemDefaultProject     = "urn:maiak:problem:default-project"
 	problemInternal           = "urn:maiak:problem:internal"
 )
 
@@ -109,6 +113,16 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 	case errors.As(err, &roleErr):
 		p.Type, p.Title, p.Status = problemForbidden, "Not allowed", http.StatusForbidden
 		p.Detail = fmt.Sprintf("This needs the %s role or higher in this organization.", roleErr.required)
+	case errors.Is(err, authz.ErrProjectForbidden):
+		p.Type, p.Title, p.Status = problemForbidden, "Not allowed", http.StatusForbidden
+		p.Detail = "Your role in this project is viewer: you can read its monitors but not change them."
+	case errors.Is(err, projects.ErrSlugTaken):
+		p.Type, p.Title, p.Status = problemSlugTaken, "This slug is already used by another project", http.StatusConflict
+	case errors.Is(err, projects.ErrNotEmpty):
+		p.Type, p.Title, p.Status = problemProjectNotEmpty, "The project is not empty", http.StatusConflict
+		p.Detail = "Move or delete its monitors and channels first."
+	case errors.Is(err, projects.ErrDefault):
+		p.Type, p.Title, p.Status = problemDefaultProject, "The Default project cannot be deleted", http.StatusConflict
 	case errors.Is(err, authz.ErrForbidden):
 		p.Type, p.Title, p.Status = problemForbidden, "Not allowed", http.StatusForbidden
 		p.Detail = "Your role does not allow this: admins cannot change owners, and nobody can grant a role above their own."
@@ -175,7 +189,7 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 		p.Type, p.Title, p.Status = problemUnavailable, "Monitoring location unavailable, try again later", http.StatusServiceUnavailable
 	case errors.Is(err, errNotFound), errors.Is(err, routers.ErrPathNotFound), errors.Is(err, monitors.ErrNotFound), errors.Is(err, queries.ErrNotFound), errors.Is(err, admin.ErrNotFound),
 		errors.Is(err, notify.ErrChannelNotFound), errors.Is(err, auth.ErrMemberNotFound), errors.Is(err, auth.ErrInvitationNotFound),
-		errors.Is(err, auth.ErrOrganizationNotFound):
+		errors.Is(err, auth.ErrOrganizationNotFound), errors.Is(err, projects.ErrNotFound), errors.Is(err, projects.ErrMemberNotFound):
 		p.Type, p.Title, p.Status = problemNotFound, "Not found", http.StatusNotFound
 	case errors.Is(err, errMethodNotAllowed), errors.Is(err, routers.ErrMethodNotAllowed):
 		p.Type, p.Title, p.Status = problemMethodNotAllowed, "Method not allowed", http.StatusMethodNotAllowed

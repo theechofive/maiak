@@ -22,6 +22,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/plans"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
+	"github.com/theechofive/maiak/backend/internal/projects"
 	"github.com/theechofive/maiak/backend/internal/queries"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
 	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
@@ -83,7 +84,7 @@ func newSlackServer(t *testing.T, env *pgtest.Env, sender *fakeSlack, logs *lock
 	sched := scheduler.New()
 	h, err := api.NewHandler(api.Config{Version: "test", Commit: "test", CookieSecure: true, TrustedProxyHops: 1}, api.Deps{
 		Auth: svc, Monitors: monitors.NewService(pool, sched, incidents.NewService(sched)),
-		Queries: queries.New(pool, nil), Slack: notify.NewService(pool, keys, sender, "https://maiak.example.com"), Plans: plans.NewService(pool),
+		Queries: queries.New(pool, nil), Slack: notify.NewService(pool, keys, sender, "https://maiak.example.com"), Plans: plans.NewService(pool), Projects: projects.NewService(pool),
 		Logger: log, Clock: clk,
 	})
 	if err != nil {
@@ -333,8 +334,8 @@ func TestIntegrationChannelQuota(t *testing.T) {
 		t.Fatalf("second on free: %d %s", r.code, r.raw)
 	}
 	u := c.do(http.MethodGet, "/api/v1/usage", "", cookie)
-	if u.code != http.StatusOK || !strings.Contains(u.raw, `"usage":{"channels":1,"heartbeats":0,"members":1,"monitors":0}`) ||
-		!strings.Contains(u.raw, `"limits":{"channels":1,"heartbeats":1,"members":3,"monitors":3}`) {
+	if u.code != http.StatusOK || !strings.Contains(u.raw, `"usage":{"channels":1,"heartbeats":0,"members":1,"monitors":0,"projects":1}`) ||
+		!strings.Contains(u.raw, `"limits":{"channels":1,"heartbeats":1,"members":3,"monitors":3,"projects":50}`) {
 		t.Fatalf("usage: %d %s", u.code, u.raw)
 	}
 	if d := c.do(http.MethodDelete, "/api/v1/channels/"+first.body["id"].(string), "", unsafe); d.code != http.StatusNoContent {

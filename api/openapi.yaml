@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Maiak API
-  version: 0.6.0
+  version: 0.7.0
   description: |
     REST API of Maiak, the multi-tenant uptime-monitoring service. This file is the source of
     truth: the Go server and the TypeScript client are generated from it (ADR-0008).
@@ -25,6 +25,14 @@ info:
     pauses and deletes monitors; `admin` also manages notification channels, members and
     invitations; `owner` also deletes the organization and grants or revokes `owner`. A role below
     the minimum gets 403 `urn:maiak:problem:forbidden`. A role change applies on the next request.
+
+    Projects (ADR-0102, T-02): monitors (heartbeats included) and notification channels belong to
+    a project of the organization; a channel may instead be organization-wide (`projectId` null).
+    Owners and admins see every project. Members and viewers see the projects they belong to (the
+    Default project includes every member) and only their monitors, checks, statistics,
+    incidents and channels, plus organization-wide channels; anything else is answered 404 as if it
+    did not exist. Inside a project a member may have a `viewer` override, which makes it
+    read-only there (403 on changes).
   contact:
     name: Maiak maintainers
     url: https://github.com/theechofive/maiak
@@ -41,6 +49,10 @@ tags:
       Members of the organization, their roles and invitations (ADR-0102). Roles are `owner`,
       `admin`, `member` and `viewer`; every operation has a minimum role, and a session whose role
       is below it gets 403 `urn:maiak:problem:forbidden`.
+  - name: projects
+    description: |
+      Projects of the organization and their members (ADR-0102, T-02). Every organization has a
+      Default project that includes all its members. Owners and admins manage projects.
   - name: monitors
     description: HTTPS and heartbeat (watchdog) monitors, their status, statistics, checks and incidents
   - name: heartbeat
@@ -326,9 +338,13 @@ paths:
       operationId: listMonitors
       summary: List monitors with their current status
       description: |
-        All monitors of the tenant that are not deleted, with the current status and summary
-        counts. Answered from the state tables and rollups, never by scanning raw results.
+        The monitors of the tenant that are not deleted and that the caller sees (the projects it
+        belongs to; every project for owners and admins), with the current status and summary
+        counts. `projectId` limits the list to one project (404 when the caller does not see it).
+        Answered from the state tables and rollups, never by scanning raw results.
       tags: [monitors]
+      parameters:
+        - $ref: "#/components/parameters/ProjectFilter"
       responses:
         "200":
           description: The monitors of the tenant
@@ -336,8 +352,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MonitorList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
         default:
           $ref: "#/components/responses/Error"
     post:
@@ -355,9 +375,12 @@ paths:
         `unknown` until its first ping (then `up`) or until its first deadline passes (then
         `down`).
 
+        `projectId` is the monitor's project (the Default project when omitted); the caller needs
+        the `member` role in it (403 with a viewer override, 422 for a project it does not see).
         `channelIds` selects the notification channels of the monitor (at most 10, each a channel
-        of the tenant, 422 otherwise); with no selection, `notifySlack` sends to every active
-        channel of the tenant.
+        of the monitor's project or an organization-wide one, 422 otherwise); with no selection,
+        `notifySlack` sends to the active channels of the monitor's own project only (not to
+        organization-wide ones).
 
         Fails with 409 `urn:maiak:problem:plan-limit-reached` (`limit` is `monitors` or
         `heartbeats`) when the tenant already has as many monitors of that type as its plan allows
@@ -428,7 +451,10 @@ paths:
         `expectedIntervalSeconds`, `graceSeconds` and `notifySlack` (its deadline follows the new
         values); `failureThreshold` is ignored and the http fields fail with 422, as do the
         heartbeat fields on an http monitor. `channelIds` replaces the monitor's channel selection
-        (an empty list selects none, which means every active channel).
+        (an empty list selects none, which means the active channels of the monitor's project).
+        `projectId` moves the monitor to another project; the caller needs the `member` role in
+        both. Selected channels of the old project are dropped from the selection (organization-wide
+        ones stay); `channelIds` sent in the same request is checked against the new project.
       tags: [monitors]
       security:
         - cookieAuth: []
@@ -744,8 +770,15 @@ paths:
     get:
       operationId: listChannels
       summary: List notification channels
-      description: The tenant's notification channels that are not deleted, oldest first. The webhook URL is a secret and is never returned.
+      description: |
+        The tenant's notification channels that are not deleted and that the caller sees (the
+        channels of its projects and the organization-wide ones; all for owners and admins),
+        oldest first. With `projectId`, the channels a monitor of that project may select: the
+        project's channels and the organization-wide ones (404 when the caller does not see the
+        project). The webhook URL is a secret and is never returned.
       tags: [channels]
+      parameters:
+        - $ref: "#/components/parameters/ProjectFilter"
       responses:
         "200":
           description: The channels of the tenant
@@ -753,8 +786,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ChannelList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
         default:
           $ref: "#/components/responses/Error"
     post:
@@ -769,7 +806,8 @@ paths:
         open, the channel gets a reminder every that many minutes. Business-rule failures are 422
         with `fieldErrors`. Fails with 409 `urn:maiak:problem:plan-limit-reached` (`limit` is
         `channels`) when the tenant already has as many channels as its plan allows (deleted
-        channels do not count).
+        channels do not count). The channel belongs to `projectId` (the Default project when
+        omitted) or, with `organizationWide: true`, to the whole organization.
       tags: [channels]
       security:
         - cookieAuth: []
@@ -829,7 +867,9 @@ paths:
       description: |
         Changes the given fields, with the rules of create. A new `webhookUrl` replaces the stored
         one and makes a `failed` channel `active` again; deliveries already queued for the channel
-        go to the new URL.
+        go to the new URL. `projectId` moves the channel to a project and drops it from the
+        selection of monitors of other projects; `organizationWide: true` makes it
+        organization-wide (both together are 422).
       tags: [channels]
       security:
         - cookieAuth: []
@@ -866,7 +906,8 @@ paths:
       summary: Delete a notification channel
       description: |
         Deletes the channel and its stored webhook URL. Monitors that selected it lose it from
-        their selection (a monitor left with no selection then notifies every active channel), and
+        their selection (a monitor left with no selection then notifies the active channels of its
+        own project), and
         its deliveries that are still queued are not sent (they end as failed, `channel_deleted`).
       tags: [channels]
       security:
@@ -913,6 +954,243 @@ paths:
           $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects:
+    get:
+      operationId: listProjects
+      summary: Projects of the organization
+      description: The projects the caller sees (every project for owners and admins), Default first, then by name.
+      tags: [projects]
+      responses:
+        "200":
+          description: The projects
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createProject
+      summary: Create a project
+      description: |
+        Admin or owner. `slug` is derived from `name` when omitted; a slug in use is 409
+        `urn:maiak:problem:slug-taken`. At most 50 projects per organization: 409
+        `urn:maiak:problem:plan-limit-reached` (`limit` is `projects`). Audited as `project.created`.
+      tags: [projects]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectCreate"
+      responses:
+        "201":
+          description: The created project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects/{projectId}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: getProject
+      summary: One project
+      description: 404 when the project does not exist or the caller does not see it.
+      tags: [projects]
+      responses:
+        "200":
+          description: The project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+    patch:
+      operationId: updateProject
+      summary: Rename a project
+      description: Admin or owner. Changes `name` and `slug` (409 `urn:maiak:problem:slug-taken`). Audited as `project.updated`.
+      tags: [projects]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectUpdate"
+      responses:
+        "200":
+          description: The project after the change
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteProject
+      summary: Delete a project
+      description: |
+        Admin or owner. Only an empty project can be deleted: one with monitors or channels that
+        are not deleted is 409 `urn:maiak:problem:project-not-empty`; the Default project is 409
+        `urn:maiak:problem:default-project`. Soft delete; its member list is removed. Audited as
+        `project.deleted`.
+      tags: [projects]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "204":
+          description: Deleted
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects/{projectId}/members:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listProjectMembers
+      summary: Members of a project
+      description: |
+        The people with access to the project: owners and admins (they see every project,
+        `allProjects` true), the explicit members with their optional role override, and for a
+        project with `allMembers` (the Default project) every other member of the organization.
+        404 when the caller does not see the project.
+      tags: [projects]
+      responses:
+        "200":
+          description: The members
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectMemberList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects/{projectId}/members/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/MemberUserId"
+    put:
+      operationId: putProjectMember
+      summary: Add a member to a project or change its override
+      description: |
+        Admin or owner. Makes a member of the organization a member of the project. `role`
+        `viewer` makes it read-only in this project; omitted (or `member`) keeps its organization
+        role. An override never raises the organization role: a viewer stays a viewer. In a project
+        with `allMembers` the row only carries the override. Audited as `project.member_changed`.
+      tags: [projects]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectMemberPut"
+      responses:
+        "200":
+          description: The member after the change
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectMember"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: removeProjectMember
+      summary: Remove a member from a project
+      description: |
+        Admin or owner. The member loses access to the project at its next request (in a project
+        with `allMembers` only the override is removed). Audited as `project.member_changed`.
+      tags: [projects]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "204":
+          description: Removed
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
         default:
           $ref: "#/components/responses/Error"
   /api/v1/members:
@@ -1507,6 +1785,22 @@ components:
       schema:
         type: string
         format: uuid
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      description: Project id; a value that is not a UUID is answered with 400
+      schema:
+        type: string
+        format: uuid
+    ProjectFilter:
+      name: projectId
+      in: query
+      required: false
+      description: Only this project; 404 when the caller does not see it
+      schema:
+        type: string
+        format: uuid
     MemberUserId:
       name: userId
       in: path
@@ -1822,9 +2116,13 @@ components:
         notifySlack:
           type: boolean
           default: true
+        projectId:
+          type: string
+          format: uuid
+          description: The monitor's project; the Default project when omitted
         channelIds:
           type: array
-          description: The notification channels of the monitor; empty or omitted means every active channel of the tenant
+          description: The notification channels of the monitor (of its project or organization-wide); empty or omitted means the active channels of its project
           maxItems: 10
           items:
             type: string
@@ -1862,9 +2160,13 @@ components:
           type: integer
           minimum: 0
           maximum: 3600
+        projectId:
+          type: string
+          format: uuid
+          description: Moves the monitor to this project
         channelIds:
           type: array
-          description: The notification channels of the monitor; replaces the selection; an empty list means every active channel of the tenant
+          description: The notification channels of the monitor; replaces the selection; an empty list means the active channels of the monitor's project
           maxItems: 10
           items:
             type: string
@@ -1907,6 +2209,7 @@ components:
       additionalProperties: false
       required:
         - id
+        - projectId
         - type
         - name
         - url
@@ -1931,6 +2234,10 @@ components:
         id:
           type: string
           format: uuid
+        projectId:
+          type: string
+          format: uuid
+          description: The project the monitor belongs to
         type:
           $ref: "#/components/schemas/MonitorType"
         name:
@@ -2043,6 +2350,7 @@ components:
       additionalProperties: false
       required:
         - id
+        - projectId
         - type
         - name
         - url
@@ -2069,6 +2377,10 @@ components:
         id:
           type: string
           format: uuid
+        projectId:
+          type: string
+          format: uuid
+          description: The project the monitor belongs to
         type:
           $ref: "#/components/schemas/MonitorType"
         name:
@@ -2123,7 +2435,7 @@ components:
           $ref: "#/components/schemas/Uptime"
         channelIds:
           type: array
-          description: The selected notification channels; empty means every active channel of the tenant
+          description: The selected notification channels; empty means the active channels of the monitor's project
           items:
             type: string
             format: uuid
@@ -2254,12 +2566,17 @@ components:
     Channel:
       type: object
       additionalProperties: false
-      required: [id, name, type, events, mention, reminderMinutes, status, createdAt, updatedAt]
+      required: [id, projectId, name, type, events, mention, reminderMinutes, status, createdAt, updatedAt]
       description: A notification channel. Its webhook URL is a secret and is never returned.
       properties:
         id:
           type: string
           format: uuid
+        projectId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The project of the channel; null for an organization-wide channel, which every project's monitors may select
         name:
           type: string
           example: "#ops-alerts"
@@ -2302,6 +2619,13 @@ components:
           example: "#ops-alerts"
         type:
           $ref: "#/components/schemas/ChannelType"
+        projectId:
+          type: string
+          format: uuid
+          description: The channel's project; the Default project when omitted
+        organizationWide:
+          type: boolean
+          description: "`true` creates an organization-wide channel; not together with `projectId`"
         webhookUrl:
           type: string
           format: password
@@ -2323,6 +2647,13 @@ components:
           type: string
           minLength: 1
           maxLength: 60
+        projectId:
+          type: string
+          format: uuid
+          description: Moves the channel to this project
+        organizationWide:
+          type: boolean
+          description: "`true` makes the channel organization-wide; not together with `projectId`; `false` changes nothing"
         webhookUrl:
           type: string
           format: password
@@ -2360,7 +2691,7 @@ components:
     ResourceCounts:
       type: object
       additionalProperties: false
-      required: [monitors, heartbeats, channels, members]
+      required: [monitors, heartbeats, channels, members, projects]
       properties:
         monitors:
           type: integer
@@ -2378,6 +2709,10 @@ components:
           type: integer
           minimum: 0
           description: Members plus open invitations (an open invitation reserves a place)
+        projects:
+          type: integer
+          minimum: 0
+          description: Projects (deleted projects do not count); the Default project counts
     TenantStatus:
       type: string
       description: "`suspended`: the tenant's users cannot log in and nothing of it is checked. A deleted tenant is also `suspended` and has `deletedAt`."
@@ -2713,6 +3048,122 @@ components:
         expiresAt:
           type: string
           format: date-time
+    ProjectRole:
+      type: string
+      description: A project role override; `viewer` makes a member read-only in the project
+      enum: [member, viewer]
+    Project:
+      type: object
+      additionalProperties: false
+      required: [id, name, slug, isDefault, allMembers, role, monitorCount, channelCount, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: Payments
+        slug:
+          type: string
+          example: payments
+        isDefault:
+          type: boolean
+          description: The Default project of the organization; it cannot be deleted
+        allMembers:
+          type: boolean
+          description: Every member of the organization belongs to it without being listed (the Default project)
+        role:
+          $ref: "#/components/schemas/MembershipRole"
+        monitorCount:
+          type: integer
+          minimum: 0
+          description: Monitors and heartbeats that are not deleted
+        channelCount:
+          type: integer
+          minimum: 0
+          description: Notification channels of the project that are not deleted
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ProjectList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Project"
+    ProjectCreate:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 60
+        slug:
+          type: string
+          description: Lowercase letters, digits and hyphens, unique in the organization; derived from the name when omitted
+          pattern: "^[a-z0-9][a-z0-9-]{0,62}$"
+    ProjectUpdate:
+      type: object
+      additionalProperties: false
+      description: Only the given fields change.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 60
+        slug:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9-]{0,62}$"
+    ProjectMember:
+      type: object
+      additionalProperties: false
+      required: [userId, login, displayName, organizationRole, projectRole, effectiveRole, explicit, allProjects]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        login:
+          type: string
+        displayName:
+          type: string
+        organizationRole:
+          $ref: "#/components/schemas/MembershipRole"
+        projectRole:
+          allOf:
+            - $ref: "#/components/schemas/ProjectRole"
+          nullable: true
+          description: The override in this project; null keeps the organization role
+        effectiveRole:
+          $ref: "#/components/schemas/MembershipRole"
+        explicit:
+          type: boolean
+          description: Listed as a member of the project (false for owners, admins and members through `allMembers`)
+        allProjects:
+          type: boolean
+          description: An owner or admin, who sees every project
+    ProjectMemberList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectMember"
+    ProjectMemberPut:
+      type: object
+      additionalProperties: false
+      properties:
+        role:
+          $ref: "#/components/schemas/ProjectRole"
     FieldError:
       type: object
       additionalProperties: false

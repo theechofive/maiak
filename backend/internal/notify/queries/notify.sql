@@ -1,11 +1,11 @@
 -- name: ListChannels :many
-SELECT id, name, type, events, mention, reminder_minutes, status, created_at, updated_at
+SELECT id, name, type, events, mention, reminder_minutes, status, created_at, updated_at, project_id
 FROM notification_channels
 WHERE tenant_id = @tenant_id AND deleted_at IS NULL
 ORDER BY created_at, id;
 
 -- name: GetChannelInfo :one
-SELECT id, name, type, events, mention, reminder_minutes, status, created_at, updated_at
+SELECT id, name, type, events, mention, reminder_minutes, status, created_at, updated_at, project_id
 FROM notification_channels
 WHERE tenant_id = @tenant_id AND id = @id AND deleted_at IS NULL;
 
@@ -19,8 +19,8 @@ WHERE tenant_id = @tenant_id AND id = @id AND deleted_at IS NULL
 FOR NO KEY UPDATE;
 
 -- name: InsertChannel :exec
-INSERT INTO notification_channels (id, tenant_id, type, name, config_encrypted, events, mention, reminder_minutes)
-VALUES (@id, @tenant_id, 'slack_webhook', @name, @config_encrypted, @events, @mention, @reminder_minutes);
+INSERT INTO notification_channels (id, tenant_id, type, name, config_encrypted, events, mention, reminder_minutes, project_id)
+VALUES (@id, @tenant_id, 'slack_webhook', @name, @config_encrypted, @events, @mention, @reminder_minutes, sqlc.narg('project_id'));
 
 -- name: UpdateChannel :exec
 UPDATE notification_channels
@@ -61,9 +61,9 @@ SET status = 'failed', updated_at = now()
 WHERE tenant_id = @tenant_id AND id = @id AND status = 'active' AND deleted_at IS NULL;
 
 -- name: LockLiveChannels :many
--- Channels a monitor may select. FOR SHARE waits for a concurrent delete and then sees it, so a
--- monitor is never linked to a channel deleted meanwhile.
-SELECT id
+-- Channels a monitor may select. FOR SHARE waits for a concurrent delete or move and then sees
+-- it, so a monitor is never linked to a channel deleted or moved meanwhile.
+SELECT id, project_id
 FROM notification_channels
 WHERE tenant_id = @tenant_id AND id = ANY(@ids::uuid[]) AND deleted_at IS NULL
 FOR SHARE;
@@ -81,3 +81,26 @@ WHERE tenant_id = @tenant_id AND monitor_id = @monitor_id;
 -- name: InsertMonitorChannel :exec
 INSERT INTO monitor_channels (tenant_id, monitor_id, channel_id)
 VALUES (@tenant_id, @monitor_id, @channel_id);
+
+-- name: SetChannelProject :exec
+-- NULL makes the channel organization-wide (T-02).
+UPDATE notification_channels
+SET project_id = sqlc.narg('project_id'), updated_at = now()
+WHERE tenant_id = @tenant_id AND id = @id AND deleted_at IS NULL;
+
+-- name: DetachChannelFromOtherProjects :execrows
+-- A channel moved to a project stays selected only by monitors of that project (T-02).
+DELETE FROM monitor_channels AS mc
+USING monitors AS m
+WHERE mc.tenant_id = @tenant_id AND mc.channel_id = @channel_id
+  AND m.tenant_id = mc.tenant_id AND m.id = mc.monitor_id
+  AND m.project_id IS DISTINCT FROM @project_id::uuid;
+
+-- name: DetachForeignChannels :execrows
+-- A monitor moved to a project keeps only the selected channels of that project and the
+-- organization-wide ones (T-02).
+DELETE FROM monitor_channels AS mc
+USING notification_channels AS c
+WHERE mc.tenant_id = @tenant_id AND mc.monitor_id = @monitor_id
+  AND c.tenant_id = mc.tenant_id AND c.id = mc.channel_id
+  AND c.project_id IS NOT NULL AND c.project_id <> @project_id::uuid;

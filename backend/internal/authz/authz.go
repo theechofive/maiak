@@ -52,6 +52,90 @@ func (r Role) AtLeast(min Role) bool { return rank(r) > 0 && rank(r) >= rank(min
 type Actor struct {
 	UserID uuid.UUID
 	Role   Role
+	// Projects is the effective role in each project the actor belongs to (ADR-0102, T-02).
+	// Owners and admins see every project and need no entries.
+	Projects map[uuid.UUID]Role
+}
+
+// ErrProjectForbidden means the actor sees the project but its role there does not allow the
+// change (a member with the viewer override).
+var ErrProjectForbidden = errors.New("authz: forbidden in this project")
+
+// ProjectRole is the role of a member or viewer inside a project: the organization role, lowered
+// by the project's override when there is one (an override never raises the organization role).
+func ProjectRole(org Role, override *Role) Role {
+	if override != nil && Valid(*override) && rank(*override) < rank(org) {
+		return *override
+	}
+	return org
+}
+
+// AllProjects reports whether the actor sees every project of the organization.
+func (a Actor) AllProjects() bool { return a.Role.AtLeast(Admin) }
+
+// RoleIn returns the actor's effective role in a project and whether it sees the project at all.
+func (a Actor) RoleIn(project uuid.UUID) (Role, bool) {
+	if a.AllProjects() {
+		return a.Role, true
+	}
+	r, ok := a.Projects[project]
+	if !ok || !Valid(r) || !a.Role.AtLeast(Viewer) {
+		return "", false
+	}
+	// Defence in depth: a project role never exceeds the organization role.
+	return ProjectRole(a.Role, &r), true
+}
+
+// Sees reports whether the actor may read a project and what belongs to it.
+func (a Actor) Sees(project uuid.UUID) bool {
+	_, ok := a.RoleIn(project)
+	return ok
+}
+
+// CanEditIn reports whether the actor may create, change, pause and delete monitors in a project.
+func (a Actor) CanEditIn(project uuid.UUID) bool {
+	r, ok := a.RoleIn(project)
+	return ok && r.AtLeast(Member)
+}
+
+// Scope is the set of projects whose data a list may show: every project, or the listed ones.
+type Scope struct {
+	All bool
+	IDs []uuid.UUID
+}
+
+// Scope returns the projects the actor sees.
+func (a Actor) Scope() Scope {
+	if a.AllProjects() {
+		return Scope{All: true}
+	}
+	ids := make([]uuid.UUID, 0, len(a.Projects))
+	for id := range a.Projects {
+		ids = append(ids, id)
+	}
+	return Scope{IDs: ids}
+}
+
+// Includes reports whether the scope covers a project.
+func (s Scope) Includes(project uuid.UUID) bool {
+	if s.All {
+		return true
+	}
+	for _, id := range s.IDs {
+		if id == project {
+			return true
+		}
+	}
+	return false
+}
+
+// Narrow limits the scope to one project (a list filter); the result is empty when the scope
+// does not include it.
+func (s Scope) Narrow(project uuid.UUID) Scope {
+	if s.Includes(project) {
+		return Scope{IDs: []uuid.UUID{project}}
+	}
+	return Scope{IDs: []uuid.UUID{}}
 }
 
 // Public marks operations that need no session; their entry in the table is Public.
@@ -88,6 +172,10 @@ var operations = map[string]Role{
 	"listchannels":         Viewer,
 	"getchannel":           Viewer,
 	"listmembers":          Viewer,
+	// Projects: the list and reads show only the projects the actor sees (T-02).
+	"listprojects":       Viewer,
+	"getproject":         Viewer,
+	"listprojectmembers": Viewer,
 
 	// Monitors and heartbeats.
 	"createmonitor":            Member,
@@ -107,6 +195,13 @@ var operations = map[string]Role{
 	"revokeinvitation": Admin,
 	"updatemember":     Admin,
 	"removemember":     Admin,
+
+	// Projects and their members (T-02).
+	"createproject":       Admin,
+	"updateproject":       Admin,
+	"deleteproject":       Admin,
+	"putprojectmember":    Admin,
+	"removeprojectmember": Admin,
 
 	// The organization itself.
 	"deleteorganization": Owner,

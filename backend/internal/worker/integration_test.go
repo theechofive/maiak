@@ -322,8 +322,10 @@ func TestIntegrationWorkerIterationAgainstTLSServer(t *testing.T) {
 	}))
 	defer ts.Close()
 	m := e.monitor(tenantA, ts.URL+"/health", 2)
-	pgtest.MustExec(t, e.admin, `INSERT INTO notification_channels (id, tenant_id, type, config_encrypted)
-		VALUES (gen_random_uuid(), '`+tenantA+`', 'slack_webhook', '\x01')`)
+	// A channel of the monitor's project (the Default one): a monitor without a selection
+	// notifies its project's channels (T-02).
+	pgtest.MustExec(t, e.admin, `INSERT INTO notification_channels (id, tenant_id, type, config_encrypted, project_id)
+		VALUES (gen_random_uuid(), '`+tenantA+`', 'slack_webhook', '\x01', (SELECT id FROM projects WHERE tenant_id = '`+tenantA+`' AND is_default))`)
 	w, _ := e.worker(checks.NewHTTPSProber(ts.Client()), worker.Config{})
 	due := func() { pgtest.MustExec(t, e.admin, `UPDATE monitor_location_state SET next_run_at = now()`) }
 

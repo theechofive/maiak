@@ -70,6 +70,20 @@ func (q *Queries) CountMembers(ctx context.Context, tenantID uuid.UUID) (int64, 
 	return n, err
 }
 
+const countProjects = `-- name: CountProjects :one
+SELECT count(*)
+FROM projects
+WHERE tenant_id = $1 AND deleted_at IS NULL
+`
+
+// Read-only count for the project cap (projects are owned by internal/projects).
+func (q *Queries) CountProjects(ctx context.Context, tenantID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countProjects, tenantID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getPlan = `-- name: GetPlan :one
 SELECT key, name, limits
 FROM plans

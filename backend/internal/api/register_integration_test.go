@@ -23,6 +23,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
+	"github.com/theechofive/maiak/backend/internal/projects"
 	"github.com/theechofive/maiak/backend/internal/queries"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
 	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
@@ -65,7 +66,7 @@ func newRegistrationServerWithSlack(t *testing.T, env *pgtest.Env, opts auth.Opt
 	h, err := api.NewHandler(api.Config{Version: "test", Commit: "test", CookieSecure: true, TrustedProxyHops: 1, RegistrationEnabled: registration, PublicURL: heartbeatPublicURL},
 		api.Deps{
 			Auth: svc, Monitors: monitors.NewService(pool, sched, incidents.NewService(sched)), Queries: queries.New(pool, nil),
-			Slack: notify.NewService(pool, keys, sender, "https://maiak.example.com"), Plans: plans.NewService(pool), Logger: log,
+			Slack: notify.NewService(pool, keys, sender, "https://maiak.example.com"), Plans: plans.NewService(pool), Projects: projects.NewService(pool), Logger: log,
 		})
 	if err != nil {
 		t.Fatal(err)
@@ -166,7 +167,7 @@ func TestIntegrationRegister(t *testing.T) {
 		t.Fatalf("me: %d %s", me.code, me.raw)
 	}
 	if u := c.do(http.MethodGet, "/api/v1/usage", "", cookie); u.code != http.StatusOK ||
-		u.raw != `{"limits":{"channels":1,"heartbeats":1,"members":3,"monitors":3},"plan":{"key":"free","name":"Free"},"usage":{"channels":0,"heartbeats":0,"members":1,"monitors":0}}`+"\n" {
+		u.raw != `{"limits":{"channels":1,"heartbeats":1,"members":3,"monitors":3,"projects":50},"plan":{"key":"free","name":"Free"},"usage":{"channels":0,"heartbeats":0,"members":1,"monitors":0,"projects":1}}`+"\n" {
 		t.Fatalf("usage: %d %s", u.code, u.raw)
 	}
 	if l := c.do(http.MethodGet, "/api/v1/monitors", "", cookie); l.code != http.StatusOK || !strings.Contains(l.raw, `"items":[]`) {
@@ -474,10 +475,10 @@ func TestIntegrationRegisteredTenantsAreIsolated(t *testing.T) {
 		b, _ := json.Marshal(u.body["usage"])
 		return string(b)
 	}
-	if got := usage(bCookie); got != `{"channels":1,"heartbeats":0,"members":1,"monitors":0}` {
+	if got := usage(bCookie); got != `{"channels":1,"heartbeats":0,"members":1,"monitors":0,"projects":1}` {
 		t.Fatalf("bob usage = %s", got)
 	}
-	if got := usage(aCookie); got != `{"channels":1,"heartbeats":1,"members":1,"monitors":1}` {
+	if got := usage(aCookie); got != `{"channels":1,"heartbeats":1,"members":1,"monitors":1,"projects":1}` {
 		t.Fatalf("alice usage = %s", got)
 	}
 	// Alice's monitors are byte-for-byte what they were: name, paused state and every other field.

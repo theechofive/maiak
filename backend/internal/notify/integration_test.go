@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/theechofive/maiak/backend/internal/authz"
 	"github.com/theechofive/maiak/backend/internal/notify"
 	"github.com/theechofive/maiak/backend/internal/notify/notifydb"
 	"github.com/theechofive/maiak/backend/internal/plans"
@@ -20,6 +21,9 @@ import (
 	"github.com/theechofive/maiak/backend/internal/platform/validation"
 	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
 )
+
+// all is the scope of an owner or admin: every project.
+var everyProject = authz.Scope{All: true}
 
 const (
 	tenantA  = "01920000-0000-7000-8000-00000000000a"
@@ -77,7 +81,7 @@ func TestIntegrationChannels(t *testing.T) {
 	a := notify.Actor{TenantID: uuid.MustParse(tenantA), UserID: uuid.MustParse(userA)}
 	b := notify.Actor{TenantID: uuid.MustParse(tenantB), UserID: uuid.MustParse(userA)}
 
-	if list, err := svc.List(ctx, a.TenantID); err != nil || len(list) != 0 {
+	if list, err := svc.List(ctx, a.TenantID, everyProject, nil); err != nil || len(list) != 0 {
 		t.Fatalf("empty: %v %v", list, err)
 	}
 	if err := svc.Test(ctx, a, uuid.New()); !errors.Is(err, notify.ErrChannelNotFound) {
@@ -136,10 +140,10 @@ func TestIntegrationChannels(t *testing.T) {
 	}
 
 	// Tenant isolation: tenant B can neither see nor change tenant A's channel.
-	if list, _ := svc.List(ctx, b.TenantID); len(list) != 1 || list[0].Name != "b" {
+	if list, _ := svc.List(ctx, b.TenantID, everyProject, nil); len(list) != 1 || list[0].Name != "b" {
 		t.Fatalf("tenant b list: %+v", list)
 	}
-	if _, err := svc.Get(ctx, b.TenantID, ops.ID); !errors.Is(err, notify.ErrChannelNotFound) {
+	if _, err := svc.Get(ctx, b.TenantID, everyProject, ops.ID); !errors.Is(err, notify.ErrChannelNotFound) {
 		t.Fatalf("cross-tenant get: %v", err)
 	}
 	if _, err := svc.Update(ctx, b, ops.ID, notify.UpdateInput{Name: ptr("x")}); !errors.Is(err, notify.ErrChannelNotFound) {
@@ -177,10 +181,10 @@ func TestIntegrationChannels(t *testing.T) {
 	if err := svc.Test(ctx, a, oncall.ID); !errors.As(err, &se) || se.Kind != notify.KindNotFound {
 		t.Fatalf("test 404: %v", err)
 	}
-	if c, _ := svc.Get(ctx, a.TenantID, oncall.ID); c.Status != notify.StatusFailed {
+	if c, _ := svc.Get(ctx, a.TenantID, everyProject, oncall.ID); c.Status != notify.StatusFailed {
 		t.Fatalf("status after 404 = %q", c.Status)
 	}
-	if c, _ := svc.Get(ctx, a.TenantID, ops.ID); c.Status != notify.StatusActive {
+	if c, _ := svc.Get(ctx, a.TenantID, everyProject, ops.ID); c.Status != notify.StatusActive {
 		t.Fatalf("other channel affected: %q", c.Status)
 	}
 	sender.err = nil
@@ -191,7 +195,11 @@ func TestIntegrationChannels(t *testing.T) {
 		var changed bool
 		err := db.WithTenantTx(ctx, pool, uuid.MustParse(tenant), func(tx pgx.Tx) error {
 			var err error
-			changed, err = notify.SetMonitorChannels(ctx, tx, uuid.MustParse(tenant), uuid.MustParse(monitor), ids)
+			var project uuid.UUID
+			if err := tx.QueryRow(ctx, `SELECT project_id FROM monitors WHERE id = $1`, monitor).Scan(&project); err != nil {
+				return err
+			}
+			changed, err = notify.SetMonitorChannels(ctx, tx, uuid.MustParse(tenant), uuid.MustParse(monitor), project, ids)
 			return err
 		})
 		return changed, err
@@ -207,7 +215,7 @@ func TestIntegrationChannels(t *testing.T) {
 		}
 		return ids
 	}
-	bList, _ := svc.List(ctx, b.TenantID)
+	bList, _ := svc.List(ctx, b.TenantID, everyProject, nil)
 	if _, err := selectChannels(tenantA, monitorA, bList[0].ID); fieldOf(t, err) != "channelIds" {
 		t.Fatalf("other tenant's channel: %v", err)
 	}
@@ -252,7 +260,7 @@ func TestIntegrationChannels(t *testing.T) {
 	if err := admin.QueryRow(ctx, `SELECT config_encrypted IS NULL AND deleted_at IS NOT NULL FROM notification_channels WHERE id = $1`, ops.ID).Scan(&wiped); err != nil || !wiped {
 		t.Fatalf("deleted channel keeps its webhook: %v %v", wiped, err)
 	}
-	if _, err := svc.Get(ctx, a.TenantID, ops.ID); !errors.Is(err, notify.ErrChannelNotFound) {
+	if _, err := svc.Get(ctx, a.TenantID, everyProject, ops.ID); !errors.Is(err, notify.ErrChannelNotFound) {
 		t.Fatalf("get deleted: %v", err)
 	}
 	if err := svc.Delete(ctx, a, ops.ID); !errors.Is(err, notify.ErrChannelNotFound) {
@@ -316,7 +324,7 @@ func TestIntegrationChannels(t *testing.T) {
 	}
 	pgtest.MustExec(t, admin, `UPDATE notification_channels SET config_encrypted = (SELECT config_encrypted FROM notification_channels WHERE id = '`+oncall.ID.String()+`')
 		WHERE tenant_id = '`+tenantB+`' AND deleted_at IS NULL`)
-	bLive, _ := svc.List(ctx, b.TenantID)
+	bLive, _ := svc.List(ctx, b.TenantID, everyProject, nil)
 	if _, err := target(tenantB, bLive[0].ID); !errors.Is(err, notify.ErrUndecryptable) {
 		t.Fatalf("copied ciphertext: %v", err)
 	}

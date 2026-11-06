@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/theechofive/maiak/backend/internal/authz"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/db"
 )
@@ -64,6 +65,9 @@ type Incident struct {
 // Monitor is a monitor with its current state, as the list shows it.
 type Monitor struct {
 	ID uuid.UUID
+	// ProjectID is the monitor's project (nil only for a monitor the previous release created
+	// before the T-02 contract step, L-285; the fill trigger prevents it).
+	ProjectID *uuid.UUID
 	// Type is "http" or "heartbeat".
 	Type             string
 	Name             string
@@ -110,7 +114,7 @@ type Summary struct {
 }
 
 const monitorColumns = `
-SELECT m.id, m.type, m.name, COALESCE(m.config ->> 'url', ''), COALESCE(m.config ->> 'expectedStatus', '2xx'),
+SELECT m.id, m.project_id, m.type, m.name, COALESCE(m.config ->> 'url', ''), COALESCE(m.config ->> 'expectedStatus', '2xx'),
        m.interval_seconds, m.timeout_seconds, m.failure_threshold, m.notify_slack, m.paused,
        m.created_at, m.updated_at,
        s.status, s.status_changed_at, s.last_error_kind, s.last_checked_at, s.tls_expires_at,
@@ -140,7 +144,7 @@ func scanMonitor(row pgx.Row) (Monitor, error) {
 	var incStarted *time.Time
 	var incReason string
 	var latency, grace *int32
-	err := row.Scan(&m.ID, &m.Type, &m.Name, &m.URL, &m.ExpectedStatus, &interval, &timeout, &threshold, &m.NotifySlack, &m.Paused,
+	err := row.Scan(&m.ID, &m.ProjectID, &m.Type, &m.Name, &m.URL, &m.ExpectedStatus, &interval, &timeout, &threshold, &m.NotifySlack, &m.Paused,
 		&m.CreatedAt, &m.UpdatedAt, &m.Status, &m.StatusSince, &m.LastErrorKind, &m.LastCheckedAt, &m.TLSExpiresAt,
 		&incID, &incStarted, &incReason, &latency, &m.LastPingAt, &grace)
 	if err != nil {
@@ -164,14 +168,29 @@ func scanMonitor(row pgx.Row) (Monitor, error) {
 	return m, nil
 }
 
-// ListMonitors returns the live monitors of the tenant, oldest first, with summary counts.
-// Uptime comes from the hourly rollups plus the raw rows of the hours not rolled up yet.
-func (s *Service) ListMonitors(ctx context.Context, tenantID uuid.UUID) ([]Monitor, Summary, error) {
+// scopeSQL limits monitors (alias m) to the projects of a scope (ADR-0102, R-212): every project
+// when $all is true, otherwise those in $ids. The placeholders are numbered from n.
+func scopeSQL(n int) string {
+	return fmt.Sprintf(` AND ($%d::boolean OR m.project_id = ANY($%d::uuid[]))`, n, n+1)
+}
+
+func scopeArgs(sc authz.Scope) []any {
+	ids := sc.IDs
+	if ids == nil {
+		ids = []uuid.UUID{}
+	}
+	return []any{sc.All, ids}
+}
+
+// ListMonitors returns the live monitors of the tenant in the scope's projects, oldest first,
+// with summary counts. Uptime comes from the hourly rollups plus the raw rows of the hours not
+// rolled up yet.
+func (s *Service) ListMonitors(ctx context.Context, tenantID uuid.UUID, sc authz.Scope) ([]Monitor, Summary, error) {
 	now := s.clock.Now()
 	var out []Monitor
 	var sum Summary
 	err := db.WithTenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, monitorColumns+` ORDER BY m.created_at, m.id`, tenantID)
+		rows, err := tx.Query(ctx, monitorColumns+scopeSQL(2)+` ORDER BY m.created_at, m.id`, append([]any{tenantID}, scopeArgs(sc)...)...)
 		if err != nil {
 			return err
 		}
@@ -211,12 +230,13 @@ func (s *Service) ListMonitors(ctx context.Context, tenantID uuid.UUID) ([]Monit
 	return out, sum, nil
 }
 
-// Monitor returns one live monitor with uptime over 24 h, 7 d and 30 d.
-func (s *Service) Monitor(ctx context.Context, tenantID, id uuid.UUID) (Detail, error) {
+// Monitor returns one live monitor of the scope's projects with uptime over 24 h, 7 d and 30 d;
+// ErrNotFound for a monitor of another project.
+func (s *Service) Monitor(ctx context.Context, tenantID uuid.UUID, sc authz.Scope, id uuid.UUID) (Detail, error) {
 	now := s.clock.Now()
 	var d Detail
 	err := db.WithTenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
-		m, err := scanMonitor(tx.QueryRow(ctx, monitorColumns+` AND m.id = $2`, tenantID, id))
+		m, err := scanMonitor(tx.QueryRow(ctx, monitorColumns+` AND m.id = $2`+scopeSQL(3), append([]any{tenantID, id}, scopeArgs(sc)...)...))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -326,11 +346,11 @@ type Check struct {
 }
 
 // Checks returns the newest checks of a monitor, at most limit (1..MaxCheckLimit).
-func (s *Service) Checks(ctx context.Context, tenantID, id uuid.UUID, limit int) ([]Check, error) {
+func (s *Service) Checks(ctx context.Context, tenantID uuid.UUID, sc authz.Scope, id uuid.UUID, limit int) ([]Check, error) {
 	limit = min(max(limit, 1), MaxCheckLimit)
 	var out []Check
 	err := db.WithTenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
-		if err := exists(ctx, tx, tenantID, id); err != nil {
+		if err := exists(ctx, tx, tenantID, sc, id); err != nil {
 			return err
 		}
 		rows, err := tx.Query(ctx, `
@@ -372,10 +392,10 @@ func (s *Service) Checks(ctx context.Context, tenantID, id uuid.UUID, limit int)
 }
 
 // Incidents returns the incidents of a monitor, newest first, at most MaxIncidents.
-func (s *Service) Incidents(ctx context.Context, tenantID, id uuid.UUID) ([]Incident, error) {
+func (s *Service) Incidents(ctx context.Context, tenantID uuid.UUID, sc authz.Scope, id uuid.UUID) ([]Incident, error) {
 	var out []Incident
 	err := db.WithTenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
-		if err := exists(ctx, tx, tenantID, id); err != nil {
+		if err := exists(ctx, tx, tenantID, sc, id); err != nil {
 			return err
 		}
 		rows, err := tx.Query(ctx, `
@@ -404,9 +424,11 @@ func (s *Service) Incidents(ctx context.Context, tenantID, id uuid.UUID) ([]Inci
 	return out, nil
 }
 
-func exists(ctx context.Context, tx pgx.Tx, tenantID, id uuid.UUID) error {
+// exists returns ErrNotFound unless id is a live monitor of the scope's projects.
+func exists(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, sc authz.Scope, id uuid.UUID) error {
 	var one int
-	err := tx.QueryRow(ctx, `SELECT 1 FROM monitors WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL`, tenantID, id).Scan(&one)
+	err := tx.QueryRow(ctx, `SELECT 1 FROM monitors AS m WHERE m.tenant_id = $1 AND m.id = $2 AND m.deleted_at IS NULL`+scopeSQL(3),
+		append([]any{tenantID, id}, scopeArgs(sc)...)...).Scan(&one)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	}

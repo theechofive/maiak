@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/theechofive/maiak/backend/internal/authz"
 	"github.com/theechofive/maiak/backend/internal/incidents"
 	"github.com/theechofive/maiak/backend/internal/incidents/machine"
 	"github.com/theechofive/maiak/backend/internal/monitors"
@@ -50,7 +51,7 @@ func newFixture(t *testing.T) *fixture {
 	return &fixture{
 		t: t, ctx: ctx, admin: admin, worker: env.Pool(t, env.WorkerURL, 4), svc: svc,
 		monitors: monitors.NewService(env.Pool(t, env.APIURL, 4), sched, svc),
-		actor:    monitors.Actor{TenantID: uuid.MustParse(tenantA), UserID: user},
+		actor:    monitors.Actor{TenantID: uuid.MustParse(tenantA), UserID: user, Access: authz.Actor{UserID: user, Role: authz.Owner}},
 		clock:    time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC),
 	}
 }
@@ -146,8 +147,9 @@ func (f *fixture) incident(id uuid.UUID) (resolved bool, reason *string, cause *
 
 func (f *fixture) addSlack(tenant string) {
 	f.t.Helper()
-	pgtest.MustExec(f.t, f.admin, `INSERT INTO notification_channels (id, tenant_id, type, config_encrypted)
-		VALUES (gen_random_uuid(), '`+tenant+`', 'slack_webhook', '\x01')`)
+	// In the tenant's Default project, where monitors without a project choice live (T-02).
+	pgtest.MustExec(f.t, f.admin, `INSERT INTO notification_channels (id, tenant_id, type, config_encrypted, project_id)
+		VALUES (gen_random_uuid(), '`+tenant+`', 'slack_webhook', '\x01', (SELECT id FROM projects WHERE tenant_id = '`+tenant+`' AND is_default))`)
 }
 
 func failed(kind string) machine.Result { return machine.Result{ErrorKind: kind} }
@@ -301,6 +303,9 @@ func TestIntegrationDeliveryPerChannel(t *testing.T) {
 	channel := func(tenant, name, cols, vals string) uuid.UUID {
 		t.Helper()
 		id := uuid.New()
+		if !strings.Contains(cols, "project_id") {
+			cols, vals = cols+", project_id", vals+", "+`(SELECT id FROM projects WHERE tenant_id = '`+tenant+`' AND is_default)`
+		}
 		pgtest.MustExec(t, f.admin, `INSERT INTO notification_channels (id, tenant_id, type, config_encrypted, name`+cols+`)
 			VALUES ('`+id.String()+`', '`+tenant+`', 'slack_webhook', '\x01', '`+name+`'`+vals+`)`)
 		return id

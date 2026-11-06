@@ -29,6 +29,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
 	"github.com/theechofive/maiak/backend/internal/platform/metrics"
+	"github.com/theechofive/maiak/backend/internal/projects"
 	"github.com/theechofive/maiak/backend/internal/queries"
 )
 
@@ -64,6 +65,7 @@ type Deps struct {
 	Queries  *queries.Service
 	Slack    *notify.Service
 	Plans    *plans.Service
+	Projects *projects.Service
 	// Admin serves /api/v1/admin (P-04); nil answers those operations with 500.
 	Admin   *admin.Service
 	Logger  *slog.Logger
@@ -81,6 +83,7 @@ type server struct {
 	queries  *queries.Service
 	slack    *notify.Service
 	plans    *plans.Service
+	projects *projects.Service
 	admin    *admin.Service
 	log      *slog.Logger
 	// slackTests limits Slack test messages per tenant (per api replica, like the login limit).
@@ -107,7 +110,7 @@ func NewHandler(cfg Config, deps Deps) (http.Handler, error) {
 	if pings == nil {
 		pings = NewPingMetrics(prometheus.NewRegistry())
 	}
-	s := &server{cfg: cfg, auth: deps.Auth, monitors: deps.Monitors, queries: deps.Queries, slack: deps.Slack, plans: deps.Plans, admin: deps.Admin, log: deps.Logger,
+	s := &server{cfg: cfg, auth: deps.Auth, monitors: deps.Monitors, queries: deps.Queries, slack: deps.Slack, plans: deps.Plans, projects: deps.Projects, admin: deps.Admin, log: deps.Logger,
 		slackTests: auth.NewLimiter(1, slackTestInterval, 10_000, clk),
 		pingLimits: newPingLimits(clk),
 		pings:      pings}
@@ -117,7 +120,7 @@ func NewHandler(cfg Config, deps Deps) (http.Handler, error) {
 	if deps.Metrics != nil {
 		r.Use(deps.Metrics.Middleware)
 	}
-	r.Use(apiHeaders, httpx.MaxBody(maxBodyBytes), withSessionSlot)
+	r.Use(apiHeaders, httpx.MaxBody(maxBodyBytes), withSessionSlot, withAccessSlot)
 	r.Use(middleware.OapiRequestValidatorWithOptions(spec, &middleware.Options{
 		// Host matching against `servers` is pointless behind the gateway.
 		DoNotValidateServers: true,

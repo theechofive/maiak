@@ -12,12 +12,22 @@ import (
 // The webhook URL of a channel is write-only: these handlers never return it, and errors from
 // sending to it reach the client only as a kind (errors.go).
 
-func (s *server) ListChannels(ctx context.Context, _ gen.ListChannelsRequestObject) (gen.ListChannelsResponseObject, error) {
+func (s *server) ListChannels(ctx context.Context, req gen.ListChannelsRequestObject) (gen.ListChannelsResponseObject, error) {
 	p, err := s.principal(ctx)
 	if err != nil {
 		return nil, err
 	}
-	list, err := s.slack.List(ctx, p.TenantID)
+	sc, err := s.scope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if req.Params.ProjectId != nil {
+		// 404 for a project the caller does not see.
+		if _, err := s.projectFilter(ctx, req.Params.ProjectId); err != nil {
+			return nil, err
+		}
+	}
+	list, err := s.slack.List(ctx, p.TenantID, sc, req.Params.ProjectId)
 	if err != nil {
 		return nil, err
 	}
@@ -36,6 +46,7 @@ func (s *server) CreateChannel(ctx context.Context, req gen.CreateChannelRequest
 	b := req.Body
 	c, err := s.slack.Create(ctx, a, notify.CreateInput{
 		Name: b.Name, WebhookURL: b.WebhookUrl, Events: fromEvents(b.Events), Mention: b.Mention, ReminderMinutes: b.ReminderMinutes,
+		ProjectID: b.ProjectId, OrganizationWide: b.OrganizationWide != nil && *b.OrganizationWide,
 	})
 	if err != nil {
 		return nil, err
@@ -48,7 +59,11 @@ func (s *server) GetChannel(ctx context.Context, req gen.GetChannelRequestObject
 	if err != nil {
 		return nil, err
 	}
-	c, err := s.slack.Get(ctx, p.TenantID, req.ChannelId)
+	sc, err := s.scope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	c, err := s.slack.Get(ctx, p.TenantID, sc, req.ChannelId)
 	if err != nil {
 		return nil, err
 	}
@@ -63,6 +78,7 @@ func (s *server) UpdateChannel(ctx context.Context, req gen.UpdateChannelRequest
 	b := req.Body
 	c, err := s.slack.Update(ctx, a, req.ChannelId, notify.UpdateInput{
 		Name: b.Name, WebhookURL: b.WebhookUrl, Events: fromEvents(b.Events), Mention: b.Mention, ReminderMinutes: b.ReminderMinutes,
+		ProjectID: b.ProjectId, OrganizationWide: b.OrganizationWide != nil && *b.OrganizationWide,
 	})
 	if err != nil {
 		return nil, err
@@ -110,7 +126,7 @@ func toChannel(c notify.Channel) gen.Channel {
 		events[i] = gen.ChannelEvent(e)
 	}
 	return gen.Channel{
-		Id: c.ID, Name: c.Name, Type: gen.ChannelType(c.Type), Events: events, Mention: c.Mention,
+		Id: c.ID, ProjectId: c.ProjectID, Name: c.Name, Type: gen.ChannelType(c.Type), Events: events, Mention: c.Mention,
 		ReminderMinutes: c.ReminderMinutes, Status: gen.ChannelStatus(c.Status), CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt,
 	}
 }

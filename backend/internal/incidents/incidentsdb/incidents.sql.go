@@ -158,19 +158,22 @@ func (q *Queries) InsertIncidentMonitor(ctx context.Context, arg InsertIncidentM
 const listDeliveryChannels = `-- name: ListDeliveryChannels :many
 SELECT c.id, c.events
 FROM notification_channels AS c
-WHERE c.tenant_id = $1 AND c.deleted_at IS NULL AND c.status = 'active'
+JOIN monitors AS m ON m.tenant_id = c.tenant_id AND m.id = $1
+WHERE c.tenant_id = $2 AND c.deleted_at IS NULL AND c.status = 'active'
   AND (
-      EXISTS (SELECT 1 FROM monitor_channels AS mc
-              WHERE mc.tenant_id = c.tenant_id AND mc.monitor_id = $2 AND mc.channel_id = c.id)
-      OR NOT EXISTS (SELECT 1 FROM monitor_channels AS mc
-                     WHERE mc.tenant_id = c.tenant_id AND mc.monitor_id = $2)
+      (EXISTS (SELECT 1 FROM monitor_channels AS mc
+               WHERE mc.tenant_id = c.tenant_id AND mc.monitor_id = m.id AND mc.channel_id = c.id)
+       AND (c.project_id IS NULL OR c.project_id = m.project_id))
+      OR (NOT EXISTS (SELECT 1 FROM monitor_channels AS mc
+                      WHERE mc.tenant_id = c.tenant_id AND mc.monitor_id = m.id)
+          AND c.project_id = m.project_id)
   )
 ORDER BY c.created_at, c.id
 `
 
 type ListDeliveryChannelsParams struct {
-	TenantID  uuid.UUID
 	MonitorID uuid.UUID
+	TenantID  uuid.UUID
 }
 
 type ListDeliveryChannelsRow struct {
@@ -179,10 +182,12 @@ type ListDeliveryChannelsRow struct {
 }
 
 // Read-only (channels are owned by internal/notify): the active channels of a monitor with the
-// events they receive. A monitor without a selection in monitor_channels notifies every active
-// channel of its tenant (ADR-0100).
+// events they receive (ADR-0100, T-02). A monitor with a selection in monitor_channels notifies
+// its selected channels that are organization-wide or of its project; a monitor without one
+// notifies the active channels of its own project only (closes L-261, L-263). The same rule is in
+// enqueue_incident_reminders.
 func (q *Queries) ListDeliveryChannels(ctx context.Context, arg ListDeliveryChannelsParams) ([]ListDeliveryChannelsRow, error) {
-	rows, err := q.db.Query(ctx, listDeliveryChannels, arg.TenantID, arg.MonitorID)
+	rows, err := q.db.Query(ctx, listDeliveryChannels, arg.MonitorID, arg.TenantID)
 	if err != nil {
 		return nil, err
 	}
