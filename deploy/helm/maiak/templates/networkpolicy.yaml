@@ -15,7 +15,7 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-    # Envoy Gateway data plane -> api / web
+    # Envoy Gateway data plane -> api / web / statuspage
     - from:
         - namespaceSelector:
             matchLabels:
@@ -24,6 +24,9 @@ spec:
         - {protocol: TCP, port: {{ .Values.api.httpPort }}}
         {{- if .Values.web.enabled }}
         - {protocol: TCP, port: {{ .Values.web.port }}}
+        {{- end }}
+        {{- if and .Values.statuspage.enabled (ne (int .Values.statuspage.httpPort) (int .Values.api.httpPort)) }}
+        - {protocol: TCP, port: {{ .Values.statuspage.httpPort }}}
         {{- end }}
     # Metrics scraping of the admin port
     - from:

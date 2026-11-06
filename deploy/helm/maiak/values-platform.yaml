@@ -40,3 +40,10 @@ secrets:
 dbBootstrap:
   enabled: false
   host: grafana.czqsaiesae4n.eu-central-1.rds.amazonaws.com
+
+# Status page renderer (P-05, ADR-0103): off until the `maiak-db` Secret has `statuspage_url`. It is
+# added by one run of the db bootstrap (dbBootstrap.enabled: true for one sync, then false again,
+# R-009), which also creates the maiak_statuspage role. Then set this to true
+# (docs/runbooks/status-page.md). The admin API and the settings page work without it.
+statuspage:
+  enabled: false

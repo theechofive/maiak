@@ -28,6 +28,21 @@ spec:
           name: {{ include "maiak.componentName" (dict "ctx" . "component" "api") }}
           port: {{ .Values.api.service.port }}
           weight: 1
+    {{- if .Values.statuspage.enabled }}
+    {{- /* Public status pages (ADR-0103): /status and /status/... go to the renderer, nothing else. */}}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ .Values.httpRoute.statusPathPrefix }}
+      timeouts:
+        request: 15s
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: {{ include "maiak.componentName" (dict "ctx" . "component" "statuspage") }}
+          port: {{ .Values.statuspage.service.port }}
+          weight: 1
+    {{- end }}
     {{- /* Catch-all only when the frontend is deployed; otherwise unmatched paths 404 at the gateway. */}}
     {{- if .Values.web.enabled }}
     - matches:

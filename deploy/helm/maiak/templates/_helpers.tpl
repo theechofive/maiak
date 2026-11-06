@@ -59,10 +59,17 @@ app.kubernetes.io/managed-by: {{ .ctx.Release.Service }}
 {{/* One-time plaintext admin password, created by the secrets bootstrap Job (ADR-0091), never by Helm. */}}
 {{- define "maiak.secret.adminInitial" -}}{{ include "maiak.secret.admin" . }}-initial{{- end }}
 {{- define "maiak.secret.crypto" -}}{{ include "maiak.fullname" . }}-crypto{{- end }}
+{{/* Cookie key of the status page renderer (ADR-0103). */}}
+{{- define "maiak.secret.statuspage" -}}{{ include "maiak.fullname" . }}-statuspage{{- end }}
 
 {{/* True when the secrets bootstrap Job is needed (any secrets.*.source is generate). Arg: root context */}}
 {{- define "maiak.secrets.generate" -}}
-{{- if or (eq .Values.secrets.admin.source "generate") (eq .Values.secrets.crypto.source "generate") }}true{{ end }}
+{{- if or (eq .Values.secrets.admin.source "generate") (eq .Values.secrets.crypto.source "generate") (include "maiak.statuspage.generate" .) }}true{{ end }}
+{{- end }}
+
+{{/* True when the secrets bootstrap Job must create the status page cookie key. Arg: root context */}}
+{{- define "maiak.statuspage.generate" -}}
+{{- if and .Values.statuspage.enabled (eq .Values.secrets.statuspage.source "generate") }}true{{ end }}
 {{- end }}
 
 {{/* Env shared by api/worker/jobs (config.Server + config.Base). Args: dict ctx, dbKey */}}
@@ -134,6 +141,21 @@ keys (ADR-0016, L-042). Arg: root context
 {{- /* Only an explicit false turns registration off; a missing value keeps the app default (true). */}}
 - name: MAIAK_REGISTRATION_ENABLED
   value: {{ ternary "false" "true" (and (kindIs "bool" .Values.config.registrationEnabled) (not .Values.config.registrationEnabled)) | quote }}
+{{- end }}
+
+{{/* statuspage-only env (config.Statuspage). Arg: root context */}}
+{{- define "maiak.env.statuspage" -}}
+- name: MAIAK_HTTP_ADDR
+  value: {{ printf ":%d" (int .Values.statuspage.httpPort) | quote }}
+- name: MAIAK_COOKIE_SECURE
+  value: {{ .Values.config.cookieSecure | quote }}
+- name: MAIAK_TRUSTED_PROXY_HOPS
+  value: {{ .Values.config.trustedProxyHops | quote }}
+- name: MAIAK_STATUSPAGE_COOKIE_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "maiak.secret.statuspage" . }}
+      key: cookie_key
 {{- end }}
 
 {{/* worker-only env (config.Worker). Arg: root context */}}

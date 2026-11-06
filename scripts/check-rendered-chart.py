@@ -20,6 +20,12 @@ ENCRYPTION_COMPONENTS = {"api", "jobs"}
 TOKEN_COMPONENTS = {"db-bootstrap", "secrets-bootstrap"}
 # The exact Secrets the secrets bootstrap Role may read/update (ADR-0091), for release "maiak".
 SECRETS_BOOTSTRAP_NAMES = {"maiak-admin", "maiak-admin-initial", "maiak-crypto"}
+# Plus the status page cookie key when the renderer is enabled and the key is generated (ADR-0103).
+STATUSPAGE_SECRET = "maiak-statuspage"
+# The only env the public status page renderer may get (config.Statuspage): no encryption keys, no
+# admin credentials, no SSRF guard settings, and only its own database URL key.
+STATUSPAGE_ENV = {"MAIAK_ENV", "MAIAK_LOG_LEVEL", "MAIAK_ADMIN_ADDR", "MAIAK_DATABASE_URL", "MAIAK_PUBLIC_URL",
+                  "MAIAK_HTTP_ADDR", "MAIAK_COOKIE_SECURE", "MAIAK_TRUSTED_PROXY_HOPS", "MAIAK_STATUSPAGE_COOKIE_KEY"}
 
 
 def mem_mi(value):
@@ -109,7 +115,7 @@ def check(path):
                         fail(f"{name}/{c['name']}: memory limit is {ratio:g}x the request (want 3-4x)")
                 except (KeyError, ValueError) as ex:
                     fail(f"{name}/{c['name']}: cannot compare memory ({ex})")
-            if comp in ("api", "worker", "jobs"):
+            if comp in ("api", "worker", "jobs", "statuspage"):
                 paths = {p["httpGet"]["path"] for p in (c.get("livenessProbe", {}), c.get("readinessProbe", {})) if "httpGet" in p}
                 if paths != {"/healthz", "/readyz"}:
                     fail(f"{name}: probes should use /healthz and /readyz, got {sorted(paths)}")
@@ -167,6 +173,24 @@ def check(path):
         if comp in ("worker", "jobs") and grace != 45:
             fail(f"{comp}: terminationGracePeriodSeconds is {grace}, want 45")
 
+    # Status page renderer (ADR-0103): least privilege.
+    sp = env_of("statuspage")
+    if sp:
+        if set(sp) != STATUSPAGE_ENV:
+            fail(f"statuspage env is {sorted(sp)}, want exactly {sorted(STATUSPAGE_ENV)}")
+        db_ref = sp.get("MAIAK_DATABASE_URL", {}).get("valueFrom", {}).get("secretKeyRef", {})
+        if db_ref.get("key") != "statuspage_url":
+            fail(f"statuspage must use the statuspage_url key, got {db_ref}")
+        key_ref = sp.get("MAIAK_STATUSPAGE_COOKIE_KEY", {}).get("valueFrom", {}).get("secretKeyRef", {})
+        if key_ref != {"name": STATUSPAGE_SECRET, "key": "cookie_key"}:
+            fail(f"statuspage cookie key must come from {STATUSPAGE_SECRET}/cookie_key, got {key_ref}")
+        url = sp.get("MAIAK_PUBLIC_URL", {}).get("value", "")
+        if not url.startswith("https://") or url.endswith("/"):
+            fail(f"statuspage: MAIAK_PUBLIC_URL {url!r} must be https without trailing slash")
+    for comp, env in (("api", api), ("worker", worker), ("jobs", jobs)):
+        if "MAIAK_STATUSPAGE_COOKIE_KEY" in env or env.get("MAIAK_DATABASE_URL", {}).get("valueFrom", {}).get("secretKeyRef", {}).get("key") == "statuspage_url":
+            fail(f"{comp} has the status page's credentials")
+
     # Owner URL only for the migrate Job.
     if owner_users != {("Job", "migrate")}:
         fail(f"owner_url used by {sorted(owner_users)}, want only the migrate Job")
@@ -205,7 +229,7 @@ def check(path):
                 fail(f"secrets-bootstrap Job reads {n} from a Secret")
         if re.search(r"DATABASE|BOOTSTRAP_|owner_url|api_url|worker_url|-db\b", str(c)):
             fail("secrets-bootstrap Job has database configuration")
-        for n in ("ADMIN", "CRYPTO"):
+        for n in ("ADMIN", "CRYPTO", "STATUSPAGE"):
             modes[n] = env.get(f"MAIAK_SECRETS_{n}_MODE", {}).get("value")
             if modes[n] not in ("generate", "skip"):
                 fail(f"secrets-bootstrap Job: MAIAK_SECRETS_{n}_MODE is {modes[n]!r}")
@@ -225,8 +249,10 @@ def check(path):
                     fail(f"secrets-bootstrap Role grants {rule.get('resources')}")
                 elif names is None and verbs != {"create"}:
                     fail(f"secrets-bootstrap Role grants {sorted(verbs)} on all secrets")
-                elif names is not None and (set(names) != SECRETS_BOOTSTRAP_NAMES or len(names) != 3 or verbs != {"get", "update", "patch"}):
-                    fail(f"secrets-bootstrap Role: {sorted(verbs)} on {names}, want get/update/patch on {sorted(SECRETS_BOOTSTRAP_NAMES)}")
+                elif names is not None:
+                    want = SECRETS_BOOTSTRAP_NAMES | ({STATUSPAGE_SECRET} if modes.get("STATUSPAGE") == "generate" else set())
+                    if set(names) != want or len(names) != len(want) or verbs != {"get", "update", "patch"}:
+                        fail(f"secrets-bootstrap Role: {sorted(verbs)} on {names}, want get/update/patch on {sorted(want)}")
     has_role = any(d["kind"] == "Role" and component(d) == "secrets-bootstrap" for d in docs)
     if bool(sb_jobs) != has_role:
         fail("secrets-bootstrap Job and Role must be rendered together")
@@ -237,7 +263,12 @@ def check(path):
             want = {(k, k) for k in ADMIN_SECRET_KEYS.values()}
             if props != want:
                 fail(f"ExternalSecret maiak-admin maps {sorted(props)}, want {sorted(want)}")
-    for mode_key, secret in (("ADMIN", "maiak-admin"), ("CRYPTO", "maiak-crypto")):
+    pairs = [("ADMIN", "maiak-admin"), ("CRYPTO", "maiak-crypto")]
+    if sp:
+        pairs.append(("STATUSPAGE", STATUSPAGE_SECRET))
+    elif modes.get("STATUSPAGE") == "generate" or STATUSPAGE_SECRET in es_names:
+        fail(f"{STATUSPAGE_SECRET} rendered although the status page is disabled")
+    for mode_key, secret in pairs:
         generated = modes.get(mode_key) == "generate"
         if generated and secret in es_names:
             fail(f"{secret}: generated by the secrets bootstrap Job AND rendered as an ExternalSecret")
@@ -258,6 +289,14 @@ def check(path):
             fail("HTTPRoute: / must go to web")
         if not web and "/" in by_path:
             fail("HTTPRoute: / routed although web is disabled")
+        if sp and not ("/status" in by_path and by_path["/status"][1].endswith("-statuspage")):
+            fail("HTTPRoute: /status must go to the statuspage")
+        if not sp and "/status" in by_path:
+            fail("HTTPRoute: /status routed although the status page is disabled")
+        # The api and the renderer never share a path: /api stays with the api, /status with the renderer.
+        for path, (_, backend) in by_path.items():
+            if backend.endswith("-statuspage") and path != "/status":
+                fail(f"HTTPRoute: {path} routed to the statuspage")
     return errors
 
 

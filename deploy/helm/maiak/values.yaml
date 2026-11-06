@@ -55,6 +55,13 @@ secrets:
     keyId: k1
     # externalSecret mode: JSON secret with properties keys (JSON string), active_key_id
     remoteKey: platform/maiak/crypto
+  # Key that signs the unlock cookies of password-protected status pages (ADR-0103), Secret
+  # `<fullname>-statuspage` (cookie_key). Only rendered and read with statuspage.enabled. Losing it
+  # only signs visitors of protected pages out.
+  statuspage:
+    source: generate
+    # externalSecret mode: JSON secret with property cookie_key (standard base64 of 32 random bytes)
+    remoteKey: platform/maiak/statuspage
   # The hook Job (ArgoCD Sync, wave -3) rendered when any source is generate. It has no database
   # credentials; its Role can only create Secrets and read/update the three Secrets above.
   bootstrap:
@@ -166,6 +173,24 @@ jobs:
     limits: {cpu: 500m, memory: 256Mi}
   env: []
 
+# Public status page renderer (ADR-0103): serves /status/<slug> from prepared snapshots, as the
+# database role maiak_statuspage (key statuspage_url of the db Secret, added by `maiakctl db
+# bootstrap` since P-05). An existing installation must run the db bootstrap once before enabling
+# it (docs/runbooks/status-page.md), or the pod cannot start (missing Secret key).
+statuspage:
+  enabled: true
+  replicas: 1              # limits and cache are per replica (L-274)
+  command: ["/app/statuspage"]
+  databaseUrlKey: statuspage_url
+  httpPort: 8080
+  # argon2id password checks take 64 MiB, one at a time per replica.
+  resources:
+    requests: {cpu: 10m, memory: 48Mi}
+    limits: {cpu: 300m, memory: 192Mi}
+  env: []
+  service:
+    port: 8080
+
 # Memory limits are 3-4x the requests everywhere; requests stay small because klr-platform is
 # memory-tight (R-003). Total requests with the platform replicas: 2x96 + 2x96 + 64 + 2x32 = 512Mi.
 
@@ -241,6 +266,8 @@ httpRoute:
     sectionName: https
   apiPathPrefix: /api
   apiRequestTimeout: 60s
+  # Routed to the statuspage Service when statuspage.enabled (ADR-0103).
+  statusPathPrefix: /status
 
 # --- Optional resources, all disabled by default ---
 
@@ -251,7 +278,7 @@ networkPolicy:
   gatewayNamespace: envoy-gateway      # namespace of the Envoy proxies allowed to reach api/web
   monitoringNamespace: monitoring      # namespace allowed to scrape the admin port
 
-# ServiceMonitor for api/worker/jobs admin port /metrics (ledger L-003: Prometheus Operator CRDs
+# ServiceMonitor for api/worker/jobs (and statuspage) admin port /metrics (ledger L-003: Prometheus Operator CRDs
 # availability / scrape setup undecided). Also creates one metrics Service per component.
 serviceMonitor:
   enabled: false

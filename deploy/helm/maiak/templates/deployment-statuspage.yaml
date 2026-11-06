@@ -1,0 +1,9 @@
+{{- if .Values.statuspage.enabled }}
+{{- /* Public status page renderer (ADR-0103): database role maiak_statuspage, no encryption keys, no
+       admin credentials, no SSRF guard (it makes no outbound calls). */ -}}
+{{- $env := join "\n" (list
+  (include "maiak.env.common" (dict "ctx" . "dbKey" .Values.statuspage.databaseUrlKey))
+  (include "maiak.env.publicUrl" .)
+  (include "maiak.env.statuspage" .)) -}}
+{{ include "maiak.backendDeployment" (dict "ctx" . "component" "statuspage" "cfg" .Values.statuspage "env" $env "httpPort" .Values.statuspage.httpPort) }}
+{{- end }}

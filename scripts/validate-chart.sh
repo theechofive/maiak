@@ -27,7 +27,10 @@ combos=(
   "platform-external-secrets|-f $platform --set secrets.admin.source=externalSecret --set secrets.crypto.source=externalSecret"
   "platform-admin-external|-f $platform --set secrets.admin.source=externalSecret"
   "platform-crypto-external|-f $platform --set secrets.crypto.source=externalSecret"
-  "platform-all-optional|-f $platform --set serviceMonitor.enabled=true --set networkPolicy.enabled=true --set api.pdb.enabled=true --set topologySpread.enabled=true --set config.blockedCIDRs[0]=100.64.0.0/10 --set config.blockedCIDRs[1]=198.18.0.0/15 --set worker.location=home-test"
+  "platform-statuspage|-f $platform --set statuspage.enabled=true"
+  "platform-statuspage-external|-f $platform --set statuspage.enabled=true --set secrets.statuspage.source=externalSecret"
+  "defaults-no-statuspage|--set statuspage.enabled=false"
+  "platform-all-optional|-f $platform --set statuspage.enabled=true --set serviceMonitor.enabled=true --set networkPolicy.enabled=true --set api.pdb.enabled=true --set topologySpread.enabled=true --set config.blockedCIDRs[0]=100.64.0.0/10 --set config.blockedCIDRs[1]=198.18.0.0/15 --set worker.location=home-test"
 )
 
 renders=()
@@ -74,6 +77,9 @@ expect_fail "empty admin login in generate mode" --set secrets.admin.login=
 expect_fail "admin login removed in generate mode" -f "$platform" --set secrets.admin.login=null
 expect_fail "invalid crypto key id" --set "secrets.crypto.keyId=k 1"
 expect_fail "externalSecret without remote key" --set secrets.crypto.source=externalSecret --set secrets.crypto.remoteKey=
+expect_fail "statuspage with another role's database URL" --set statuspage.databaseUrlKey=api_url
+expect_fail "statuspage cookie key externalSecret without remote key" --set secrets.statuspage.source=externalSecret --set secrets.statuspage.remoteKey=
+expect_fail "status path moved" --set httpRoute.statusPathPrefix=/pages
 
 echo "== invariants on rendered manifests"
 python3 scripts/check-rendered-chart.py "${renders[@]}"
