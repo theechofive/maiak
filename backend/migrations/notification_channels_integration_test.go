@@ -57,15 +57,21 @@ func TestIntegrationNotificationChannels(t *testing.T) {
 		}
 		pgtest.MustExec(t, admin, `INSERT INTO notification_channels (id, tenant_id, type, config_encrypted`+cols+`)
 			VALUES ('`+id+`', '`+tenant+`', 'slack_webhook', '\x01'`+vals+`)`)
+		// Since T-02 a channel belongs to a project; these tests use the tenant's Default project,
+		// where the T-02 backfill puts every existing channel.
+		pgtest.MustExec(t, admin, `DO $$ BEGIN IF to_regclass('public.projects') IS NOT NULL THEN
+			UPDATE notification_channels SET project_id = (SELECT p.id FROM projects AS p WHERE p.tenant_id = '`+tenant+`' AND p.is_default)
+			WHERE id = '`+id+`'; END IF; END $$`)
 		return id
 	}
 
 	t.Run("replay over an existing channel", func(t *testing.T) {
+		pgtest.MustExec(t, admin, rollbackProjects...)
 		pgtest.MustExec(t, admin, rollbackInvitationsRoles...)
 		pgtest.MustExec(t, admin, rollbackNotificationChannels...)
 		old := channel(tenantA, "", "")
-		if n, err := env.Migrate(ctx); err != nil || n != 3 {
-			t.Fatalf("re-applied %d migrations, err=%v; want 3 (S-01 and T-01)", n, err)
+		if n, err := env.Migrate(ctx); err != nil || n != 4 {
+			t.Fatalf("re-applied %d migrations, err=%v; want 4 (S-01, T-01 and T-02)", n, err)
 		}
 		var got string
 		if err := admin.QueryRow(ctx, `SELECT name || ' ' || events::text || ' ' || mention::text || ' ' || reminder_minutes || ' ' || (deleted_at IS NULL)
