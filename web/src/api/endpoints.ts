@@ -39,6 +39,13 @@ export type StatusPageUpdate = Schemas["StatusPageUpdate"];
 export type StatusPageComponent = Schemas["StatusPageComponent"];
 export type StatusPageComponentInput = Schemas["StatusPageComponentInput"];
 export type StatusPageSnapshot = Schemas["StatusPageSnapshot"];
+export type OAuthProvider = Schemas["OAuthProvider"];
+export type AuthProviders = Schemas["AuthProviders"];
+export type Identity = Schemas["Identity"];
+export type IdentityList = Schemas["IdentityList"];
+export type AuthDomain = Schemas["AuthDomain"];
+export type AuthDomainRole = Schemas["AuthDomainRole"];
+export type AuthDomainUpdate = Schemas["AuthDomainUpdate"];
 
 /** Page size of the admin lists (the API default; at most 100). */
 export const ADMIN_PAGE_SIZE = 25;
@@ -63,6 +70,9 @@ export const queryKeys = {
   statusPageComponents: (id: string) => ["status-pages", id, "components"] as const,
   statusPagePreview: (id: string) => ["status-pages", id, "preview"] as const,
   publicConfig: ["public-config"] as const,
+  authProviders: ["auth-providers"] as const,
+  identities: ["identities"] as const,
+  authDomains: ["auth-domains"] as const,
   adminStats: ["admin", "stats"] as const,
   adminTenants: (query: string, offset: number, includeDeleted: boolean) =>
     ["admin", "tenants", { query, offset, includeDeleted }] as const,
@@ -365,3 +375,46 @@ export const putStatusPageComponents = (statusPageId: string, items: StatusPageC
 /** The public view as /status/<slug>.json would serve it now, also while unpublished. */
 export const previewStatusPage = (statusPageId: string) =>
   unwrap(client.GET("/api/v1/status-pages/{statusPageId}/preview", statusPagePath(statusPageId)));
+
+// OAuth sign-in (O-01, O-02, ADR-0104).
+
+/** The providers the login page offers and whether the password form is on (no session). */
+export const getAuthProviders = () => unwrap(client.GET("/api/v1/auth/providers"));
+
+/**
+ * Starts a sign-in or link at a provider and returns the URL to navigate the window to. An
+ * invitation token goes in this body only, never in a URL; a link sends the CSRF token (apiFetch).
+ */
+export const startOAuth = (
+  provider: OAuthProvider,
+  body: { intent?: "login" | "link"; inviteToken?: string },
+) =>
+  unwrap(
+    client.POST("/api/v1/auth/oauth/{provider}/start", { params: { path: { provider } }, body }),
+  );
+
+export const listIdentities = () => unwrap(client.GET("/api/v1/auth/identities"));
+
+export const unlinkIdentity = (provider: OAuthProvider) =>
+  unwrap(client.DELETE("/api/v1/auth/identities/{provider}", { params: { path: { provider } } }));
+
+export const listAuthDomains = () => unwrap(client.GET("/api/v1/organization/auth-domains"));
+
+/** Claims a Workspace domain; it always starts with the viewer role (O-04). */
+export const createAuthDomain = (domain: string) =>
+  unwrap(client.POST("/api/v1/organization/auth-domains", { body: { domain } }));
+
+export const updateAuthDomain = (domainId: string, body: AuthDomainUpdate) =>
+  unwrap(
+    client.PATCH("/api/v1/organization/auth-domains/{domainId}", {
+      params: { path: { domainId } },
+      body,
+    }),
+  );
+
+export const deleteAuthDomain = (domainId: string) =>
+  unwrap(
+    client.DELETE("/api/v1/organization/auth-domains/{domainId}", {
+      params: { path: { domainId } },
+    }),
+  );

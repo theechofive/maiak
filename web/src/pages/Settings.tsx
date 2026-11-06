@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { ApiError, errorMessage } from "../api/client";
 import {
   createChannel,
@@ -12,6 +13,7 @@ import {
   type Usage,
 } from "../api/endpoints";
 import { useAuth } from "../auth/AuthProvider";
+import SignInDomains from "../components/SignInDomains";
 import { abilities, ROLE_HINTS } from "../lib/roles";
 import { useToast } from "../components/Toasts";
 import {
@@ -75,6 +77,15 @@ export default function Settings() {
       >
         <NotificationChannels />
       </SettingsSection>
+      {auth.session?.role === "owner" && (
+        <SettingsSection
+          id="sign-in-domains"
+          title="Sign-in domains"
+          description="People with a Google Workspace account of a claimed domain join this organization on their first sign-in with Google. Only the owner manages this."
+        >
+          <SignInDomains />
+        </SettingsSection>
+      )}
       <SettingsSection id="appearance" title="Appearance" description="Saved in this browser only.">
         <Appearance />
       </SettingsSection>
@@ -85,7 +96,11 @@ export default function Settings() {
             <strong className="font-mono text-[14px] font-normal break-all">
               {auth.session?.user.login}
             </strong>
-            . The password is managed outside the app.
+            . The password is managed outside the app.{" "}
+            <Link to="/profile" className="underline underline-offset-3">
+              Sign-in methods
+            </Link>{" "}
+            lists the providers you sign in with.
           </p>
         </div>
       </SettingsSection>

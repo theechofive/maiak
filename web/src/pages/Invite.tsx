@@ -10,6 +10,7 @@ import {
 import { lookupInvitation, queryKeys, type InvitationPreview } from "../api/endpoints";
 import { useAuth } from "../auth/AuthProvider";
 import AuthScreen, { AuthHeading, ShowPassword } from "../components/AuthScreen";
+import ProviderButtons, { OrDivider } from "../components/ProviderButtons";
 import { useToast } from "../components/Toasts";
 import { Alert, Button, buttonClass, cx, Field, Input, Loading, Skeleton } from "../components/ui";
 import { formatDateTime, formatDuration } from "../lib/format";
@@ -21,6 +22,7 @@ import {
   type RegisterFormErrors,
   type RegisterFormValues,
 } from "../lib/registerForm";
+import { useAuthProviders } from "../lib/oauth";
 import { ROLE_DESCRIPTIONS, ROLE_LABELS } from "../lib/roles";
 import { PasswordField, registerErrors } from "./Register";
 
@@ -182,9 +184,35 @@ function AcceptAsUser({
   );
 }
 
+/**
+ * The provider buttons of the invitation page: the token stays in this component's memory and is
+ * sent only in the start request's body (ADR-0104).
+ */
+function InviteProviders({ token }: { token: string }) {
+  const providers = useAuthProviders()?.providers ?? [];
+  if (providers.length === 0) return null;
+  return (
+    <>
+      <ProviderButtons providers={providers} verb="Join with" inviteToken={token} />
+      <OrDivider />
+    </>
+  );
+}
+
 /** Joining without a session: a new account, or an existing account with its password (T-12). */
 function RegisterInvited({ token, preview }: { token: string; preview: InvitationPreview }) {
   const [existing, setExisting] = useState(false);
+  const providers = useAuthProviders();
+  if (providers?.passwordLoginEnabled === false) {
+    // Password accounts are off (ADR-0104): the providers are the only way in.
+    return (
+      <AuthScreen>
+        <AuthHeading>Join {preview.organizationName}</AuthHeading>
+        <Offer preview={preview} />
+        <ProviderButtons providers={providers.providers} verb="Join with" inviteToken={token} />
+      </AuthScreen>
+    );
+  }
   return existing ? (
     <ExistingAccount token={token} preview={preview} onNewAccount={() => setExisting(false)} />
   ) : (
@@ -264,6 +292,7 @@ function NewAccount({
     >
       <AuthHeading>Join {preview.organizationName}</AuthHeading>
       <Offer preview={preview} />
+      <InviteProviders token={token} />
       <form onSubmit={onSubmit} noValidate className="flex flex-col gap-[18px]">
         {(general || hasErrors) && <Alert>{general ?? "Check the highlighted fields."}</Alert>}
         <Field label="Email" error={errors.email}>
@@ -379,6 +408,7 @@ function ExistingAccount({
       <p className="text-muted-foreground">
         Sign in with your account to join; your other organizations stay.
       </p>
+      <InviteProviders token={token} />
       <form onSubmit={onSubmit} className="flex flex-col gap-[18px]">
         {error && <Alert>{error}</Alert>}
         <Field label="Email">
