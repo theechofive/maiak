@@ -25,6 +25,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/projects"
 	"github.com/theechofive/maiak/backend/internal/queries"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
+	"github.com/theechofive/maiak/backend/internal/statuspages"
 )
 
 // Set at build time with -ldflags "-X main.version=... -X main.commit=...".
@@ -95,10 +96,11 @@ func run() error {
 		Queries:  queries.New(pool, nil),
 		Slack:    notify.NewService(pool, keys, slack, cfg.PublicURL),
 		Plans:    plans.NewService(pool), Projects: projects.NewService(pool),
-		Admin:   adminSvc,
-		Logger:  log,
-		Metrics: metrics.NewHTTP(reg),
-		Pings:   api.NewPingMetrics(reg),
+		StatusPages: statuspages.NewService(pool, statuspages.Options{Logger: log}),
+		Admin:       adminSvc,
+		Logger:      log,
+		Metrics:     metrics.NewHTTP(reg),
+		Pings:       api.NewPingMetrics(reg),
 	})
 	if err != nil {
 		return err

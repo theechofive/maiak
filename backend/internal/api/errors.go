@@ -26,6 +26,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/projects"
 	"github.com/theechofive/maiak/backend/internal/queries"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
+	"github.com/theechofive/maiak/backend/internal/statuspages"
 )
 
 // Problem types (RFC 9457 "type" members).
@@ -118,6 +119,9 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 		p.Detail = "Your role in this project is viewer: you can read its monitors but not change them."
 	case errors.Is(err, projects.ErrSlugTaken):
 		p.Type, p.Title, p.Status = problemSlugTaken, "This slug is already used by another project", http.StatusConflict
+	case errors.Is(err, statuspages.ErrSlugTaken):
+		p.Type, p.Title, p.Status = problemSlugTaken, "This address is already used by another status page", http.StatusConflict
+		p.Detail = "Status page addresses are shared by every organization on this Maiak; choose another slug."
 	case errors.Is(err, projects.ErrNotEmpty):
 		p.Type, p.Title, p.Status = problemProjectNotEmpty, "The project is not empty", http.StatusConflict
 		p.Detail = "Move or delete its monitors and channels first."
@@ -189,7 +193,8 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 		p.Type, p.Title, p.Status = problemUnavailable, "Monitoring location unavailable, try again later", http.StatusServiceUnavailable
 	case errors.Is(err, errNotFound), errors.Is(err, routers.ErrPathNotFound), errors.Is(err, monitors.ErrNotFound), errors.Is(err, queries.ErrNotFound), errors.Is(err, admin.ErrNotFound),
 		errors.Is(err, notify.ErrChannelNotFound), errors.Is(err, auth.ErrMemberNotFound), errors.Is(err, auth.ErrInvitationNotFound),
-		errors.Is(err, auth.ErrOrganizationNotFound), errors.Is(err, projects.ErrNotFound), errors.Is(err, projects.ErrMemberNotFound):
+		errors.Is(err, auth.ErrOrganizationNotFound), errors.Is(err, projects.ErrNotFound), errors.Is(err, projects.ErrMemberNotFound),
+		errors.Is(err, statuspages.ErrNotFound):
 		p.Type, p.Title, p.Status = problemNotFound, "Not found", http.StatusNotFound
 	case errors.Is(err, errMethodNotAllowed), errors.Is(err, routers.ErrMethodNotAllowed):
 		p.Type, p.Title, p.Status = problemMethodNotAllowed, "Method not allowed", http.StatusMethodNotAllowed

@@ -31,6 +31,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/platform/metrics"
 	"github.com/theechofive/maiak/backend/internal/projects"
 	"github.com/theechofive/maiak/backend/internal/queries"
+	"github.com/theechofive/maiak/backend/internal/statuspages"
 )
 
 // SessionCookie is the name of the session cookie.
@@ -66,6 +67,8 @@ type Deps struct {
 	Slack    *notify.Service
 	Plans    *plans.Service
 	Projects *projects.Service
+	// StatusPages configures the public status page (ADR-0103).
+	StatusPages *statuspages.Service
 	// Admin serves /api/v1/admin (P-04); nil answers those operations with 500.
 	Admin   *admin.Service
 	Logger  *slog.Logger
@@ -84,6 +87,7 @@ type server struct {
 	slack    *notify.Service
 	plans    *plans.Service
 	projects *projects.Service
+	pages    *statuspages.Service
 	admin    *admin.Service
 	log      *slog.Logger
 	// slackTests limits Slack test messages per tenant (per api replica, like the login limit).
@@ -110,7 +114,7 @@ func NewHandler(cfg Config, deps Deps) (http.Handler, error) {
 	if pings == nil {
 		pings = NewPingMetrics(prometheus.NewRegistry())
 	}
-	s := &server{cfg: cfg, auth: deps.Auth, monitors: deps.Monitors, queries: deps.Queries, slack: deps.Slack, plans: deps.Plans, projects: deps.Projects, admin: deps.Admin, log: deps.Logger,
+	s := &server{cfg: cfg, auth: deps.Auth, monitors: deps.Monitors, queries: deps.Queries, slack: deps.Slack, plans: deps.Plans, projects: deps.Projects, pages: deps.StatusPages, admin: deps.Admin, log: deps.Logger,
 		slackTests: auth.NewLimiter(1, slackTestInterval, 10_000, clk),
 		pingLimits: newPingLimits(clk),
 		pings:      pings}

@@ -85,9 +85,20 @@ var roleCalls = map[string]struct {
 	min                authz.Role
 	method, path, body string
 }{
-	"listOrganizations":        {authz.Viewer, http.MethodGet, "/api/v1/auth/organizations", ""},
-	"switchOrganization":       {authz.Viewer, http.MethodPost, "/api/v1/auth/switch-organization", `{"tenantId":"0192b9c4-7c5e-7000-8000-0000000000ff"}`},
-	"getMe":                    {authz.Viewer, http.MethodGet, "/api/v1/auth/me", ""},
+	"listOrganizations":  {authz.Viewer, http.MethodGet, "/api/v1/auth/organizations", ""},
+	"switchOrganization": {authz.Viewer, http.MethodPost, "/api/v1/auth/switch-organization", `{"tenantId":"0192b9c4-7c5e-7000-8000-0000000000ff"}`},
+	"getMe":              {authz.Viewer, http.MethodGet, "/api/v1/auth/me", ""},
+	// Status page (ADR-0103): settings readable by everyone, changes for admins and owners.
+	"listStatusPages":          {authz.Viewer, http.MethodGet, "/api/v1/status-pages", ""},
+	"createStatusPage":         {authz.Admin, http.MethodPost, "/api/v1/status-pages", `{"slug":"role-matrix","title":"Role matrix"}`},
+	"getStatusPage":            {authz.Viewer, http.MethodGet, "/api/v1/status-pages/{id}", ""},
+	"updateStatusPage":         {authz.Admin, http.MethodPatch, "/api/v1/status-pages/{id}", `{"title":"x"}`},
+	"deleteStatusPage":         {authz.Admin, http.MethodDelete, "/api/v1/status-pages/{id}", ""},
+	"setStatusPagePassword":    {authz.Admin, http.MethodPut, "/api/v1/status-pages/{id}/password", `{"password":"twelve chars long"}`},
+	"clearStatusPagePassword":  {authz.Admin, http.MethodDelete, "/api/v1/status-pages/{id}/password", ""},
+	"listStatusPageComponents": {authz.Admin, http.MethodGet, "/api/v1/status-pages/{id}/components", ""},
+	"putStatusPageComponents":  {authz.Admin, http.MethodPut, "/api/v1/status-pages/{id}/components", `{"items":[]}`},
+	"previewStatusPage":        {authz.Admin, http.MethodGet, "/api/v1/status-pages/{id}/preview", ""},
 	"listMonitors":             {authz.Viewer, http.MethodGet, "/api/v1/monitors", ""},
 	"createMonitor":            {authz.Member, http.MethodPost, "/api/v1/monitors", `{"name":"role matrix","url":"https://example.com/role"}`},
 	"getMonitor":               {authz.Viewer, http.MethodGet, "/api/v1/monitors/{id}", ""},

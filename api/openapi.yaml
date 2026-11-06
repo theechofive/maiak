@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Maiak API
-  version: 0.7.0
+  version: 0.8.0
   description: |
     REST API of Maiak, the multi-tenant uptime-monitoring service. This file is the source of
     truth: the Go server and the TypeScript client are generated from it (ADR-0008).
@@ -22,8 +22,8 @@ info:
 
     Roles (ADR-0102): every operation that needs a session has a minimum role of the session's
     membership in its organization (tenant). `viewer` reads; `member` also creates, edits,
-    pauses and deletes monitors; `admin` also manages notification channels, members and
-    invitations; `owner` also deletes the organization and grants or revokes `owner`. A role below
+    pauses and deletes monitors; `admin` also manages notification channels, members,
+    invitations, projects and the status page; `owner` also deletes the organization and grants or revokes `owner`. A role below
     the minimum gets 403 `urn:maiak:problem:forbidden`. A role change applies on the next request.
 
     Projects (ADR-0102, T-02): monitors (heartbeats included) and notification channels belong to
@@ -59,6 +59,11 @@ tags:
     description: The public ping endpoint of heartbeat monitors
   - name: channels
     description: Notification channels (Slack Incoming Webhooks) and their test message
+  - name: status-page
+    description: |
+      The organization's public status page (ADR-0103): configuration, components, password and
+      a preview. Owners and admins change it; every role reads the page settings and its link.
+      The public page itself is served by the separate statuspage process under `/status/<slug>`.
   - name: plan
     description: The tenant's plan, its limits and the current usage
   - name: admin
@@ -1521,6 +1526,305 @@ paths:
           $ref: "#/components/responses/Conflict"
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/status-pages:
+    get:
+      operationId: listStatusPages
+      summary: Status pages of the organization
+      description: |
+        Every role may read the organization's status pages (ADR-0103: members see the public
+        link). The password itself is never returned, only `passwordProtected`.
+      tags: [status-page]
+      responses:
+        "200":
+          description: The status pages
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusPageList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createStatusPage
+      summary: Create the status page
+      description: |
+        Admin or owner. The page starts unpublished and without components. `slug` is global
+        (shared by every organization) and public; a slug in use is 409
+        `urn:maiak:problem:slug-taken`, a reserved word is 422. The plan allows one page per
+        organization: 409 `urn:maiak:problem:plan-limit-reached` (`limit` is `statusPages`).
+        Audited as `status_page.created`.
+      tags: [status-page]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StatusPageCreate"
+      responses:
+        "201":
+          description: The created page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/status-pages/{statusPageId}:
+    parameters:
+      - $ref: "#/components/parameters/StatusPageId"
+    get:
+      operationId: getStatusPage
+      summary: One status page
+      tags: [status-page]
+      responses:
+        "200":
+          description: The page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+    patch:
+      operationId: updateStatusPage
+      summary: Change, publish or unpublish the status page
+      description: |
+        Admin or owner. Only the given fields change; an empty `logoUrl` or `accentColor` removes
+        it. `published` publishes or unpublishes the page: the public view is rebuilt in the same
+        request and served within about 15 seconds. Audited as `status_page.updated` (field names
+        only), `status_page.published` and `status_page.unpublished`.
+      tags: [status-page]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StatusPageUpdate"
+      responses:
+        "200":
+          description: The page after the change
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteStatusPage
+      summary: Delete the status page
+      description: Admin or owner. Soft delete; the public page answers 404 at once and the slug becomes free. Audited as `status_page.deleted`.
+      tags: [status-page]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "204":
+          description: Deleted
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/status-pages/{statusPageId}/password:
+    parameters:
+      - $ref: "#/components/parameters/StatusPageId"
+    put:
+      operationId: setStatusPagePassword
+      summary: Protect the status page with a password
+      description: |
+        Admin or owner. Write-only: the password (at least 12 characters) is stored as an argon2id
+        hash and never returned. A protected page serves no JSON, RSS feed or badge, and visitors
+        unlock it once per browser for 12 hours. Changing the password signs every visitor out.
+        Audited as `status_page.updated` without the value.
+      tags: [status-page]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StatusPagePasswordPut"
+      responses:
+        "204":
+          description: Stored
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: clearStatusPagePassword
+      summary: Remove the password of the status page
+      description: Admin or owner. The page becomes public to anyone with the link. Audited as `status_page.updated`.
+      tags: [status-page]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "204":
+          description: Removed
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/status-pages/{statusPageId}/components:
+    parameters:
+      - $ref: "#/components/parameters/StatusPageId"
+    get:
+      operationId: listStatusPageComponents
+      summary: Components of the status page
+      description: Admin or owner (the list names monitors of every project). In page order.
+      tags: [status-page]
+      responses:
+        "200":
+          description: The components
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusPageComponentList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+    put:
+      operationId: putStatusPageComponents
+      summary: Replace the components of the status page
+      description: |
+        Admin or owner. The list is the new content and order of the page: add, rename, regroup,
+        reorder and remove components in one call (at most 50). Each names a monitor or heartbeat
+        of any project of the organization (422 on `items.N.monitorId` when it does not exist or
+        is used twice) and its public name; consecutive components with the same `groupName` are
+        shown together. Only the public names, groups, states and up/down history are published,
+        never monitor names, URLs or projects. Audited as `status_page.updated`.
+      tags: [status-page]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StatusPageComponentsPut"
+      responses:
+        "200":
+          description: The components after the change
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusPageComponentList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/status-pages/{statusPageId}/preview:
+    parameters:
+      - $ref: "#/components/parameters/StatusPageId"
+    get:
+      operationId: previewStatusPage
+      summary: Preview the public view
+      description: |
+        Admin or owner. The public projection exactly as `/status/{slug}.json` would serve it now,
+        built live and not stored, also for an unpublished page.
+      tags: [status-page]
+      responses:
+        "200":
+          description: The public view
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusPageSnapshot"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/admin/stats:
     get:
       operationId: adminGetStats
@@ -1845,6 +2149,14 @@ components:
         minimum: 0
         maximum: 1000000
         default: 0
+    StatusPageId:
+      name: statusPageId
+      in: path
+      required: true
+      description: Status page id; a value that is not a UUID is answered with 400
+      schema:
+        type: string
+        format: uuid
     CsrfToken:
       name: X-CSRF-Token
       in: header
@@ -2691,7 +3003,7 @@ components:
     ResourceCounts:
       type: object
       additionalProperties: false
-      required: [monitors, heartbeats, channels, members, projects]
+      required: [monitors, heartbeats, channels, members, projects, statusPages]
       properties:
         monitors:
           type: integer
@@ -2713,6 +3025,10 @@ components:
           type: integer
           minimum: 0
           description: Projects (deleted projects do not count); the Default project counts
+        statusPages:
+          type: integer
+          minimum: 0
+          description: Status pages (deleted pages do not count)
     TenantStatus:
       type: string
       description: "`suspended`: the tenant's users cannot log in and nothing of it is checked. A deleted tenant is also `suspended` and has `deletedAt`."
@@ -3164,6 +3480,286 @@ components:
       properties:
         role:
           $ref: "#/components/schemas/ProjectRole"
+    StatusPage:
+      type: object
+      additionalProperties: false
+      required: [id, slug, title, description, logoUrl, accentColor, published, passwordProtected, publicUrl, componentCount, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+          example: acme
+        title:
+          type: string
+          example: Acme status
+        description:
+          type: string
+        logoUrl:
+          type: string
+          nullable: true
+          description: https URL of the logo, shown with an img element; never fetched by Maiak
+        accentColor:
+          type: string
+          nullable: true
+          pattern: "^#[0-9a-f]{6}$"
+        published:
+          type: boolean
+        passwordProtected:
+          type: boolean
+        publicUrl:
+          type: string
+          description: Where visitors open the page (`<public URL>/status/<slug>`); answers 404 while unpublished
+          example: https://maiak.klr-ops.net/status/acme
+        componentCount:
+          type: integer
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    StatusPageList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/StatusPage"
+    StatusPageCreate:
+      type: object
+      additionalProperties: false
+      required: [slug, title]
+      properties:
+        slug:
+          type: string
+          description: Lowercase letters, digits and hyphens (3-63), unique across Maiak; reserved words such as `api`, `admin` or `status` are refused
+          pattern: "^[a-z0-9][a-z0-9-]{2,62}$"
+        title:
+          type: string
+          minLength: 1
+          maxLength: 80
+        description:
+          type: string
+          maxLength: 500
+        logoUrl:
+          type: string
+          maxLength: 500
+          description: https URL of an image; empty for none
+        accentColor:
+          type: string
+          maxLength: 7
+          description: "#rrggbb; empty for none. The status colours are fixed and never take the accent"
+    StatusPageUpdate:
+      type: object
+      additionalProperties: false
+      description: Only the given fields change.
+      properties:
+        slug:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9-]{2,62}$"
+        title:
+          type: string
+          minLength: 1
+          maxLength: 80
+        description:
+          type: string
+          maxLength: 500
+        logoUrl:
+          type: string
+          maxLength: 500
+          description: Empty removes the logo
+        accentColor:
+          type: string
+          maxLength: 7
+          description: Empty removes the accent colour
+        published:
+          type: boolean
+    StatusPagePasswordPut:
+      type: object
+      additionalProperties: false
+      required: [password]
+      properties:
+        password:
+          type: string
+          minLength: 12
+          maxLength: 128
+          format: password
+    StatusPageComponent:
+      type: object
+      additionalProperties: false
+      required: [monitorId, monitorName, monitorType, projectId, publicName, groupName, position]
+      properties:
+        monitorId:
+          type: string
+          format: uuid
+        monitorName:
+          type: string
+          description: The internal name of the monitor (never published)
+        monitorType:
+          $ref: "#/components/schemas/MonitorType"
+        projectId:
+          type: string
+          format: uuid
+          nullable: true
+        publicName:
+          type: string
+        groupName:
+          type: string
+          nullable: true
+        position:
+          type: integer
+          minimum: 0
+    StatusPageComponentList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/StatusPageComponent"
+    StatusPageComponentInput:
+      type: object
+      additionalProperties: false
+      required: [monitorId, publicName]
+      properties:
+        monitorId:
+          type: string
+          format: uuid
+        publicName:
+          type: string
+          minLength: 1
+          maxLength: 60
+        groupName:
+          type: string
+          maxLength: 60
+          description: Optional group; empty for none
+    StatusPageComponentsPut:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: "#/components/schemas/StatusPageComponentInput"
+    PublicStatus:
+      type: string
+      description: "`no_data`: paused or never checked; it does not count towards the overall state"
+      enum: [operational, degraded, outage, no_data]
+    PublicOverallStatus:
+      type: string
+      enum: [operational, degraded, partial_outage, major_outage, no_data]
+    StatusPageSnapshot:
+      type: object
+      additionalProperties: false
+      description: The public view of a page (ADR-0103), the same document as `/status/{slug}.json`
+      required: [version, page, status, generatedAt, components, activeIncidents, pastIncidents]
+      properties:
+        version:
+          type: integer
+        page:
+          type: object
+          additionalProperties: false
+          required: [slug, title, description, logoUrl, accentColor]
+          properties:
+            slug:
+              type: string
+            title:
+              type: string
+            description:
+              type: string
+            logoUrl:
+              type: string
+              nullable: true
+            accentColor:
+              type: string
+              nullable: true
+        status:
+          $ref: "#/components/schemas/PublicOverallStatus"
+        generatedAt:
+          type: string
+          format: date-time
+        components:
+          type: array
+          items:
+            $ref: "#/components/schemas/PublicComponent"
+        activeIncidents:
+          type: array
+          items:
+            $ref: "#/components/schemas/PublicIncident"
+        pastIncidents:
+          type: array
+          items:
+            $ref: "#/components/schemas/PublicIncident"
+    PublicComponent:
+      type: object
+      additionalProperties: false
+      required: [name, group, status, uptime, days]
+      properties:
+        name:
+          type: string
+        group:
+          type: string
+          nullable: true
+        status:
+          $ref: "#/components/schemas/PublicStatus"
+        uptime:
+          type: number
+          format: double
+          nullable: true
+          description: Uptime of the last 90 days in percent
+        days:
+          type: array
+          description: 90 UTC days, oldest first
+          items:
+            $ref: "#/components/schemas/PublicDay"
+    PublicDay:
+      type: object
+      additionalProperties: false
+      required: [date, status, uptime]
+      properties:
+        date:
+          type: string
+          format: date
+        status:
+          $ref: "#/components/schemas/PublicStatus"
+        uptime:
+          type: number
+          format: double
+          nullable: true
+    PublicIncident:
+      type: object
+      additionalProperties: false
+      required: [id, title, components, startedAt, resolvedAt, durationSeconds]
+      properties:
+        id:
+          type: string
+          description: Opaque reference
+        title:
+          type: string
+          example: API is unavailable
+        components:
+          type: array
+          items:
+            type: string
+        startedAt:
+          type: string
+          format: date-time
+        resolvedAt:
+          type: string
+          format: date-time
+          nullable: true
+        durationSeconds:
+          type: integer
+          format: int64
+          minimum: 0
     FieldError:
       type: object
       additionalProperties: false
@@ -3204,7 +3800,7 @@ components:
             $ref: "#/components/schemas/FieldError"
         limit:
           type: string
-          enum: [monitors, heartbeats, channels, members]
+          enum: [monitors, heartbeats, channels, members, projects, statusPages]
           description: Which plan limit was reached (only with `urn:maiak:problem:plan-limit-reached`)
         max:
           type: integer

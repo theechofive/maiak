@@ -1,6 +1,6 @@
 // Command jobs delivers the notification outbox to Slack and runs the singleton housekeeping
-// tasks: partitions, hourly rollups, retention, expired-session purge and the heartbeat
-// evaluation (internal/jobs).
+// tasks: partitions, hourly rollups, retention, expired-session purge, the heartbeat evaluation
+// and the status page snapshots (internal/jobs).
 package main
 
 import (
@@ -24,6 +24,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
 	"github.com/theechofive/maiak/backend/internal/platform/metrics"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
+	"github.com/theechofive/maiak/backend/internal/statuspages"
 )
 
 var (
@@ -68,7 +69,8 @@ func run() error {
 	})
 	sched := scheduler.New()
 	mon := monitors.NewService(pool, sched, incidents.NewService(sched))
-	housekeeper := jobs.NewHousekeeper(pool, jobs.DefaultTasks(m, log, mon), m, log, clock.System{})
+	tasks := append(jobs.DefaultTasks(m, log, mon), jobs.StatusPageTask(statuspages.NewService(pool, statuspages.Options{Logger: log}), m))
+	housekeeper := jobs.NewHousekeeper(pool, tasks, m, log, clock.System{})
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {

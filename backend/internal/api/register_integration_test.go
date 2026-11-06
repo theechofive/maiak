@@ -26,6 +26,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/projects"
 	"github.com/theechofive/maiak/backend/internal/queries"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
+	"github.com/theechofive/maiak/backend/internal/statuspages"
 	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
 )
 
@@ -67,6 +68,7 @@ func newRegistrationServerWithSlack(t *testing.T, env *pgtest.Env, opts auth.Opt
 		api.Deps{
 			Auth: svc, Monitors: monitors.NewService(pool, sched, incidents.NewService(sched)), Queries: queries.New(pool, nil),
 			Slack: notify.NewService(pool, keys, sender, "https://maiak.example.com"), Plans: plans.NewService(pool), Projects: projects.NewService(pool), Logger: log,
+			StatusPages: statuspages.NewService(pool, statuspages.Options{HashParams: &testHashParams}),
 		})
 	if err != nil {
 		t.Fatal(err)
@@ -75,6 +77,9 @@ func newRegistrationServerWithSlack(t *testing.T, env *pgtest.Env, opts auth.Opt
 	t.Cleanup(srv.Close)
 	return &client{t: t, srv: srv}
 }
+
+// testHashParams keep argon2id cheap in tests.
+var testHashParams = crypto.Argon2Params{Memory: 64, Iterations: 1, Parallelism: 1, SaltLength: 16, KeyLength: 32}
 
 func registerBody(email, password string) string {
 	b, _ := json.Marshal(map[string]string{"email": email, "password": password})

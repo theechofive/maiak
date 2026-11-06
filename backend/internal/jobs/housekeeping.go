@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/theechofive/maiak/backend/internal/monitors"
+	"github.com/theechofive/maiak/backend/internal/statuspages"
 
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/db"
@@ -38,7 +39,12 @@ const (
 	lockPurgeSessions    int64 = 0x6d6a_0004
 	lockHeartbeats       int64 = 0x6d6a_0005
 	lockReminders        int64 = 0x6d6a_0006
+	lockStatusPages      int64 = 0x6d6a_0007
 )
+
+// StatusPageEvery is how often the snapshots of published status pages are rebuilt (ADR-0103);
+// the api also rebuilds a page's snapshot right after a configuration change.
+const StatusPageEvery = 30 * time.Second
 
 // ReminderEvery is how often reminders of open incidents are queued (ADR-0100); a reminder is
 // sent at most this long after it is due.
@@ -74,6 +80,18 @@ func DefaultTasks(m *Metrics, log *slog.Logger, mon *monitors.Service) []Task {
 		{Name: "purge_expired_sessions", Every: time.Hour, LockKey: lockPurgeSessions, Run: scalar(`SELECT purge_expired_sessions()`)},
 		{Name: "enqueue_incident_reminders", Every: ReminderEvery, LockKey: lockReminders, Run: enqueueReminders},
 	}
+}
+
+// StatusPageTask rebuilds the snapshots of every published status page (ADR-0103) through pages,
+// a statuspages service on the jobs pool. Each page has its own tenant transaction while the task's
+// advisory lock keeps it a singleton.
+func StatusPageTask(pages *statuspages.Service, m *Metrics) Task {
+	return Task{Name: "rebuild_status_pages", Every: StatusPageEvery, LockKey: lockStatusPages,
+		RunOutsideTx: func(ctx context.Context, _ *db.Pool, _ time.Time) (int, error) {
+			n, err := pages.RebuildAll(ctx)
+			m.statusSnapshots.Add(float64(n))
+			return n, err
+		}}
 }
 
 // evaluateHeartbeats applies pings and missed deadlines in tenant transactions of their own while

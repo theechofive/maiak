@@ -911,6 +911,152 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/status-pages": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Status pages of the organization
+     * @description Every role may read the organization's status pages (ADR-0103: members see the public
+     *     link). The password itself is never returned, only `passwordProtected`.
+     */
+    get: operations["listStatusPages"];
+    put?: never;
+    /**
+     * Create the status page
+     * @description Admin or owner. The page starts unpublished and without components. `slug` is global
+     *     (shared by every organization) and public; a slug in use is 409
+     *     `urn:maiak:problem:slug-taken`, a reserved word is 422. The plan allows one page per
+     *     organization: 409 `urn:maiak:problem:plan-limit-reached` (`limit` is `statusPages`).
+     *     Audited as `status_page.created`.
+     */
+    post: operations["createStatusPage"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/status-pages/{statusPageId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Status page id; a value that is not a UUID is answered with 400 */
+        statusPageId: components["parameters"]["StatusPageId"];
+      };
+      cookie?: never;
+    };
+    /** One status page */
+    get: operations["getStatusPage"];
+    put?: never;
+    post?: never;
+    /**
+     * Delete the status page
+     * @description Admin or owner. Soft delete; the public page answers 404 at once and the slug becomes free. Audited as `status_page.deleted`.
+     */
+    delete: operations["deleteStatusPage"];
+    options?: never;
+    head?: never;
+    /**
+     * Change, publish or unpublish the status page
+     * @description Admin or owner. Only the given fields change; an empty `logoUrl` or `accentColor` removes
+     *     it. `published` publishes or unpublishes the page: the public view is rebuilt in the same
+     *     request and served within about 15 seconds. Audited as `status_page.updated` (field names
+     *     only), `status_page.published` and `status_page.unpublished`.
+     */
+    patch: operations["updateStatusPage"];
+    trace?: never;
+  };
+  "/api/v1/status-pages/{statusPageId}/password": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Status page id; a value that is not a UUID is answered with 400 */
+        statusPageId: components["parameters"]["StatusPageId"];
+      };
+      cookie?: never;
+    };
+    get?: never;
+    /**
+     * Protect the status page with a password
+     * @description Admin or owner. Write-only: the password (at least 12 characters) is stored as an argon2id
+     *     hash and never returned. A protected page serves no JSON, RSS feed or badge, and visitors
+     *     unlock it once per browser for 12 hours. Changing the password signs every visitor out.
+     *     Audited as `status_page.updated` without the value.
+     */
+    put: operations["setStatusPagePassword"];
+    post?: never;
+    /**
+     * Remove the password of the status page
+     * @description Admin or owner. The page becomes public to anyone with the link. Audited as `status_page.updated`.
+     */
+    delete: operations["clearStatusPagePassword"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/status-pages/{statusPageId}/components": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Status page id; a value that is not a UUID is answered with 400 */
+        statusPageId: components["parameters"]["StatusPageId"];
+      };
+      cookie?: never;
+    };
+    /**
+     * Components of the status page
+     * @description Admin or owner (the list names monitors of every project). In page order.
+     */
+    get: operations["listStatusPageComponents"];
+    /**
+     * Replace the components of the status page
+     * @description Admin or owner. The list is the new content and order of the page: add, rename, regroup,
+     *     reorder and remove components in one call (at most 50). Each names a monitor or heartbeat
+     *     of any project of the organization (422 on `items.N.monitorId` when it does not exist or
+     *     is used twice) and its public name; consecutive components with the same `groupName` are
+     *     shown together. Only the public names, groups, states and up/down history are published,
+     *     never monitor names, URLs or projects. Audited as `status_page.updated`.
+     */
+    put: operations["putStatusPageComponents"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/status-pages/{statusPageId}/preview": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Status page id; a value that is not a UUID is answered with 400 */
+        statusPageId: components["parameters"]["StatusPageId"];
+      };
+      cookie?: never;
+    };
+    /**
+     * Preview the public view
+     * @description Admin or owner. The public projection exactly as `/status/{slug}.json` would serve it now,
+     *     built live and not stored, also for an unpublished page.
+     */
+    get: operations["previewStatusPage"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/admin/stats": {
     parameters: {
       query?: never;
@@ -1499,6 +1645,8 @@ export interface components {
       members: number;
       /** @description Projects (deleted projects do not count); the Default project counts */
       projects: number;
+      /** @description Status pages (deleted pages do not count) */
+      statusPages: number;
     };
     /**
      * @description `suspended`: the tenant's users cannot log in and nothing of it is checked. A deleted tenant is also `suspended` and has `deletedAt`.
@@ -1737,6 +1885,139 @@ export interface components {
     ProjectMemberPut: {
       role?: components["schemas"]["ProjectRole"];
     };
+    StatusPage: {
+      /** Format: uuid */
+      id: string;
+      /** @example acme */
+      slug: string;
+      /** @example Acme status */
+      title: string;
+      description: string;
+      /** @description https URL of the logo, shown with an img element; never fetched by Maiak */
+      logoUrl: string | null;
+      accentColor: string | null;
+      published: boolean;
+      passwordProtected: boolean;
+      /**
+       * @description Where visitors open the page (`<public URL>/status/<slug>`); answers 404 while unpublished
+       * @example https://maiak.klr-ops.net/status/acme
+       */
+      publicUrl: string;
+      componentCount: number;
+      /** Format: date-time */
+      createdAt: string;
+      /** Format: date-time */
+      updatedAt: string;
+    };
+    StatusPageList: {
+      items: components["schemas"]["StatusPage"][];
+    };
+    StatusPageCreate: {
+      /** @description Lowercase letters, digits and hyphens (3-63), unique across Maiak; reserved words such as `api`, `admin` or `status` are refused */
+      slug: string;
+      title: string;
+      description?: string;
+      /** @description https URL of an image; empty for none */
+      logoUrl?: string;
+      /** @description #rrggbb; empty for none. The status colours are fixed and never take the accent */
+      accentColor?: string;
+    };
+    /** @description Only the given fields change. */
+    StatusPageUpdate: {
+      slug?: string;
+      title?: string;
+      description?: string;
+      /** @description Empty removes the logo */
+      logoUrl?: string;
+      /** @description Empty removes the accent colour */
+      accentColor?: string;
+      published?: boolean;
+    };
+    StatusPagePasswordPut: {
+      /** Format: password */
+      password: string;
+    };
+    StatusPageComponent: {
+      /** Format: uuid */
+      monitorId: string;
+      /** @description The internal name of the monitor (never published) */
+      monitorName: string;
+      monitorType: components["schemas"]["MonitorType"];
+      /** Format: uuid */
+      projectId: string | null;
+      publicName: string;
+      groupName: string | null;
+      position: number;
+    };
+    StatusPageComponentList: {
+      items: components["schemas"]["StatusPageComponent"][];
+    };
+    StatusPageComponentInput: {
+      /** Format: uuid */
+      monitorId: string;
+      publicName: string;
+      /** @description Optional group; empty for none */
+      groupName?: string;
+    };
+    StatusPageComponentsPut: {
+      items: components["schemas"]["StatusPageComponentInput"][];
+    };
+    /**
+     * @description `no_data`: paused or never checked; it does not count towards the overall state
+     * @enum {string}
+     */
+    PublicStatus: "operational" | "degraded" | "outage" | "no_data";
+    /** @enum {string} */
+    PublicOverallStatus: "operational" | "degraded" | "partial_outage" | "major_outage" | "no_data";
+    /** @description The public view of a page (ADR-0103), the same document as `/status/{slug}.json` */
+    StatusPageSnapshot: {
+      version: number;
+      page: {
+        slug: string;
+        title: string;
+        description: string;
+        logoUrl: string | null;
+        accentColor: string | null;
+      };
+      status: components["schemas"]["PublicOverallStatus"];
+      /** Format: date-time */
+      generatedAt: string;
+      components: components["schemas"]["PublicComponent"][];
+      activeIncidents: components["schemas"]["PublicIncident"][];
+      pastIncidents: components["schemas"]["PublicIncident"][];
+    };
+    PublicComponent: {
+      name: string;
+      group: string | null;
+      status: components["schemas"]["PublicStatus"];
+      /**
+       * Format: double
+       * @description Uptime of the last 90 days in percent
+       */
+      uptime: number | null;
+      /** @description 90 UTC days, oldest first */
+      days: components["schemas"]["PublicDay"][];
+    };
+    PublicDay: {
+      /** Format: date */
+      date: string;
+      status: components["schemas"]["PublicStatus"];
+      /** Format: double */
+      uptime: number | null;
+    };
+    PublicIncident: {
+      /** @description Opaque reference */
+      id: string;
+      /** @example API is unavailable */
+      title: string;
+      components: string[];
+      /** Format: date-time */
+      startedAt: string;
+      /** Format: date-time */
+      resolvedAt: string | null;
+      /** Format: int64 */
+      durationSeconds: number;
+    };
     FieldError: {
       /**
        * @description Dotted path of the request body field
@@ -1764,7 +2045,7 @@ export interface components {
        * @description Which plan limit was reached (only with `urn:maiak:problem:plan-limit-reached`)
        * @enum {string}
        */
-      limit?: "monitors" | "heartbeats" | "channels" | "members";
+      limit?: "monitors" | "heartbeats" | "channels" | "members" | "projects" | "statusPages";
       /** @description The value of that limit for the tenant (only with `urn:maiak:problem:plan-limit-reached`) */
       max?: number;
     };
@@ -1897,6 +2178,8 @@ export interface components {
     Limit: number;
     /** @description Number of items to skip */
     Offset: number;
+    /** @description Status page id; a value that is not a UUID is answered with 400 */
+    StatusPageId: string;
     /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
     CsrfToken: string;
   };
@@ -3271,6 +3554,309 @@ export interface operations {
       401: components["responses"]["Unauthorized"];
       403: components["responses"]["Forbidden"];
       409: components["responses"]["Conflict"];
+      default: components["responses"]["Error"];
+    };
+  };
+  listStatusPages: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The status pages */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StatusPageList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      default: components["responses"]["Error"];
+    };
+  };
+  createStatusPage: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["StatusPageCreate"];
+      };
+    };
+    responses: {
+      /** @description The created page */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StatusPage"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      409: components["responses"]["Conflict"];
+      422: components["responses"]["UnprocessableEntity"];
+      default: components["responses"]["Error"];
+    };
+  };
+  getStatusPage: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Status page id; a value that is not a UUID is answered with 400 */
+        statusPageId: components["parameters"]["StatusPageId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The page */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StatusPage"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      default: components["responses"]["Error"];
+    };
+  };
+  deleteStatusPage: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description Status page id; a value that is not a UUID is answered with 400 */
+        statusPageId: components["parameters"]["StatusPageId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Deleted */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      default: components["responses"]["Error"];
+    };
+  };
+  updateStatusPage: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description Status page id; a value that is not a UUID is answered with 400 */
+        statusPageId: components["parameters"]["StatusPageId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["StatusPageUpdate"];
+      };
+    };
+    responses: {
+      /** @description The page after the change */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StatusPage"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      422: components["responses"]["UnprocessableEntity"];
+      default: components["responses"]["Error"];
+    };
+  };
+  setStatusPagePassword: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description Status page id; a value that is not a UUID is answered with 400 */
+        statusPageId: components["parameters"]["StatusPageId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["StatusPagePasswordPut"];
+      };
+    };
+    responses: {
+      /** @description Stored */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      422: components["responses"]["UnprocessableEntity"];
+      default: components["responses"]["Error"];
+    };
+  };
+  clearStatusPagePassword: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description Status page id; a value that is not a UUID is answered with 400 */
+        statusPageId: components["parameters"]["StatusPageId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Removed */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      default: components["responses"]["Error"];
+    };
+  };
+  listStatusPageComponents: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Status page id; a value that is not a UUID is answered with 400 */
+        statusPageId: components["parameters"]["StatusPageId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The components */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StatusPageComponentList"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      default: components["responses"]["Error"];
+    };
+  };
+  putStatusPageComponents: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description Status page id; a value that is not a UUID is answered with 400 */
+        statusPageId: components["parameters"]["StatusPageId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["StatusPageComponentsPut"];
+      };
+    };
+    responses: {
+      /** @description The components after the change */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StatusPageComponentList"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      422: components["responses"]["UnprocessableEntity"];
+      default: components["responses"]["Error"];
+    };
+  };
+  previewStatusPage: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Status page id; a value that is not a UUID is answered with 400 */
+        statusPageId: components["parameters"]["StatusPageId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The public view */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StatusPageSnapshot"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
       default: components["responses"]["Error"];
     };
   };

@@ -203,6 +203,19 @@ var operations = map[string]Role{
 	"putprojectmember":    Admin,
 	"removeprojectmember": Admin,
 
+	// The status page (ADR-0103): every role sees its settings and link; owners and admins
+	// configure and publish it. Components and the preview name monitors of every project.
+	"liststatuspages":          Viewer,
+	"getstatuspage":            Viewer,
+	"createstatuspage":         Admin,
+	"updatestatuspage":         Admin,
+	"deletestatuspage":         Admin,
+	"setstatuspagepassword":    Admin,
+	"clearstatuspagepassword":  Admin,
+	"liststatuspagecomponents": Admin,
+	"putstatuspagecomponents":  Admin,
+	"previewstatuspage":        Admin,
+
 	// The organization itself.
 	"deleteorganization": Owner,
 

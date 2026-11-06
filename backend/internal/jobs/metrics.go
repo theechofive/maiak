@@ -14,6 +14,8 @@ type Metrics struct {
 	partitionsKept *prometheus.CounterVec
 	// heartbeatsMissed counts missed heartbeat deadlines applied to the incident machine.
 	heartbeatsMissed prometheus.Counter
+	// statusSnapshots counts status page snapshots stored by the rebuild task (ADR-0103).
+	statusSnapshots prometheus.Counter
 }
 
 // NewMetrics registers the jobs metrics.
@@ -44,6 +46,9 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		heartbeatsMissed: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "maiak_jobs_heartbeats_missed_total", Help: "Missed heartbeat deadlines applied as failures (ADR-0094).",
 		}),
+		statusSnapshots: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "maiak_jobs_status_page_snapshots_total", Help: "Status page snapshots rebuilt and stored (ADR-0103).",
+		}),
 	}
 	for _, s := range []string{statusSent, "retry", statusFailed} {
 		m.deliveries.WithLabelValues(s)
@@ -51,6 +56,6 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 	for _, r := range []string{keptRollupsIncomplete, keptError} {
 		m.partitionsKept.WithLabelValues(r)
 	}
-	reg.MustRegister(m.deliveries, m.duration, m.pending, m.claimErrors, m.housekeeping, m.lastSuccess, m.partitionsKept, m.heartbeatsMissed)
+	reg.MustRegister(m.deliveries, m.duration, m.pending, m.claimErrors, m.housekeeping, m.lastSuccess, m.partitionsKept, m.heartbeatsMissed, m.statusSnapshots)
 	return m
 }
