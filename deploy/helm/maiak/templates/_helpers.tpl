@@ -61,6 +61,13 @@ app.kubernetes.io/managed-by: {{ .ctx.Release.Service }}
 {{- define "maiak.secret.crypto" -}}{{ include "maiak.fullname" . }}-crypto{{- end }}
 {{/* Cookie key of the status page renderer (ADR-0103). */}}
 {{- define "maiak.secret.statuspage" -}}{{ include "maiak.fullname" . }}-statuspage{{- end }}
+{{/* OAuth client credentials (ADR-0104). */}}
+{{- define "maiak.secret.oauth" -}}{{ include "maiak.fullname" . }}-oauth{{- end }}
+
+{{/* True when any OAuth provider is enabled. Arg: root context */}}
+{{- define "maiak.oauth.enabled" -}}
+{{- if or .Values.oauth.google.enabled .Values.oauth.github.enabled }}true{{ end }}
+{{- end }}
 
 {{/* True when the secrets bootstrap Job is needed (any secrets.*.source is generate). Arg: root context */}}
 {{- define "maiak.secrets.generate" -}}
@@ -141,6 +148,26 @@ keys (ADR-0016, L-042). Arg: root context
 {{- /* Only an explicit false turns registration off; a missing value keeps the app default (true). */}}
 - name: MAIAK_REGISTRATION_ENABLED
   value: {{ ternary "false" "true" (and (kindIs "bool" .Values.config.registrationEnabled) (not .Values.config.registrationEnabled)) | quote }}
+{{- $passwordOff := and (kindIs "bool" .Values.config.passwordLoginEnabled) (not .Values.config.passwordLoginEnabled) }}
+{{- if and $passwordOff (not (include "maiak.oauth.enabled" .)) }}
+{{- fail "config.passwordLoginEnabled=false needs oauth.google.enabled or oauth.github.enabled" }}
+{{- end }}
+- name: MAIAK_PASSWORD_LOGIN_ENABLED
+  value: {{ ternary "false" "true" $passwordOff | quote }}
+{{- range $p := list "google" "github" }}
+{{- if (index $.Values.oauth $p).enabled }}
+- name: MAIAK_OAUTH_{{ upper $p }}_CLIENT_ID
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "maiak.secret.oauth" $ }}
+      key: {{ $p }}_client_id
+- name: MAIAK_OAUTH_{{ upper $p }}_CLIENT_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "maiak.secret.oauth" $ }}
+      key: {{ $p }}_client_secret
+{{- end }}
+{{- end }}
 {{- end }}
 
 {{/* statuspage-only env (config.Statuspage). Arg: root context */}}

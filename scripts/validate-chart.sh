@@ -30,6 +30,8 @@ combos=(
   "platform-statuspage|-f $platform --set statuspage.enabled=true"
   "platform-statuspage-external|-f $platform --set statuspage.enabled=true --set secrets.statuspage.source=externalSecret"
   "defaults-no-statuspage|--set statuspage.enabled=false"
+  "platform-oauth|-f $platform --set oauth.google.enabled=true --set oauth.github.enabled=true"
+  "platform-oauth-only|-f $platform --set oauth.google.enabled=true --set config.passwordLoginEnabled=false"
   "platform-all-optional|-f $platform --set statuspage.enabled=true --set serviceMonitor.enabled=true --set networkPolicy.enabled=true --set api.pdb.enabled=true --set topologySpread.enabled=true --set config.blockedCIDRs[0]=100.64.0.0/10 --set config.blockedCIDRs[1]=198.18.0.0/15 --set worker.location=home-test"
 )
 
@@ -80,6 +82,9 @@ expect_fail "externalSecret without remote key" --set secrets.crypto.source=exte
 expect_fail "statuspage with another role's database URL" --set statuspage.databaseUrlKey=api_url
 expect_fail "statuspage cookie key externalSecret without remote key" --set secrets.statuspage.source=externalSecret --set secrets.statuspage.remoteKey=
 expect_fail "status path moved" --set httpRoute.statusPathPrefix=/pages
+expect_fail "password login off without an OAuth provider" --set config.passwordLoginEnabled=false
+expect_fail "passwordLoginEnabled not a boolean" --set-string config.passwordLoginEnabled=no
+expect_fail "oauth without remote key" --set oauth.google.enabled=true --set secrets.oauth.remoteKey=
 
 echo "== invariants on rendered manifests"
 python3 scripts/check-rendered-chart.py "${renders[@]}"

@@ -200,6 +200,161 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/auth/providers": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Sign-in methods offered on the login page
+     * @description Public, needs no session (ADR-0104). The OAuth providers that have credentials configured
+     *     (a provider without them is not listed and its start answers 404), whether the password
+     *     form is offered to everyone (`MAIAK_PASSWORD_LOGIN_ENABLED`; when false only the platform
+     *     admin signs in with a password, on `/login?admin`) and whether self-service registration
+     *     is open.
+     */
+    get: operations["getAuthProviders"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/auth/oauth/{provider}/start": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The OAuth provider */
+        provider: components["parameters"]["OAuthProviderId"];
+      };
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Start an OAuth sign-in or link
+     * @description Starts the authorization code flow with PKCE (S256) and returns the provider's
+     *     authorization URL; the web app navigates there. `state`, `nonce` and the PKCE verifier are
+     *     kept in a short-lived (10 minutes) HMAC-signed HttpOnly cookie bound to this browser,
+     *     scoped to `/api/v1/auth/oauth/`. The redirect URI is always
+     *     `MAIAK_PUBLIC_URL/api/v1/auth/oauth/{provider}/callback`.
+     *
+     *     `intent: login` (the default) needs no session. With `inviteToken` the sign-in joins the
+     *     inviting organization; the token travels in this body only, never in a URL (an unknown,
+     *     expired, used or revoked token is 404 `urn:maiak:problem:invitation-invalid` and counts
+     *     against the per-client-IP invitation limit).
+     *
+     *     `intent: link` adds the provider to the signed-in user's account: it needs the session
+     *     cookie and the `X-CSRF-Token` header (401 without a session, 403 with a wrong token), and
+     *     the callback links the identity to that user only.
+     *
+     *     404 when the provider is not configured. Starts count against the per-client-IP login
+     *     limit only when the callback fails (429 with Retry-After once it is exhausted).
+     */
+    post: operations["startOAuth"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/auth/oauth/{provider}/callback": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The OAuth provider */
+        provider: components["parameters"]["OAuthProviderId"];
+      };
+      cookie?: never;
+    };
+    /**
+     * Finish an OAuth sign-in or link (provider redirect)
+     * @description The provider redirects the browser here. The `state` must match the signed cookie of
+     *     `startOAuth` (same browser, same provider, not older than 10 minutes); the code is
+     *     exchanged with the PKCE verifier. Never answers JSON: it always redirects (303) and clears
+     *     the state cookie.
+     *
+     *     Sign-in (`intent: login`): the user is found by the provider's stable id (Google `sub`,
+     *     GitHub numeric id), never by email. Google needs `email_verified`; GitHub uses the primary
+     *     verified address only. Without a linked user, an account is created only with a valid
+     *     invitation, a Google Workspace domain (`hd`) claimed by an organization, or open
+     *     registration; an email that already belongs to an account is never linked automatically
+     *     (`account_exists`: sign in with the password, then link). Success sets the session cookie
+     *     like a password login and redirects to `/`.
+     *
+     *     Link (`intent: link`): the identity is added to the signed-in user and the browser goes to
+     *     `/profile?linked=<provider>`; errors go to `/profile?error=<code>`.
+     *
+     *     Sign-in errors redirect to `/login?error=<code>`, with one of `cancelled`, `failed`,
+     *     `state_invalid`, `email_unverified`, `email_unusable`, `not_invited`, `account_exists`,
+     *     `invitation_invalid`, `already_member`, `plan_limit`, `suspended`, `rate_limited`; link
+     *     errors add `identity_in_use`, `already_linked` and `session_expired`. Provider error text
+     *     is never reflected. Every outcome is audited (`auth.oauth_login`, `auth.oauth_failed`,
+     *     `auth.identity_linked`). Failed callbacks count against the login's per-client-IP limit.
+     */
+    get: operations["oauthCallback"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/auth/identities": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Sign-in methods of the current user
+     * @description The OAuth identities linked to the logged-in user (provider, the email it reported at the
+     *     last sign-in, when it was linked and last used), whether the user has a password, and
+     *     whether password sign-in is enabled for the user. Any role.
+     */
+    get: operations["listIdentities"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/auth/identities/{provider}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The OAuth provider */
+        provider: components["parameters"]["OAuthProviderId"];
+      };
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /**
+     * Unlink an OAuth identity from the current user
+     * @description Removes the user's identity of that provider. Allowed only while another way to sign in
+     *     remains: a password (when password sign-in is enabled, or for the platform admin) or
+     *     another identity; otherwise 409 `urn:maiak:problem:last-login-method`. 404 when no
+     *     identity of that provider is linked. Audited as `auth.identity_unlinked`. Any role.
+     */
+    delete: operations["unlinkIdentity"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/monitors": {
     parameters: {
       query?: never;
@@ -912,6 +1067,67 @@ export interface paths {
     options?: never;
     head?: never;
     patch?: never;
+    trace?: never;
+  };
+  "/api/v1/organization/auth-domains": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Sign-in domains of the organization
+     * @description The Google Workspace domains the organization claimed (ADR-0104). A verified Google
+     *     account whose Workspace domain (`hd`) matches an enabled domain joins the organization
+     *     with `defaultRole` on its first sign-in. Owner only.
+     */
+    get: operations["listAuthDomains"];
+    put?: never;
+    /**
+     * Claim a sign-in domain
+     * @description Claims a Google Workspace domain for the organization. Proof of control: the owner's
+     *     linked Google account must have signed in last with that Workspace domain (`hd`),
+     *     otherwise 403 `urn:maiak:problem:domain-not-verified`. A domain belongs to one
+     *     organization of the installation only (409 `urn:maiak:problem:domain-taken`). At most 10
+     *     domains per organization (422). `defaultRole` defaults to `viewer`. Audited as
+     *     `org.auth_domain_changed`. Owner only.
+     */
+    post: operations["createAuthDomain"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/organization/auth-domains/{domainId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Sign-in domain id; a value that is not a UUID is answered with 400 */
+        domainId: components["parameters"]["AuthDomainId"];
+      };
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /**
+     * Release a sign-in domain
+     * @description Stops auto-join for the domain and frees it for other organizations. Members who already
+     *     joined stay. Audited as `org.auth_domain_changed`. Owner only.
+     */
+    delete: operations["deleteAuthDomain"];
+    options?: never;
+    head?: never;
+    /**
+     * Change a sign-in domain
+     * @description Changes the default role or turns auto-join off and on. The domain itself cannot change
+     *     (delete and claim again). Members who already joined keep their role. Audited as
+     *     `org.auth_domain_changed`. Owner only.
+     */
+    patch: operations["updateAuthDomain"];
     trace?: never;
   };
   "/api/v1/status-pages": {
@@ -2024,6 +2240,78 @@ export interface components {
       /** Format: int64 */
       durationSeconds: number;
     };
+    /** @enum {string} */
+    OAuthProvider: "google" | "github";
+    AuthProviders: {
+      /** @description Configured OAuth providers, in the order the login page shows them */
+      providers: components["schemas"]["AuthProvider"][];
+      /** @description Whether the password form is offered to everyone; when false only the platform admin uses it, on `/login?admin` */
+      passwordLoginEnabled: boolean;
+      /** @description Whether an OAuth sign-in or `POST /api/v1/auth/register` may create a new organization */
+      registrationEnabled: boolean;
+    };
+    AuthProvider: {
+      id: components["schemas"]["OAuthProvider"];
+      /** @example Google */
+      name: string;
+    };
+    /** @enum {string} */
+    OAuthIntent: "login" | "link";
+    OAuthStartRequest: {
+      intent?: components["schemas"]["OAuthIntent"];
+      /**
+       * Format: password
+       * @description The token of an invitation link (only with intent login); join that organization
+       */
+      inviteToken?: string;
+    };
+    OAuthStart: {
+      /** @description The provider's authorization URL; navigate the whole window there */
+      authorizationUrl: string;
+    };
+    Identity: {
+      provider: components["schemas"]["OAuthProvider"];
+      /** @description The verified email the provider reported at the last sign-in or link */
+      email: string;
+      /** Format: date-time */
+      createdAt: string;
+      /** Format: date-time */
+      lastLoginAt: string | null;
+    };
+    IdentityList: {
+      items: components["schemas"]["Identity"][];
+      /** @description Whether the user has a password */
+      passwordSet: boolean;
+      /** @description Whether this user may sign in with the password (always true for the platform admin) */
+      passwordLoginEnabled: boolean;
+    };
+    /** @enum {string} */
+    AuthDomainRole: "admin" | "member" | "viewer";
+    AuthDomain: {
+      /** Format: uuid */
+      id: string;
+      /** @example example.com */
+      domain: string;
+      defaultRole: components["schemas"]["AuthDomainRole"];
+      enabled: boolean;
+      /** Format: date-time */
+      createdAt: string;
+      /** Format: date-time */
+      updatedAt: string;
+    };
+    AuthDomainList: {
+      items: components["schemas"]["AuthDomain"][];
+    };
+    AuthDomainCreate: {
+      /** @description A Google Workspace primary domain such as example.com; lowercased by the server (422 when not a domain name) */
+      domain: string;
+      defaultRole?: components["schemas"]["AuthDomainRole"];
+      enabled?: boolean;
+    };
+    AuthDomainUpdate: {
+      defaultRole?: components["schemas"]["AuthDomainRole"];
+      enabled?: boolean;
+    };
     FieldError: {
       /**
        * @description Dotted path of the request body field
@@ -2186,6 +2474,10 @@ export interface components {
     Offset: number;
     /** @description Status page id; a value that is not a UUID is answered with 400 */
     StatusPageId: string;
+    /** @description The OAuth provider */
+    OAuthProviderId: components["schemas"]["OAuthProvider"];
+    /** @description Sign-in domain id; a value that is not a UUID is answered with 400 */
+    AuthDomainId: string;
     /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
     CsrfToken: string;
   };
@@ -2438,6 +2730,151 @@ export interface operations {
       401: components["responses"]["Unauthorized"];
       403: components["responses"]["Forbidden"];
       404: components["responses"]["NotFound"];
+      default: components["responses"]["Error"];
+    };
+  };
+  getAuthProviders: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The enabled sign-in methods */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AuthProviders"];
+        };
+      };
+      default: components["responses"]["Error"];
+    };
+  };
+  startOAuth: {
+    parameters: {
+      query?: never;
+      header?: {
+        /** @description The `csrf_token` of the session; required with `intent` link */
+        "X-CSRF-Token"?: string;
+      };
+      path: {
+        /** @description The OAuth provider */
+        provider: components["parameters"]["OAuthProviderId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["OAuthStartRequest"];
+      };
+    };
+    responses: {
+      /** @description The authorization URL to navigate to */
+      200: {
+        headers: {
+          /** @description The signed state cookie (`maiak_oauth`, HttpOnly, SameSite=Lax, 10 minutes) */
+          "Set-Cookie"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OAuthStart"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      429: components["responses"]["TooManyRequests"];
+      default: components["responses"]["Error"];
+    };
+  };
+  oauthCallback: {
+    parameters: {
+      query?: {
+        /** @description The authorization code */
+        code?: string;
+        /** @description The state sent with the authorization request */
+        state?: string;
+        /** @description The provider's error code (for example `access_denied`); never shown */
+        error?: string;
+      };
+      header?: never;
+      path: {
+        /** @description The OAuth provider */
+        provider: components["parameters"]["OAuthProviderId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Redirect to the web app */
+      303: {
+        headers: {
+          /** @description `/`, `/login?error=<code>`, `/profile?linked=<provider>` or `/profile?error=<code>` */
+          Location?: string;
+          /** @description The session cookie on a successful sign-in, and the expired state cookie */
+          "Set-Cookie"?: string;
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      400: components["responses"]["BadRequest"];
+      default: components["responses"]["Error"];
+    };
+  };
+  listIdentities: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The user's sign-in methods */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IdentityList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      default: components["responses"]["Error"];
+    };
+  };
+  unlinkIdentity: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description The OAuth provider */
+        provider: components["parameters"]["OAuthProviderId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Unlinked */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
       default: components["responses"]["Error"];
     };
   };
@@ -3560,6 +3997,125 @@ export interface operations {
       401: components["responses"]["Unauthorized"];
       403: components["responses"]["Forbidden"];
       409: components["responses"]["Conflict"];
+      default: components["responses"]["Error"];
+    };
+  };
+  listAuthDomains: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The claimed domains */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AuthDomainList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      default: components["responses"]["Error"];
+    };
+  };
+  createAuthDomain: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AuthDomainCreate"];
+      };
+    };
+    responses: {
+      /** @description Claimed */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AuthDomain"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      409: components["responses"]["Conflict"];
+      422: components["responses"]["UnprocessableEntity"];
+      default: components["responses"]["Error"];
+    };
+  };
+  deleteAuthDomain: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description Sign-in domain id; a value that is not a UUID is answered with 400 */
+        domainId: components["parameters"]["AuthDomainId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Released */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      default: components["responses"]["Error"];
+    };
+  };
+  updateAuthDomain: {
+    parameters: {
+      query?: never;
+      header: {
+        /** @description The `csrf_token` of the session (from login or `GET /api/v1/auth/me`) */
+        "X-CSRF-Token": components["parameters"]["CsrfToken"];
+      };
+      path: {
+        /** @description Sign-in domain id; a value that is not a UUID is answered with 400 */
+        domainId: components["parameters"]["AuthDomainId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AuthDomainUpdate"];
+      };
+    };
+    responses: {
+      /** @description Changed */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AuthDomain"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
       default: components["responses"]["Error"];
     };
   };

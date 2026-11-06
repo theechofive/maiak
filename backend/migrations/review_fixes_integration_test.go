@@ -54,6 +54,7 @@ var definerCalls = map[string]string{
 	"status_page_published_pages": `SELECT * FROM status_page_published_pages()`,
 	"status_page_snapshot":        `SELECT * FROM status_page_snapshot('acme')`,
 	"status_page_slug_held":       `SELECT status_page_slug_held('acme')`,
+	"auth_domain_lookup":          `SELECT * FROM auth_domain_lookup('example.com')`,
 }
 
 // Every definer function in the allow-list is executable by exactly the roles listed there: a

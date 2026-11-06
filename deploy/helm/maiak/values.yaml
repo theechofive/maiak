@@ -26,6 +26,10 @@ config:
   # set false to stop new sign-ups (existing users keep logging in). There is no email
   # verification, so keep it reachable only from the VPN until the public-domain gates (L-172).
   registrationEnabled: true
+  # MAIAK_PASSWORD_LOGIN_ENABLED (api only, ADR-0104): false turns the password form off for everyone
+  # but the platform admin (`/login?admin`), for an OAuth-only installation. Needs at least one
+  # provider in `oauth` below.
+  passwordLoginEnabled: true
   # MAIAK_PUBLIC_URL (api and jobs, required): https URL without trailing slash, linked from Slack messages.
   publicUrl: https://maiak.klr-ops.net
   # MAIAK_BLOCKED_CIDRS (api, worker, jobs): extra ranges for the SSRF guard on top of its built-in
@@ -62,6 +66,11 @@ secrets:
     source: generate
     # externalSecret mode: JSON secret with property cookie_key (standard base64 of 32 random bytes)
     remoteKey: platform/maiak/statuspage
+  # OAuth client credentials (ADR-0104), Secret `<fullname>-oauth`, always from an ExternalSecret
+  # (never from values files). JSON secret with properties google_client_id, google_client_secret,
+  # github_client_id, github_client_secret; only those of the providers enabled in `oauth` are read.
+  oauth:
+    remoteKey: platform/maiak/oauth
   # The hook Job (ArgoCD Sync, wave -3) rendered when any source is generate. It has no database
   # credentials; its Role can only create Secrets and read/update the three Secrets above.
   bootstrap:
@@ -73,6 +82,15 @@ secrets:
     resources:
       requests: {cpu: 50m, memory: 96Mi}
       limits: {cpu: 500m, memory: 256Mi}
+
+# OAuth sign-in (ADR-0104). An enabled provider is offered on the login page; its credentials come
+# from secrets.oauth. Register this redirect URI at the provider (exactly, no trailing slash):
+#   <config.publicUrl>/api/v1/auth/oauth/<google|github>/callback
+oauth:
+  google:
+    enabled: false
+  github:
+    enabled: false
 
 # External Secrets Operator settings (AWS Secrets Manager), used by the db bootstrap admin
 # ExternalSecret and by every `secrets.*.source: externalSecret` (wave -2).

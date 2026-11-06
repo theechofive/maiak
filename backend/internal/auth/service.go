@@ -76,6 +76,9 @@ type Options struct {
 	InviteLimiter *Limiter
 	// HashQueueWait defaults to 5 s.
 	HashQueueWait time.Duration
+	// PasswordLoginDisabled turns password login and password registration off for everyone
+	// but the configured admin login (MAIAK_PASSWORD_LOGIN_ENABLED=false, ADR-0104).
+	PasswordLoginDisabled bool
 }
 
 // Service implements authentication.
@@ -94,6 +97,12 @@ type Service struct {
 	dummy         *crypto.ParsedHash
 	logins        *prometheus.CounterVec
 	registrations *prometheus.CounterVec
+	oauthLogins   *prometheus.CounterVec
+
+	passwordLoginDisabled bool
+	// adminLogin is set by BootstrapAdmin: the one login that keeps the password form when
+	// password login is turned off.
+	adminLogin string
 
 	// defaultTenant is set by BootstrapAdmin. Failed logins of unknown users are audited in it.
 	defaultTenant uuid.UUID
@@ -127,17 +136,18 @@ func NewService(pool *db.Pool, opts Options) (*Service, error) {
 		opts.HashQueueWait = defaultHashQueueWait
 	}
 	s := &Service{
-		pool:        pool,
-		ttl:         opts.SessionTTL,
-		clock:       opts.Clock,
-		log:         opts.Logger,
-		ipLimit:     opts.IPLimiter,
-		loginLimit:  opts.LoginLimiter,
-		inviteLimit: opts.InviteLimiter,
-		hashSem:     make(chan struct{}, maxConcurrentHashes),
-		hashWait:    opts.HashQueueWait,
-		afterVerify: func() {},
-		beforeJoin:  func() {},
+		pool:                  pool,
+		ttl:                   opts.SessionTTL,
+		clock:                 opts.Clock,
+		log:                   opts.Logger,
+		ipLimit:               opts.IPLimiter,
+		loginLimit:            opts.LoginLimiter,
+		inviteLimit:           opts.InviteLimiter,
+		hashSem:               make(chan struct{}, maxConcurrentHashes),
+		hashWait:              opts.HashQueueWait,
+		afterVerify:           func() {},
+		passwordLoginDisabled: opts.PasswordLoginDisabled,
+		beforeJoin:            func() {},
 		logins: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "maiak_auth_logins_total",
 			Help: "Login attempts by result (succeeded, failed, suspended, rate_limited).",
@@ -146,9 +156,13 @@ func NewService(pool *db.Pool, opts Options) (*Service, error) {
 			Name: "maiak_auth_registrations_total",
 			Help: "Registration attempts by result (succeeded, invalid, invalid_invitation, invalid_credentials, email_taken, rate_limited).",
 		}, []string{"result"}),
+		oauthLogins: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "maiak_auth_oauth_logins_total",
+			Help: "OAuth sign-ins and links by provider and result (succeeded, or the error code of the redirect).",
+		}, []string{"provider", "result"}),
 	}
 	if opts.Registerer != nil {
-		for _, c := range []prometheus.Collector{s.logins, s.registrations} {
+		for _, c := range []prometheus.Collector{s.logins, s.registrations, s.oauthLogins} {
 			if err := opts.Registerer.Register(c); err != nil {
 				return nil, fmt.Errorf("auth: register metrics: %w", err)
 			}
@@ -239,6 +253,7 @@ func (s *Service) BootstrapAdmin(ctx context.Context, login, passwordHash string
 	}
 	s.dummy = dummy
 	s.defaultTenant = tenantID
+	s.adminLogin = login
 	return nil
 }
 
@@ -372,6 +387,11 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 	}
 	ipKey := limiterIPKey(in.IP)
 	loginKey := normalizeLogin(in.Login)
+	if s.passwordLoginDisabled && loginKey != s.adminLogin {
+		// Decided before any lookup or verification, so it reveals nothing about the account and
+		// leaves no password to guess for anyone but the break-glass admin.
+		return LoginResult{}, ErrPasswordLoginDisabled
+	}
 	// Attempts are reserved before the verification and stay counted when it fails; a success
 	// or an attempt that never reached a verdict is refunded.
 	if ok, wait := s.ipLimit.Reserve(ipKey); !ok {

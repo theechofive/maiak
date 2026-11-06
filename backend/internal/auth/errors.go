@@ -19,6 +19,9 @@ var (
 	ErrCSRF = errors.New("auth: invalid csrf token")
 	// ErrRateLimited means too many failed attempts; see RateLimitedError for the delay.
 	ErrRateLimited = errors.New("auth: too many attempts")
+	// ErrPasswordLoginDisabled means password login (and registration with a password) is turned
+	// off (MAIAK_PASSWORD_LOGIN_ENABLED=false); only the configured admin login keeps it.
+	ErrPasswordLoginDisabled = errors.New("auth: password login is disabled")
 	// ErrAdminLoginInUse stops BootstrapAdmin when the configured login belongs to a user with a
 	// membership outside the default tenant, for example someone who registered that email.
 	ErrAdminLoginInUse = errors.New("auth: MAIAK_ADMIN_LOGIN belongs to a user of another tenant; " +

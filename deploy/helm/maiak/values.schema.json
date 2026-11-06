@@ -38,6 +38,7 @@
         "cookieSecure": {"type": "boolean"},
         "trustedProxyHops": {"type": "integer", "minimum": 0, "maximum": 10},
         "registrationEnabled": {"type": "boolean", "description": "MAIAK_REGISTRATION_ENABLED: self-service registration kill switch (default true)"},
+        "passwordLoginEnabled": {"type": "boolean", "description": "MAIAK_PASSWORD_LOGIN_ENABLED: false keeps the password form for the platform admin only (default true, ADR-0104)"},
         "publicUrl": {
           "type": "string",
           "description": "MAIAK_PUBLIC_URL: https, no trailing slash, no user info, query or link-breaking characters",
@@ -52,7 +53,7 @@
     },
     "secrets": {
       "type": "object",
-      "required": ["admin", "crypto", "statuspage", "bootstrap"],
+      "required": ["admin", "crypto", "statuspage", "oauth", "bootstrap"],
       "properties": {
         "admin": {
           "type": "object",
@@ -110,6 +111,12 @@
             }
           ]
         },
+        "oauth": {
+          "type": "object",
+          "description": "OAuth client credentials, always from an ExternalSecret (ADR-0104)",
+          "required": ["remoteKey"],
+          "properties": {"remoteKey": {"type": "string", "minLength": 1}}
+        },
         "bootstrap": {
           "type": "object",
           "required": ["command", "resources"],
@@ -121,6 +128,15 @@
             "resources": {"$ref": "#/definitions/resources"}
           }
         }
+      }
+    },
+    "oauth": {
+      "type": "object",
+      "description": "OAuth sign-in providers (ADR-0104); credentials come from secrets.oauth",
+      "required": ["google", "github"],
+      "properties": {
+        "google": {"type": "object", "required": ["enabled"], "properties": {"enabled": {"type": "boolean"}}},
+        "github": {"type": "object", "required": ["enabled"], "properties": {"enabled": {"type": "boolean"}}}
       }
     },
     "externalSecrets": {

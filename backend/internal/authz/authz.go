@@ -153,6 +153,10 @@ var operations = map[string]Role{
 	"pingheartbeat":     Public,
 	"pingheartbeatpost": Public,
 	"lookupinvitation":  Public,
+	// OAuth sign-in (ADR-0104): the start of a link checks the session and CSRF token itself.
+	"getauthproviders": Public,
+	"startoauth":       Public,
+	"oauthcallback":    Public,
 
 	// The session itself and the user's own organizations: any role.
 	"logout":             Viewer,
@@ -161,6 +165,8 @@ var operations = map[string]Role{
 	"switchorganization": Viewer,
 	"acceptinvitation":   Viewer,
 	"leaveorganization":  Viewer,
+	"listidentities":     Viewer,
+	"unlinkidentity":     Viewer,
 
 	// Reading the organization's data.
 	"listmonitors":         Viewer,
@@ -218,6 +224,11 @@ var operations = map[string]Role{
 
 	// The organization itself.
 	"deleteorganization": Owner,
+	// Google Workspace sign-in domains (ADR-0104).
+	"listauthdomains":  Owner,
+	"createauthdomain": Owner,
+	"updateauthdomain": Owner,
+	"deleteauthdomain": Owner,
 
 	// Platform admin panel (ADR-0097).
 	"admingetstats":          Viewer,

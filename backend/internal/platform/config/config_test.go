@@ -374,3 +374,52 @@ func TestLoadStatuspage(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadAPIOAuth(t *testing.T) {
+	cfg, err := LoadAPI(env(apiEnv(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.PasswordLoginEnabled || cfg.OAuth.GoogleEnabled() || cfg.OAuth.GitHubEnabled() {
+		t.Fatalf("defaults: password=%v oauth=%+v", cfg.PasswordLoginEnabled, cfg.OAuth)
+	}
+
+	e := apiEnv(t)
+	e["MAIAK_OAUTH_GOOGLE_CLIENT_ID"] = "123.apps.googleusercontent.com"
+	e["MAIAK_OAUTH_GOOGLE_CLIENT_SECRET"] = "GOCSPX-supersecret"
+	e["MAIAK_PASSWORD_LOGIN_ENABLED"] = "false"
+	cfg, err = LoadAPI(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.OAuth.GoogleEnabled() || cfg.OAuth.GitHubEnabled() || cfg.PasswordLoginEnabled || cfg.OAuth.GoogleClientSecret.Value() != "GOCSPX-supersecret" {
+		t.Fatalf("oauth: %+v password=%v", cfg.OAuth, cfg.PasswordLoginEnabled)
+	}
+	if s := fmt.Sprintf("%v %+v %#v", cfg, cfg, cfg); strings.Contains(s, "supersecret") {
+		t.Fatal("client secret printed")
+	}
+
+	cases := map[string]struct {
+		set  map[string]string
+		want string
+	}{
+		"id without secret":              {map[string]string{"MAIAK_OAUTH_GITHUB_CLIENT_ID": "Iv1.abc"}, "MAIAK_OAUTH_GITHUB_CLIENT_ID: and MAIAK_OAUTH_GITHUB_CLIENT_SECRET must be set together"},
+		"secret without id":              {map[string]string{"MAIAK_OAUTH_GOOGLE_CLIENT_SECRET": "s3cret-value"}, "MAIAK_OAUTH_GOOGLE_CLIENT_ID"},
+		"id with spaces":                 {map[string]string{"MAIAK_OAUTH_GOOGLE_CLIENT_ID": "a b", "MAIAK_OAUTH_GOOGLE_CLIENT_SECRET": "x"}, "must be the client id"},
+		"secret with space":              {map[string]string{"MAIAK_OAUTH_GOOGLE_CLIENT_ID": "a", "MAIAK_OAUTH_GOOGLE_CLIENT_SECRET": "s3cret value"}, "must be the client secret"},
+		"password off without providers": {map[string]string{"MAIAK_PASSWORD_LOGIN_ENABLED": "false"}, "needs at least one OAuth provider"},
+	}
+	for name, c := range cases {
+		e := apiEnv(t)
+		for k, v := range c.set {
+			e[k] = v
+		}
+		_, err := LoadAPI(env(e))
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want %q", name, err, c.want)
+		}
+		if err != nil && strings.Contains(err.Error(), "s3cret") {
+			t.Errorf("%s: error echoes the secret", name)
+		}
+	}
+}

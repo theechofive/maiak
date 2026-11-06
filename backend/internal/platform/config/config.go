@@ -100,7 +100,25 @@ type API struct {
 	// RegistrationEnabled is the kill switch of self-service registration
 	// (MAIAK_REGISTRATION_ENABLED, default true, ADR-0092).
 	RegistrationEnabled bool
+	// PasswordLoginEnabled turns the password form off for everyone but the admin login when
+	// false (MAIAK_PASSWORD_LOGIN_ENABLED, default true, ADR-0104).
+	PasswordLoginEnabled bool
+	OAuth                OAuth
 }
+
+// OAuth holds the OAuth client credentials (ADR-0104). A provider without both values is off.
+type OAuth struct {
+	GoogleClientID     string
+	GoogleClientSecret Secret
+	GitHubClientID     string
+	GitHubClientSecret Secret
+}
+
+// GoogleEnabled reports whether Google sign-in is configured.
+func (o OAuth) GoogleEnabled() bool { return o.GoogleClientID != "" }
+
+// GitHubEnabled reports whether GitHub sign-in is configured.
+func (o OAuth) GitHubEnabled() bool { return o.GitHubClientID != "" }
 
 // Worker is the configuration of cmd/worker. It has no encryption keys (L-042).
 type Worker struct {
@@ -172,22 +190,51 @@ const shutdownTimeout = 25 * time.Second
 func LoadAPI(lookup LookupFunc) (API, error) {
 	l := &loader{lookup: lookup}
 	cfg := API{
-		Server:              l.server(10),
-		Encryption:          l.encryption(),
-		Guard:               l.guard(),
-		HTTPAddr:            l.addr("MAIAK_HTTP_ADDR", ":8080"),
-		AdminLogin:          l.login("MAIAK_ADMIN_LOGIN"),
-		AdminPasswordHash:   l.passwordHash("MAIAK_ADMIN_PASSWORD_HASH"),
-		SessionTTL:          l.duration("MAIAK_SESSION_TTL", 12*time.Hour, 5*time.Minute, 30*24*time.Hour),
-		CookieSecure:        l.boolean("MAIAK_COOKIE_SECURE", true),
-		TrustedProxyHops:    l.integer("MAIAK_TRUSTED_PROXY_HOPS", 1, 0, 10),
-		PublicURL:           l.publicURL("MAIAK_PUBLIC_URL"),
-		RegistrationEnabled: l.boolean("MAIAK_REGISTRATION_ENABLED", true),
+		Server:               l.server(10),
+		Encryption:           l.encryption(),
+		Guard:                l.guard(),
+		HTTPAddr:             l.addr("MAIAK_HTTP_ADDR", ":8080"),
+		AdminLogin:           l.login("MAIAK_ADMIN_LOGIN"),
+		AdminPasswordHash:    l.passwordHash("MAIAK_ADMIN_PASSWORD_HASH"),
+		SessionTTL:           l.duration("MAIAK_SESSION_TTL", 12*time.Hour, 5*time.Minute, 30*24*time.Hour),
+		CookieSecure:         l.boolean("MAIAK_COOKIE_SECURE", true),
+		TrustedProxyHops:     l.integer("MAIAK_TRUSTED_PROXY_HOPS", 1, 0, 10),
+		PublicURL:            l.publicURL("MAIAK_PUBLIC_URL"),
+		RegistrationEnabled:  l.boolean("MAIAK_REGISTRATION_ENABLED", true),
+		PasswordLoginEnabled: l.boolean("MAIAK_PASSWORD_LOGIN_ENABLED", true),
+		OAuth:                l.oauth(),
 	}
 	if cfg.HTTPAddr != "" && cfg.HTTPAddr == cfg.AdminAddr {
 		l.fail("MAIAK_HTTP_ADDR", "must differ from MAIAK_ADMIN_ADDR")
 	}
+	if !cfg.PasswordLoginEnabled && !cfg.OAuth.GoogleEnabled() && !cfg.OAuth.GitHubEnabled() {
+		l.fail("MAIAK_PASSWORD_LOGIN_ENABLED", "false needs at least one OAuth provider (MAIAK_OAUTH_GOOGLE_* or MAIAK_OAUTH_GITHUB_*)")
+	}
 	return cfg, l.err()
+}
+
+// oauth reads the client credentials of each provider: both the id and the secret, or neither.
+func (l *loader) oauth() OAuth {
+	pair := func(prefix string) (string, Secret) {
+		id, secret := l.optional(prefix+"_CLIENT_ID"), l.optional(prefix+"_CLIENT_SECRET")
+		switch {
+		case id == "" && secret == "":
+			return "", ""
+		case id == "" || secret == "":
+			l.fail(prefix+"_CLIENT_ID", "and "+prefix+"_CLIENT_SECRET must be set together")
+			return "", ""
+		case len(id) > 256 || strings.ContainsAny(id, " \t\n\"'<>&"):
+			l.fail(prefix+"_CLIENT_ID", "must be the client id from the provider's console (no spaces or quotes)")
+		case len(secret) > 512 || strings.ContainsAny(secret, " \t\n"):
+			// The value is never echoed.
+			l.fail(prefix+"_CLIENT_SECRET", "must be the client secret from the provider's console (no whitespace)")
+		}
+		return id, Secret(secret)
+	}
+	var o OAuth
+	o.GoogleClientID, o.GoogleClientSecret = pair("MAIAK_OAUTH_GOOGLE")
+	o.GitHubClientID, o.GitHubClientSecret = pair("MAIAK_OAUTH_GITHUB")
+	return o
 }
 
 // LoadWorker loads the worker configuration.

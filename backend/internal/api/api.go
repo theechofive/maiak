@@ -24,6 +24,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/auth"
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/notify"
+	"github.com/theechofive/maiak/backend/internal/oauth"
 	"github.com/theechofive/maiak/backend/internal/plans"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/httpx"
@@ -57,6 +58,9 @@ type Config struct {
 	RegistrationEnabled bool
 	// PublicURL is MAIAK_PUBLIC_URL (no trailing slash), the base of heartbeat ping URLs.
 	PublicURL string
+	// PasswordLoginEnabled is MAIAK_PASSWORD_LOGIN_ENABLED (ADR-0104); auth enforces it, the api
+	// only reports it.
+	PasswordLoginEnabled bool
 }
 
 // Deps are the collaborators of the HTTP layer.
@@ -70,7 +74,9 @@ type Deps struct {
 	// StatusPages configures the public status page (ADR-0103).
 	StatusPages *statuspages.Service
 	// Admin serves /api/v1/admin (P-04); nil answers those operations with 500.
-	Admin   *admin.Service
+	Admin *admin.Service
+	// OAuth runs the OAuth sign-in flows (ADR-0104); nil means no provider is configured.
+	OAuth   *oauth.Flow
 	Logger  *slog.Logger
 	Metrics *metrics.HTTP
 	// Pings counts heartbeat pings; nil keeps the counts unregistered.
@@ -89,6 +95,7 @@ type server struct {
 	projects *projects.Service
 	pages    *statuspages.Service
 	admin    *admin.Service
+	oauth    *oauth.Flow
 	log      *slog.Logger
 	// slackTests limits Slack test messages per tenant (per api replica, like the login limit).
 	slackTests *auth.Limiter
@@ -114,7 +121,7 @@ func NewHandler(cfg Config, deps Deps) (http.Handler, error) {
 	if pings == nil {
 		pings = NewPingMetrics(prometheus.NewRegistry())
 	}
-	s := &server{cfg: cfg, auth: deps.Auth, monitors: deps.Monitors, queries: deps.Queries, slack: deps.Slack, plans: deps.Plans, projects: deps.Projects, pages: deps.StatusPages, admin: deps.Admin, log: deps.Logger,
+	s := &server{cfg: cfg, auth: deps.Auth, monitors: deps.Monitors, queries: deps.Queries, slack: deps.Slack, plans: deps.Plans, projects: deps.Projects, pages: deps.StatusPages, admin: deps.Admin, oauth: deps.OAuth, log: deps.Logger,
 		slackTests: auth.NewLimiter(1, slackTestInterval, 10_000, clk),
 		pingLimits: newPingLimits(clk),
 		pings:      pings}

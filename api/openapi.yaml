@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Maiak API
-  version: 0.8.0
+  version: 0.9.0
   description: |
     REST API of Maiak, the multi-tenant uptime-monitoring service. This file is the source of
     truth: the Go server and the TypeScript client are generated from it (ADR-0008).
@@ -10,7 +10,8 @@ info:
     methods (POST, PUT, PATCH, DELETE) on authenticated endpoints also need the header
     `X-CSRF-Token` with the `csrf_token` returned by login, registration and
     `GET /api/v1/auth/me`; a missing or wrong token is answered with 403. Only health, the public
-    config, login, registration and the heartbeat ping work without a session.
+    config, login, registration, the sign-in providers, the OAuth start and callback and the
+    heartbeat ping work without a session.
 
     Errors are `application/problem+json` (RFC 9457). A request that does not match this
     contract (malformed JSON, wrong types, unknown or missing fields) gets 400; a well-formed
@@ -23,7 +24,7 @@ info:
     Roles (ADR-0102): every operation that needs a session has a minimum role of the session's
     membership in its organization (tenant). `viewer` reads; `member` also creates, edits,
     pauses and deletes monitors; `admin` also manages notification channels, members,
-    invitations, projects and the status page; `owner` also deletes the organization and grants or revokes `owner`. A role below
+    invitations, projects and the status page; `owner` also deletes the organization, manages its sign-in domains and grants or revokes `owner`. A role below
     the minimum gets 403 `urn:maiak:problem:forbidden`. A role change applies on the next request.
 
     Projects (ADR-0102, T-02): monitors (heartbeats included) and notification channels belong to
@@ -336,6 +337,213 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/providers:
+    get:
+      operationId: getAuthProviders
+      summary: Sign-in methods offered on the login page
+      description: |
+        Public, needs no session (ADR-0104). The OAuth providers that have credentials configured
+        (a provider without them is not listed and its start answers 404), whether the password
+        form is offered to everyone (`MAIAK_PASSWORD_LOGIN_ENABLED`; when false only the platform
+        admin signs in with a password, on `/login?admin`) and whether self-service registration
+        is open.
+      tags: [auth]
+      security: []
+      responses:
+        "200":
+          description: The enabled sign-in methods
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthProviders"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/oauth/{provider}/start:
+    parameters:
+      - $ref: "#/components/parameters/OAuthProviderId"
+    post:
+      operationId: startOAuth
+      summary: Start an OAuth sign-in or link
+      description: |
+        Starts the authorization code flow with PKCE (S256) and returns the provider's
+        authorization URL; the web app navigates there. `state`, `nonce` and the PKCE verifier are
+        kept in a short-lived (10 minutes) HMAC-signed HttpOnly cookie bound to this browser,
+        scoped to `/api/v1/auth/oauth/`. The redirect URI is always
+        `MAIAK_PUBLIC_URL/api/v1/auth/oauth/{provider}/callback`.
+
+        `intent: login` (the default) needs no session. With `inviteToken` the sign-in joins the
+        inviting organization; the token travels in this body only, never in a URL (an unknown,
+        expired, used or revoked token is 404 `urn:maiak:problem:invitation-invalid` and counts
+        against the per-client-IP invitation limit).
+
+        `intent: link` adds the provider to the signed-in user's account: it needs the session
+        cookie and the `X-CSRF-Token` header (401 without a session, 403 with a wrong token), and
+        the callback links the identity to that user only.
+
+        404 when the provider is not configured. Starts count against the per-client-IP login
+        limit only when the callback fails (429 with Retry-After once it is exhausted).
+      tags: [auth]
+      security: []
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: false
+          description: The `csrf_token` of the session; required with `intent` link
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OAuthStartRequest"
+      responses:
+        "200":
+          description: The authorization URL to navigate to
+          headers:
+            Set-Cookie:
+              description: The signed state cookie (`maiak_oauth`, HttpOnly, SameSite=Lax, 10 minutes)
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthStart"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/oauth/{provider}/callback:
+    parameters:
+      - $ref: "#/components/parameters/OAuthProviderId"
+    get:
+      operationId: oauthCallback
+      summary: Finish an OAuth sign-in or link (provider redirect)
+      description: |
+        The provider redirects the browser here. The `state` must match the signed cookie of
+        `startOAuth` (same browser, same provider, not older than 10 minutes); the code is
+        exchanged with the PKCE verifier. Never answers JSON: it always redirects (303) and clears
+        the state cookie.
+
+        Sign-in (`intent: login`): the user is found by the provider's stable id (Google `sub`,
+        GitHub numeric id), never by email. Google needs `email_verified`; GitHub uses the primary
+        verified address only. Without a linked user, an account is created only with a valid
+        invitation, a Google Workspace domain (`hd`) claimed by an organization, or open
+        registration; an email that already belongs to an account is never linked automatically
+        (`account_exists`: sign in with the password, then link). Success sets the session cookie
+        like a password login and redirects to `/`.
+
+        Link (`intent: link`): the identity is added to the signed-in user and the browser goes to
+        `/profile?linked=<provider>`; errors go to `/profile?error=<code>`.
+
+        Sign-in errors redirect to `/login?error=<code>`, with one of `cancelled`, `failed`,
+        `state_invalid`, `email_unverified`, `email_unusable`, `not_invited`, `account_exists`,
+        `invitation_invalid`, `already_member`, `plan_limit`, `suspended`, `rate_limited`; link
+        errors add `identity_in_use`, `already_linked` and `session_expired`. Provider error text
+        is never reflected. Every outcome is audited (`auth.oauth_login`, `auth.oauth_failed`,
+        `auth.identity_linked`). Failed callbacks count against the login's per-client-IP limit.
+      tags: [auth]
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: false
+          description: The authorization code
+          schema:
+            type: string
+            maxLength: 2048
+        - name: state
+          in: query
+          required: false
+          description: The state sent with the authorization request
+          schema:
+            type: string
+            maxLength: 512
+        - name: error
+          in: query
+          required: false
+          description: The provider's error code (for example `access_denied`); never shown
+          schema:
+            type: string
+            maxLength: 256
+      responses:
+        "303":
+          description: Redirect to the web app
+          headers:
+            Location:
+              description: "`/`, `/login?error=<code>`, `/profile?linked=<provider>` or `/profile?error=<code>`"
+              schema:
+                type: string
+            Set-Cookie:
+              description: The session cookie on a successful sign-in, and the expired state cookie
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/identities:
+    get:
+      operationId: listIdentities
+      summary: Sign-in methods of the current user
+      description: |
+        The OAuth identities linked to the logged-in user (provider, the email it reported at the
+        last sign-in, when it was linked and last used), whether the user has a password, and
+        whether password sign-in is enabled for the user. Any role.
+      tags: [auth]
+      responses:
+        "200":
+          description: The user's sign-in methods
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IdentityList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/identities/{provider}:
+    parameters:
+      - $ref: "#/components/parameters/OAuthProviderId"
+    delete:
+      operationId: unlinkIdentity
+      summary: Unlink an OAuth identity from the current user
+      description: |
+        Removes the user's identity of that provider. Allowed only while another way to sign in
+        remains: a password (when password sign-in is enabled, or for the platform admin) or
+        another identity; otherwise 409 `urn:maiak:problem:last-login-method`. 404 when no
+        identity of that provider is linked. Audited as `auth.identity_unlinked`. Any role.
+      tags: [auth]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "204":
+          description: Unlinked
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         default:
           $ref: "#/components/responses/Error"
   /api/v1/monitors:
@@ -1527,6 +1735,131 @@ paths:
           $ref: "#/components/responses/Conflict"
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/organization/auth-domains:
+    get:
+      operationId: listAuthDomains
+      summary: Sign-in domains of the organization
+      description: |
+        The Google Workspace domains the organization claimed (ADR-0104). A verified Google
+        account whose Workspace domain (`hd`) matches an enabled domain joins the organization
+        with `defaultRole` on its first sign-in. Owner only.
+      tags: [members]
+      responses:
+        "200":
+          description: The claimed domains
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthDomainList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createAuthDomain
+      summary: Claim a sign-in domain
+      description: |
+        Claims a Google Workspace domain for the organization. Proof of control: the owner's
+        linked Google account must have signed in last with that Workspace domain (`hd`),
+        otherwise 403 `urn:maiak:problem:domain-not-verified`. A domain belongs to one
+        organization of the installation only (409 `urn:maiak:problem:domain-taken`). At most 10
+        domains per organization (422). `defaultRole` defaults to `viewer`. Audited as
+        `org.auth_domain_changed`. Owner only.
+      tags: [members]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthDomainCreate"
+      responses:
+        "201":
+          description: Claimed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthDomain"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/organization/auth-domains/{domainId}:
+    parameters:
+      - $ref: "#/components/parameters/AuthDomainId"
+    patch:
+      operationId: updateAuthDomain
+      summary: Change a sign-in domain
+      description: |
+        Changes the default role or turns auto-join off and on. The domain itself cannot change
+        (delete and claim again). Members who already joined keep their role. Audited as
+        `org.auth_domain_changed`. Owner only.
+      tags: [members]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthDomainUpdate"
+      responses:
+        "200":
+          description: Changed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthDomain"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteAuthDomain
+      summary: Release a sign-in domain
+      description: |
+        Stops auto-join for the domain and frees it for other organizations. Members who already
+        joined stay. Audited as `org.auth_domain_changed`. Owner only.
+      tags: [members]
+      security:
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "204":
+          description: Released
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/status-pages:
     get:
       operationId: listStatusPages
@@ -2156,6 +2489,21 @@ components:
       in: path
       required: true
       description: Status page id; a value that is not a UUID is answered with 400
+      schema:
+        type: string
+        format: uuid
+    OAuthProviderId:
+      name: provider
+      in: path
+      required: true
+      description: The OAuth provider
+      schema:
+        $ref: "#/components/schemas/OAuthProvider"
+    AuthDomainId:
+      name: domainId
+      in: path
+      required: true
+      description: Sign-in domain id; a value that is not a UUID is answered with 400
       schema:
         type: string
         format: uuid
@@ -3762,6 +4110,145 @@ components:
           type: integer
           format: int64
           minimum: 0
+    OAuthProvider:
+      type: string
+      enum: [google, github]
+    AuthProviders:
+      type: object
+      additionalProperties: false
+      required: [providers, passwordLoginEnabled, registrationEnabled]
+      properties:
+        providers:
+          type: array
+          description: Configured OAuth providers, in the order the login page shows them
+          items:
+            $ref: "#/components/schemas/AuthProvider"
+        passwordLoginEnabled:
+          type: boolean
+          description: Whether the password form is offered to everyone; when false only the platform admin uses it, on `/login?admin`
+        registrationEnabled:
+          type: boolean
+          description: Whether an OAuth sign-in or `POST /api/v1/auth/register` may create a new organization
+    AuthProvider:
+      type: object
+      additionalProperties: false
+      required: [id, name]
+      properties:
+        id:
+          $ref: "#/components/schemas/OAuthProvider"
+        name:
+          type: string
+          example: Google
+    OAuthIntent:
+      type: string
+      enum: [login, link]
+    OAuthStartRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        intent:
+          $ref: "#/components/schemas/OAuthIntent"
+        inviteToken:
+          type: string
+          format: password
+          description: The token of an invitation link (only with intent login); join that organization
+          minLength: 1
+          maxLength: 128
+    OAuthStart:
+      type: object
+      additionalProperties: false
+      required: [authorizationUrl]
+      properties:
+        authorizationUrl:
+          type: string
+          description: The provider's authorization URL; navigate the whole window there
+    Identity:
+      type: object
+      additionalProperties: false
+      required: [provider, email, createdAt, lastLoginAt]
+      properties:
+        provider:
+          $ref: "#/components/schemas/OAuthProvider"
+        email:
+          type: string
+          description: The verified email the provider reported at the last sign-in or link
+        createdAt:
+          type: string
+          format: date-time
+        lastLoginAt:
+          type: string
+          format: date-time
+          nullable: true
+    IdentityList:
+      type: object
+      additionalProperties: false
+      required: [items, passwordSet, passwordLoginEnabled]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Identity"
+        passwordSet:
+          type: boolean
+          description: Whether the user has a password
+        passwordLoginEnabled:
+          type: boolean
+          description: Whether this user may sign in with the password (always true for the platform admin)
+    AuthDomainRole:
+      type: string
+      enum: [admin, member, viewer]
+    AuthDomain:
+      type: object
+      additionalProperties: false
+      required: [id, domain, defaultRole, enabled, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        domain:
+          type: string
+          example: example.com
+        defaultRole:
+          $ref: "#/components/schemas/AuthDomainRole"
+        enabled:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    AuthDomainList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuthDomain"
+    AuthDomainCreate:
+      type: object
+      additionalProperties: false
+      required: [domain]
+      properties:
+        domain:
+          type: string
+          description: A Google Workspace primary domain such as example.com; lowercased by the server (422 when not a domain name)
+          minLength: 1
+          maxLength: 253
+        defaultRole:
+          $ref: "#/components/schemas/AuthDomainRole"
+        enabled:
+          type: boolean
+    AuthDomainUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        defaultRole:
+          $ref: "#/components/schemas/AuthDomainRole"
+        enabled:
+          type: boolean
     FieldError:
       type: object
       additionalProperties: false

@@ -14,6 +14,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/incidents"
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/notify"
+	"github.com/theechofive/maiak/backend/internal/oauth"
 	"github.com/theechofive/maiak/backend/internal/plans"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/config"
@@ -62,6 +63,8 @@ func run() error {
 		Clock:      clock.System{},
 		Logger:     log,
 		Registerer: reg,
+		// ADR-0104: only the admin login keeps the password form when it is off.
+		PasswordLoginDisabled: !cfg.PasswordLoginEnabled,
 	})
 	if err != nil {
 		return err
@@ -80,16 +83,29 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	flow, err := oauthFlow(cfg)
+	if err != nil {
+		return err
+	}
+	if flow != nil {
+		names := make([]string, 0, len(flow.Providers()))
+		for _, p := range flow.Providers() {
+			names = append(names, p.Name())
+		}
+		log.Info("oauth sign-in enabled", "providers", names, "password_login_enabled", cfg.PasswordLoginEnabled)
+	}
+
 	slack := notify.NewSlackNotifier(notify.NewSlackClient(cfg.BlockedCIDRs))
 
 	sched := scheduler.New()
 	handler, err := api.NewHandler(api.Config{
-		Version:             version,
-		Commit:              commit,
-		CookieSecure:        cfg.CookieSecure,
-		TrustedProxyHops:    cfg.TrustedProxyHops,
-		RegistrationEnabled: cfg.RegistrationEnabled,
-		PublicURL:           cfg.PublicURL,
+		Version:              version,
+		Commit:               commit,
+		CookieSecure:         cfg.CookieSecure,
+		TrustedProxyHops:     cfg.TrustedProxyHops,
+		RegistrationEnabled:  cfg.RegistrationEnabled,
+		PublicURL:            cfg.PublicURL,
+		PasswordLoginEnabled: cfg.PasswordLoginEnabled,
 	}, api.Deps{
 		Auth:     authSvc,
 		Monitors: monitors.NewService(pool, sched, incidents.NewService(sched)),
@@ -98,6 +114,7 @@ func run() error {
 		Plans:    plans.NewService(pool), Projects: projects.NewService(pool),
 		StatusPages: statuspages.NewService(pool, statuspages.Options{Logger: log}),
 		Admin:       adminSvc,
+		OAuth:       flow,
 		Logger:      log,
 		Metrics:     metrics.NewHTTP(reg),
 		Pings:       api.NewPingMetrics(reg),
@@ -110,4 +127,28 @@ func run() error {
 		httpx.NewServer(cfg.HTTPAddr, handler, log),
 		httpx.NewServer(cfg.AdminAddr, httpx.AdminHandler(log, pool.Ping, reg), log),
 	)
+}
+
+// oauthFlow builds the OAuth providers that have credentials (ADR-0104); nil when there are none.
+// The state cookie's key is derived from the active encryption key, so every replica shares it.
+func oauthFlow(cfg config.API) (*oauth.Flow, error) {
+	var providers []oauth.Provider
+	if cfg.OAuth.GoogleEnabled() {
+		providers = append(providers, oauth.NewGoogle(oauth.GoogleConfig{
+			ClientID: cfg.OAuth.GoogleClientID, ClientSecret: cfg.OAuth.GoogleClientSecret.Value(),
+		}))
+	}
+	if cfg.OAuth.GitHubEnabled() {
+		providers = append(providers, oauth.NewGitHub(oauth.GitHubConfig{
+			ClientID: cfg.OAuth.GitHubClientID, ClientSecret: cfg.OAuth.GitHubClientSecret.Value(),
+		}))
+	}
+	if len(providers) == 0 {
+		return nil, nil
+	}
+	key, err := oauth.DeriveKey(cfg.EncryptionKeys[cfg.EncryptionKeyID])
+	if err != nil {
+		return nil, fmt.Errorf("oauth state key: %w", err)
+	}
+	return oauth.NewFlow(key, cfg.PublicURL, clock.System{}, providers...)
 }

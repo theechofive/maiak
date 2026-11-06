@@ -99,7 +99,7 @@ def check(path):
                 if ref.get("key") == "owner_url":
                     owner_users.add((d["kind"], comp))
                 n = e["name"]
-                if re.search(r"PASSWORD|KEYS|DATABASE_URL", n) and "valueFrom" not in e:
+                if re.search(r"PASSWORD|KEYS|DATABASE_URL|CLIENT_SECRET", n) and n != "MAIAK_PASSWORD_LOGIN_ENABLED" and "valueFrom" not in e:
                     fail(f"{name}/{c['name']}: {n} is a literal, not a secretKeyRef")
             res = c.get("resources", {})
             if d["kind"] == "Deployment":
@@ -153,6 +153,24 @@ def check(path):
     for comp, env in (("worker", worker), ("jobs", jobs)):
         if "MAIAK_REGISTRATION_ENABLED" in env:
             fail(f"{comp} has MAIAK_REGISTRATION_ENABLED (api only)")
+    # OAuth (ADR-0104): the password switch is a boolean, client credentials come from the oauth
+    # Secret only, in pairs, and only the api gets them.
+    if api and api.get("MAIAK_PASSWORD_LOGIN_ENABLED", {}).get("value") not in ("true", "false"):
+        fail(f"api MAIAK_PASSWORD_LOGIN_ENABLED must be \"true\" or \"false\", got {api.get('MAIAK_PASSWORD_LOGIN_ENABLED')}")
+    for p in ("GOOGLE", "GITHUB"):
+        names = {f"MAIAK_OAUTH_{p}_CLIENT_ID": f"{p.lower()}_client_id", f"MAIAK_OAUTH_{p}_CLIENT_SECRET": f"{p.lower()}_client_secret"}
+        present = [n for n in names if n in api]
+        if present and len(present) != 2:
+            fail(f"api has {present} without its pair")
+        for n in present:
+            ref = api[n].get("valueFrom", {}).get("secretKeyRef", {})
+            if ref != {"name": "maiak-oauth", "key": names[n]}:
+                fail(f"api {n} must come from maiak-oauth/{names[n]}, got {ref}")
+    if api and api.get("MAIAK_PASSWORD_LOGIN_ENABLED", {}).get("value") == "false" and not any(n.startswith("MAIAK_OAUTH_") for n in api):
+        fail("password login is off but no OAuth provider is configured")
+    for comp in deployments:
+        if comp != "api" and any(n.startswith("MAIAK_OAUTH_") or n == "MAIAK_PASSWORD_LOGIN_ENABLED" for n in env_of(comp)):
+            fail(f"{comp} has OAuth settings (api only)")
     if ADMIN_ENV & set(jobs):
         fail("jobs has admin credentials")
     for n, key in ADMIN_SECRET_KEYS.items():

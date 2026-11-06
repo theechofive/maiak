@@ -207,10 +207,16 @@ func (s *Service) lookupInvitation(ctx context.Context, token string) (invitatio
 	if !validTokenFormat(token) {
 		return invitationTarget{}, ErrInvitationInvalid
 	}
+	return s.lookupInvitationHash(ctx, hashToken(token))
+}
+
+// lookupInvitationHash is lookupInvitation by the token's SHA-256 (an OAuth flow keeps only the
+// hash between start and callback).
+func (s *Service) lookupInvitationHash(ctx context.Context, tokenHash []byte) (invitationTarget, error) {
 	var t invitationTarget
 	err := db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `SELECT invitation_id, tenant_id, tenant_name, role, expires_at FROM auth_invitation_lookup($1)`,
-			hashToken(token)).Scan(&t.invitationID, &t.tenantID, &t.preview.OrganizationName, &t.preview.Role, &t.preview.ExpiresAt)
+			tokenHash).Scan(&t.invitationID, &t.tenantID, &t.preview.OrganizationName, &t.preview.Role, &t.preview.ExpiresAt)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return invitationTarget{}, ErrInvitationInvalid
@@ -246,10 +252,20 @@ func (s *Service) LookupInvitation(ctx context.Context, token string, ip netip.A
 	return t.preview, nil
 }
 
+// CheckInvitation is the start of an OAuth sign-in with an invitation: it checks that the token
+// opens an invitation (failures count against the per-IP invitation limit, like LookupInvitation)
+// and returns the token's hash, which the flow carries to the callback instead of the token.
+func (s *Service) CheckInvitation(ctx context.Context, token string, ip netip.Addr) ([]byte, error) {
+	if _, err := s.LookupInvitation(ctx, token, ip); err != nil {
+		return nil, err
+	}
+	return hashToken(token), nil
+}
+
 // joinInvited adds userID to the invitation's organization inside tx (a transaction bound to
 // that tenant): tenant row lock, the invitation locked and re-checked, the member quota, the
 // membership, the invitation marked used and the audit row, all at once (ADR-0102).
-func (s *Service) joinInvited(ctx context.Context, tx pgx.Tx, tenantID, userID uuid.UUID, token string, ip netip.Addr) (string, error) {
+func (s *Service) joinInvited(ctx context.Context, tx pgx.Tx, tenantID, userID uuid.UUID, tokenHash []byte, ip netip.Addr) (string, error) {
 	if err := plans.CheckJoin(ctx, tx, tenantID, plans.ResourceMember); err != nil {
 		if errors.Is(err, tenants.ErrNotFound) {
 			return "", ErrInvitationInvalid
@@ -263,7 +279,7 @@ func (s *Service) joinInvited(ctx context.Context, tx pgx.Tx, tenantID, userID u
 		return "", err
 	}
 	q := authdb.New(tx)
-	inv, err := q.LockInvitationByHash(ctx, authdb.LockInvitationByHashParams{TenantID: tenantID, TokenHash: hashToken(token)})
+	inv, err := q.LockInvitationByHash(ctx, authdb.LockInvitationByHashParams{TenantID: tenantID, TokenHash: tokenHash})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrInvitationInvalid
 	}
@@ -318,7 +334,7 @@ func (s *Service) AcceptInvitation(ctx context.Context, p Principal, token strin
 			// BootstrapAdmin refuses to start when the admin belongs to another tenant (ADR-0095).
 			return ErrAlreadyMember
 		}
-		role, err := s.joinInvited(ctx, tx, t.tenantID, p.UserID, token, ip)
+		role, err := s.joinInvited(ctx, tx, t.tenantID, p.UserID, hashToken(token), ip)
 		if err != nil {
 			return err
 		}

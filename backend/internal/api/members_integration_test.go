@@ -133,6 +133,14 @@ var roleCalls = map[string]struct {
 	"listProjectMembers":       {authz.Viewer, http.MethodGet, "/api/v1/projects/{id}/members", ""},
 	"putProjectMember":         {authz.Admin, http.MethodPut, "/api/v1/projects/{id}/members/{id}", `{"role":"viewer"}`},
 	"removeProjectMember":      {authz.Admin, http.MethodDelete, "/api/v1/projects/{id}/members/{id}", ""},
+	// Sign-in methods and domains (O-01, ADR-0104). The owner's domain claim ends in 403
+	// domain-not-verified (no Google identity), which is not a role refusal.
+	"listIdentities":   {authz.Viewer, http.MethodGet, "/api/v1/auth/identities", ""},
+	"unlinkIdentity":   {authz.Viewer, http.MethodDelete, "/api/v1/auth/identities/github", ""},
+	"listAuthDomains":  {authz.Owner, http.MethodGet, "/api/v1/organization/auth-domains", ""},
+	"createAuthDomain": {authz.Owner, http.MethodPost, "/api/v1/organization/auth-domains", `{"domain":"example.com"}`},
+	"updateAuthDomain": {authz.Owner, http.MethodPatch, "/api/v1/organization/auth-domains/{id}", `{"enabled":false}`},
+	"deleteAuthDomain": {authz.Owner, http.MethodDelete, "/api/v1/organization/auth-domains/{id}", ""},
 	// Allowed calls of these two end the session; they are checked in the lifecycle tests.
 	"logout":            {authz.Viewer, http.MethodPost, "/api/v1/auth/logout", ""},
 	"leaveOrganization": {authz.Viewer, http.MethodPost, "/api/v1/organization/leave", ""},

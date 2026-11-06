@@ -64,6 +64,9 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (LoginResult, 
 	if s.dummy == nil {
 		return LoginResult{}, errors.New("auth: BootstrapAdmin has not run")
 	}
+	if s.passwordLoginDisabled {
+		return LoginResult{}, ErrPasswordLoginDisabled
+	}
 	email, err := validateRegistration(in.Email, in.Password)
 	if err != nil {
 		s.registrations.WithLabelValues("invalid").Inc()
@@ -292,7 +295,7 @@ func (s *Service) joinExistingAccount(ctx context.Context, row authdb.GetUserByE
 			// BootstrapAdmin refuses to start when the admin belongs to another tenant (ADR-0095).
 			return ErrAlreadyMember
 		}
-		role, err := s.joinInvited(ctx, tx, target.tenantID, row.ID, in.InviteToken, in.IP)
+		role, err := s.joinInvited(ctx, tx, target.tenantID, row.ID, hashToken(in.InviteToken), in.IP)
 		if err != nil {
 			return err
 		}
@@ -329,7 +332,7 @@ func (s *Service) createInvitedAccount(ctx context.Context, email, passwordHash 
 			}
 			return fmt.Errorf("insert user: %w", err)
 		}
-		role, err := s.joinInvited(ctx, tx, tenantID, userID, in.InviteToken, in.IP)
+		role, err := s.joinInvited(ctx, tx, tenantID, userID, hashToken(in.InviteToken), in.IP)
 		if err != nil {
 			return err
 		}

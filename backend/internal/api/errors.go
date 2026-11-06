@@ -58,6 +58,10 @@ const (
 	problemSlugTaken          = "urn:maiak:problem:slug-taken"
 	problemProjectNotEmpty    = "urn:maiak:problem:project-not-empty"
 	problemDefaultProject     = "urn:maiak:problem:default-project"
+	problemPasswordLoginOff   = "urn:maiak:problem:password-login-disabled" //nolint:gosec // G101: problem type URN, not a credential
+	problemLastLoginMethod    = "urn:maiak:problem:last-login-method"
+	problemDomainNotVerified  = "urn:maiak:problem:domain-not-verified"
+	problemDomainTaken        = "urn:maiak:problem:domain-taken"
 	problemInternal           = "urn:maiak:problem:internal"
 )
 
@@ -72,6 +76,8 @@ var (
 	errNotImplemented   = errors.New("not implemented")
 	// errRegistrationDisabled is the kill switch MAIAK_REGISTRATION_ENABLED=false.
 	errRegistrationDisabled = errors.New("registration disabled")
+	// errOAuthUnavailable means the provider's discovery could not be loaded at the start of a flow.
+	errOAuthUnavailable = errors.New("oauth provider unavailable")
 )
 
 // writeError is the single place where errors become HTTP responses. Unknown errors are
@@ -169,6 +175,19 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 		// Neutral wording; registration without verification cannot hide that the account exists.
 		p.Type, p.Title, p.Status = problemEmailTaken, "This email is already registered", http.StatusConflict
 		p.Detail = "Sign in instead. Lost passwords are reset by the platform administrator."
+	case errors.Is(err, auth.ErrPasswordLoginDisabled):
+		p.Type, p.Title, p.Status = problemPasswordLoginOff, "Password sign-in is turned off", http.StatusForbidden
+		p.Detail = "Sign in with one of the offered providers."
+	case errors.Is(err, auth.ErrLastLoginMethod):
+		p.Type, p.Title, p.Status = problemLastLoginMethod, "This is your last way to sign in", http.StatusConflict
+		p.Detail = "Link another provider first."
+	case errors.Is(err, auth.ErrDomainNotVerified):
+		p.Type, p.Title, p.Status = problemDomainNotVerified, "Domain not verified", http.StatusForbidden
+		p.Detail = "Link a Google Workspace account of this domain to your profile, sign in with it, then claim the domain."
+	case errors.Is(err, auth.ErrDomainTaken):
+		p.Type, p.Title, p.Status = problemDomainTaken, "This domain is claimed by another organization", http.StatusConflict
+	case errors.Is(err, errOAuthUnavailable):
+		p.Type, p.Title, p.Status = problemUnavailable, "The sign-in provider is unavailable, try again later", http.StatusServiceUnavailable
 	case errors.Is(err, errRegistrationDisabled):
 		p.Type, p.Title, p.Status = problemRegistrationOff, "Registration is turned off", http.StatusForbidden
 	case errors.As(err, &rateErr):
@@ -196,7 +215,7 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 	case errors.Is(err, errNotFound), errors.Is(err, routers.ErrPathNotFound), errors.Is(err, monitors.ErrNotFound), errors.Is(err, queries.ErrNotFound), errors.Is(err, admin.ErrNotFound),
 		errors.Is(err, notify.ErrChannelNotFound), errors.Is(err, auth.ErrMemberNotFound), errors.Is(err, auth.ErrInvitationNotFound),
 		errors.Is(err, auth.ErrOrganizationNotFound), errors.Is(err, projects.ErrNotFound), errors.Is(err, projects.ErrMemberNotFound),
-		errors.Is(err, statuspages.ErrNotFound):
+		errors.Is(err, statuspages.ErrNotFound), errors.Is(err, auth.ErrIdentityNotFound), errors.Is(err, auth.ErrAuthDomainNotFound):
 		p.Type, p.Title, p.Status = problemNotFound, "Not found", http.StatusNotFound
 	case errors.Is(err, errMethodNotAllowed), errors.Is(err, routers.ErrMethodNotAllowed):
 		p.Type, p.Title, p.Status = problemMethodNotAllowed, "Method not allowed", http.StatusMethodNotAllowed

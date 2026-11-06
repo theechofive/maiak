@@ -30,7 +30,7 @@ func TestIntegrationMigrateFromScratchAndRerun(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "audit_log,auth_identities,check_results,heartbeat_tokens,incident_monitors,incidents,invitations,memberships,monitor_channels,monitor_location_state," +
-		"monitor_locations,monitor_state,monitors,notification_channels,notification_deliveries,plans,probe_locations,project_members,projects,result_rollups_hourly,rollup_state,sessions," +
+		"monitor_locations,monitor_state,monitors,notification_channels,notification_deliveries,org_auth_domains,plans,probe_locations,project_members,projects,result_rollups_hourly,rollup_state,sessions," +
 		"status_page_components,status_page_released_slugs,status_page_snapshots,status_pages,tenants,users"
 	if got := strings.Join(tables, ","); got != want {
 		t.Fatalf("tables = %s, want %s", got, want)
@@ -96,6 +96,9 @@ var definerAllowList = map[string][]string{
 	// A freed address stays reserved for its organization for 30 days; the api asks whether it is
 	// held for someone else before the tenant could see the row (P-06).
 	"status_page_slug_held": {"maiak_api"},
+	// OAuth login (O-01, ADR-0104): a Google sign-in finds the organization that claimed its
+	// Workspace domain before the tenant is known.
+	"auth_domain_lookup": {"maiak_api"},
 }
 
 // extraPolicies are the permissive policies on tenant tables that are not tenant isolation
@@ -133,6 +136,8 @@ var extraPolicies = map[string]struct {
 	"status_page_snapshots.owner_statuspage_read": {cmd: "r", roles: []string{"maiak_owner"}},
 	// status_page_slug_held (P-06).
 	"status_page_released_slugs.owner_slug_hold_read": {cmd: "r", roles: []string{"maiak_owner"}},
+	// auth_domain_lookup (O-01, ADR-0104).
+	"org_auth_domains.owner_domain_lookup": {cmd: "r", roles: []string{"maiak_owner"}},
 }
 
 var runtimeRoles = []string{"maiak_api", "maiak_statuspage", "maiak_worker"}

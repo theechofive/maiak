@@ -44,6 +44,8 @@ The `statuspage` Deployment (ADR-0103, `statuspage.enabled`) gets exactly `MAIAK
 | `MAIAK_ADMIN_LOGIN`, `MAIAK_ADMIN_PASSWORD_HASH` (`maiak-admin`) | x | **never** | **never** | | |
 | `MAIAK_HTTP_ADDR`, `MAIAK_SESSION_TTL`, `MAIAK_COOKIE_SECURE`, `MAIAK_TRUSTED_PROXY_HOPS` | x | | | | |
 | `MAIAK_REGISTRATION_ENABLED` (`config.registrationEnabled`, default `true`; only an explicit `false` turns self-service registration off) | x | | | | |
+| `MAIAK_PASSWORD_LOGIN_ENABLED` (`config.passwordLoginEnabled`, default `true`; `false` keeps the password form for the platform admin only and needs an OAuth provider, ADR-0104) | x | | | | |
+| `MAIAK_OAUTH_GOOGLE_CLIENT_ID`/`_SECRET`, `MAIAK_OAUTH_GITHUB_CLIENT_ID`/`_SECRET` (`maiak-oauth`, only for providers enabled in `oauth.*.enabled`) | x | **never** | **never** | | |
 | `MAIAK_PUBLIC_URL` (`config.publicUrl`, default `https://maiak.klr-ops.net`) | x | | x | | |
 | `MAIAK_BLOCKED_CIDRS` (`config.blockedCIDRs`, only rendered when non-empty) | x | x | x | | |
 | `MAIAK_WORKER_CLAIM_BATCH`, `_CONCURRENCY`, `_TENANT_CONCURRENCY`, `_HOST_CONCURRENCY` | | x | | | |
@@ -88,6 +90,7 @@ Workloads always read `maiak-admin` (`login`, `password_hash`) and `maiak-crypto
 |---|---|---|
 | `secrets.admin.remoteKey` (`platform/maiak/admin`) | `login`, `password_hash` | `maiak-admin` |
 | `secrets.crypto.remoteKey` (`platform/maiak/crypto`) | `keys` (JSON string), `active_key_id` | `maiak-crypto` |
+| `secrets.oauth.remoteKey` (`platform/maiak/oauth`, always an ExternalSecret, rendered when a provider is enabled) | `google_client_id`, `google_client_secret`, `github_client_id`, `github_client_secret` (only those of enabled providers) | `maiak-oauth` |
 
 The secrets Job (`maiak-secrets-bootstrap`, rendered when any source is `generate`) has its own ServiceAccount
 with an API token and a Role limited to `create` on secrets and `get,update,patch` on exactly `maiak-admin`,
