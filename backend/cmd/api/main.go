@@ -65,6 +65,8 @@ func run() error {
 		Registerer: reg,
 		// ADR-0104: only the admin login keeps the password form when it is off.
 		PasswordLoginDisabled: !cfg.PasswordLoginEnabled,
+		// O-04: only operator-approved Workspace domains can be claimed and joined by.
+		AllowedDomains: cfg.OAuth.AllowedDomains,
 	})
 	if err != nil {
 		return err

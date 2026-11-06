@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 )
 
@@ -27,6 +29,8 @@ const (
 	discoveryTTL = 24 * time.Hour
 	// jwksRefreshMin limits refetching the keys for an unknown kid (key rotation) to once a minute.
 	jwksRefreshMin = time.Minute
+	// discoveryBackoff is how long a failed discovery fetch is not retried while a stale copy serves.
+	discoveryBackoff = 30 * time.Second
 	// clockSkew is the tolerance for exp and iat.
 	clockSkew = 2 * time.Minute
 	maxJWKs   = 20
@@ -50,9 +54,13 @@ type Google struct {
 	cfg    GoogleConfig
 	client *http.Client
 
+	// mu guards the cached documents only; fetches run outside it, deduplicated by sf, so a slow
+	// provider never holds sign-ins that the cache could answer.
 	mu        sync.Mutex
+	sf        singleflight.Group
 	disc      *discovery
 	discAt    time.Time
+	discFail  time.Time
 	keys      map[string]*rsa.PublicKey
 	keysAt    time.Time
 	keysFetch time.Time
@@ -256,28 +264,43 @@ func decodeSegment(seg string, v any) error {
 
 func (g *Google) discovery(ctx context.Context) (*discovery, error) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	now := g.cfg.Clock.Now()
-	if g.disc != nil && now.Sub(g.discAt) < discoveryTTL {
-		return g.disc, nil
+	cached, fresh := g.disc, g.disc != nil && now.Sub(g.discAt) < discoveryTTL
+	backoff := cached != nil && now.Sub(g.discFail) < discoveryBackoff
+	g.mu.Unlock()
+	if fresh || backoff {
+		return cached, nil
 	}
+	v, err, _ := g.sf.Do("discovery", func() (any, error) { return g.fetchDiscovery(ctx) })
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err != nil {
+		g.discFail = g.cfg.Clock.Now()
+		if g.disc != nil {
+			// A stale document beats no sign-in while Google's discovery endpoint hiccups; the
+			// next fetch waits for discoveryBackoff.
+			return g.disc, nil
+		}
+		return nil, err
+	}
+	d := v.(*discovery)
+	g.disc, g.discAt = d, g.cfg.Clock.Now()
+	return d, nil
+}
+
+func (g *Google) fetchDiscovery(ctx context.Context) (*discovery, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.cfg.Issuer+"/.well-known/openid-configuration", nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrProvider, err)
 	}
 	var d discovery
 	if err := doJSON(g.client, req, &d); err != nil {
-		if g.disc != nil {
-			// A stale document beats no sign-in while Google's discovery endpoint hiccups.
-			return g.disc, nil
-		}
 		return nil, err
 	}
 	if d.Issuer != g.cfg.Issuer || !isHTTPS(d.AuthorizationEndpoint) || !isHTTPS(d.TokenEndpoint) || !isHTTPS(d.JWKSURI) {
 		return nil, fmt.Errorf("%w: discovery document has an unexpected issuer or non-https endpoints", ErrProvider)
 	}
-	g.disc, g.discAt = &d, now
-	return g.disc, nil
+	return &d, nil
 }
 
 func isHTTPS(raw string) bool {
@@ -286,22 +309,41 @@ func isHTTPS(raw string) bool {
 }
 
 // key returns the RSA key with that kid, refetching the key set when it is unknown or older than
-// the discovery TTL (at most once per jwksRefreshMin).
+// the discovery TTL (at most once per jwksRefreshMin, outside the mutex).
 func (g *Google) key(ctx context.Context, d *discovery, kid string) (*rsa.PublicKey, error) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	now := g.cfg.Clock.Now()
-	if k, ok := g.keys[kid]; ok && now.Sub(g.keysAt) < discoveryTTL {
+	k, ok := g.keys[kid]
+	if ok && now.Sub(g.keysAt) < discoveryTTL {
+		g.mu.Unlock()
 		return k, nil
 	}
 	if now.Sub(g.keysFetch) < jwksRefreshMin {
-		if k, ok := g.keys[kid]; ok {
+		g.mu.Unlock()
+		if ok {
 			return k, nil
 		}
 		return nil, fmt.Errorf("%w: unknown id token key", ErrProvider)
 	}
 	g.keysFetch = now
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.JWKSURI, nil)
+	g.mu.Unlock()
+
+	v, err, _ := g.sf.Do("keys", func() (any, error) { return g.fetchKeys(ctx, d.JWKSURI) })
+	if err != nil {
+		return nil, err
+	}
+	keys := v.(map[string]*rsa.PublicKey)
+	g.mu.Lock()
+	g.keys, g.keysAt = keys, g.cfg.Clock.Now()
+	g.mu.Unlock()
+	if k, ok := keys[kid]; ok {
+		return k, nil
+	}
+	return nil, fmt.Errorf("%w: unknown id token key", ErrProvider)
+}
+
+func (g *Google) fetchKeys(ctx context.Context, uri string) (map[string]*rsa.PublicKey, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrProvider, err)
 	}
@@ -334,11 +376,7 @@ func (g *Google) key(ctx context.Context, d *discovery, kid string) (*rsa.Public
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("%w: no usable keys in the key set", ErrProvider)
 	}
-	g.keys, g.keysAt = keys, now
-	if k, ok := keys[kid]; ok {
-		return k, nil
-	}
-	return nil, fmt.Errorf("%w: unknown id token key", ErrProvider)
+	return keys, nil
 }
 
 func rsaKey(n64, e64 string) (*rsa.PublicKey, error) {

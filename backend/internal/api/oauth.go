@@ -18,8 +18,14 @@ import (
 	"github.com/theechofive/maiak/backend/internal/platform/logging"
 )
 
-// OAuthCookie carries the signed state of an OAuth flow from start to callback (ADR-0104).
-const OAuthCookie = "maiak_oauth"
+// OAuthCookie carries the signed state of an OAuth flow from start to callback (ADR-0104). The
+// __Host- prefix (O-04) makes browsers accept it only with Secure, Path=/ and no Domain, so a
+// sibling subdomain or a plain-HTTP response cannot plant or overwrite it.
+const OAuthCookie = "__Host-maiak_oauth"
+
+// OAuthCookieInsecure is the state cookie when MAIAK_COOKIE_SECURE=false (local development over
+// plain HTTP, where browsers refuse __Host- cookies); it stays limited to the OAuth paths.
+const OAuthCookieInsecure = "maiak_oauth"
 
 const oauthCookiePath = "/api/v1/auth/oauth/"
 
@@ -141,7 +147,7 @@ func (s *server) OauthCallback(ctx context.Context, req gen.OauthCallbackRequest
 	}
 
 	var cookie string
-	if c, err := r.Cookie(OAuthCookie); err == nil {
+	if c, err := r.Cookie(s.oauthStateCookie("").Name); err == nil {
 		cookie = c.Value
 	}
 	var st oauth.State
@@ -242,16 +248,20 @@ func oauthErrorCode(err error) (string, bool) {
 	return "", false
 }
 
-// oauthStateCookie builds the state cookie, scoped to the OAuth paths; an empty value expires it.
+// oauthStateCookie builds the state cookie; an empty value expires it. With secure cookies it is
+// the __Host- cookie on Path=/, otherwise the unprefixed one scoped to the OAuth paths.
 // SameSite=Lax: the callback is a top-level GET navigation from the provider.
 func (s *server) oauthStateCookie(value string) *http.Cookie {
 	c := &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are literal, Secure is configurable (default true)
 		Name:     OAuthCookie,
 		Value:    value,
-		Path:     oauthCookiePath,
+		Path:     "/",
 		HttpOnly: true,
 		Secure:   s.cfg.CookieSecure,
 		SameSite: http.SameSiteLaxMode,
+	}
+	if !s.cfg.CookieSecure {
+		c.Name, c.Path = OAuthCookieInsecure, oauthCookiePath
 	}
 	if value == "" {
 		c.MaxAge = -1

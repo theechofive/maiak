@@ -62,6 +62,7 @@ const (
 	problemLastLoginMethod    = "urn:maiak:problem:last-login-method"
 	problemDomainNotVerified  = "urn:maiak:problem:domain-not-verified"
 	problemDomainTaken        = "urn:maiak:problem:domain-taken"
+	problemDomainNotAllowed   = "urn:maiak:problem:domain-not-allowed"
 	problemInternal           = "urn:maiak:problem:internal"
 )
 
@@ -184,6 +185,9 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 	case errors.Is(err, auth.ErrDomainNotVerified):
 		p.Type, p.Title, p.Status = problemDomainNotVerified, "Domain not verified", http.StatusForbidden
 		p.Detail = "Link a Google Workspace account of this domain to your profile, sign in with it, then claim the domain."
+	case errors.Is(err, auth.ErrDomainNotAllowed):
+		p.Type, p.Title, p.Status = problemDomainNotAllowed, "This domain cannot be claimed on this installation", http.StatusForbidden
+		p.Detail = "The operator allows only the domains in MAIAK_OAUTH_ALLOWED_DOMAINS; ask them to add it."
 	case errors.Is(err, auth.ErrDomainTaken):
 		p.Type, p.Title, p.Status = problemDomainTaken, "This domain is claimed by another organization", http.StatusConflict
 	case errors.Is(err, errOAuthUnavailable):

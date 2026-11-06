@@ -50,6 +50,8 @@ type fakeProvider struct {
 	redirect  string // when set, the token endpoint redirects there
 	bigBody   bool
 	keyFetch  int
+	discFetch int
+	discFail  bool
 }
 
 func newFakeProvider(t *testing.T) *fakeProvider {
@@ -62,6 +64,14 @@ func newFakeProvider(t *testing.T) *fakeProvider {
 		ghUser: `{"id":4242,"login":"octo","name":"Octo Cat"}`, ghEmails: `[{"email":"Octo@Example.com","primary":true,"verified":true}]`}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.discFetch++
+		fail := f.discFail
+		f.mu.Unlock()
+		if fail {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
 		base := f.srv.URL
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"issuer": base, "authorization_endpoint": base + "/auth", "token_endpoint": base + "/token", "jwks_uri": base + "/keys",
@@ -410,5 +420,64 @@ func TestNewHTTPClient(t *testing.T) {
 	tr, ok := c.Transport.(*http.Transport)
 	if !ok || tr.Proxy != nil {
 		t.Fatal("client uses a proxy from the environment")
+	}
+}
+
+// A failed discovery refresh serves the stale document and is not retried for a while (O-04 L1).
+func TestGoogleDiscoveryBackoff(t *testing.T) {
+	f := newFakeProvider(t)
+	clk := clock.NewFake(time.Now())
+	g := f.google(clk)
+	ctx := context.Background()
+	authURL := func() error {
+		_, err := g.AuthCodeURL(ctx, oauth.AuthRequest{State: "s", Nonce: "n", CodeChallenge: "c", RedirectURI: publicURL})
+		return err
+	}
+	fetches := func() int { f.mu.Lock(); defer f.mu.Unlock(); return f.discFetch }
+	if err := authURL(); err != nil || fetches() != 1 {
+		t.Fatalf("first: %v, fetches %d", err, fetches())
+	}
+	f.mu.Lock()
+	f.discFail = true
+	f.mu.Unlock()
+	clk.Advance(25 * time.Hour)
+	for i := 0; i < 3; i++ {
+		if err := authURL(); err != nil {
+			t.Fatalf("stale copy not served: %v", err)
+		}
+	}
+	if fetches() != 2 {
+		t.Fatalf("fetches during backoff = %d, want 2", fetches())
+	}
+	clk.Advance(31 * time.Second)
+	if err := authURL(); err != nil || fetches() != 3 {
+		t.Fatalf("after backoff: %v, fetches %d", err, fetches())
+	}
+	// Without any copy the failure is returned.
+	cold := f.google(clk)
+	if _, err := cold.AuthCodeURL(ctx, oauth.AuthRequest{}); !errors.Is(err, oauth.ErrProvider) {
+		t.Fatalf("cold failure: %v", err)
+	}
+}
+
+// Concurrent sign-ins share one discovery fetch.
+func TestGoogleDiscoverySingleFetch(t *testing.T) {
+	f := newFakeProvider(t)
+	g := f.google(nil)
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := g.AuthCodeURL(context.Background(), oauth.AuthRequest{}); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.discFetch > 2 {
+		t.Fatalf("discovery fetched %d times for one cold start", f.discFetch)
 	}
 }

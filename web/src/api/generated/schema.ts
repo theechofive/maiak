@@ -240,8 +240,9 @@ export interface paths {
      * Start an OAuth sign-in or link
      * @description Starts the authorization code flow with PKCE (S256) and returns the provider's
      *     authorization URL; the web app navigates there. `state`, `nonce` and the PKCE verifier are
-     *     kept in a short-lived (10 minutes) HMAC-signed HttpOnly cookie bound to this browser,
-     *     scoped to `/api/v1/auth/oauth/`. The redirect URI is always
+     *     kept in a short-lived (10 minutes) HMAC-signed HttpOnly cookie bound to this browser
+     *     (`__Host-maiak_oauth`, Secure, Path=/; `maiak_oauth` scoped to `/api/v1/auth/oauth/` only
+     *     when the deployment runs without secure cookies). The redirect URI is always
      *     `MAIAK_PUBLIC_URL/api/v1/auth/oauth/{provider}/callback`.
      *
      *     `intent: login` (the default) needs no session. With `inviteToken` the sign-in joins the
@@ -1086,12 +1087,16 @@ export interface paths {
     put?: never;
     /**
      * Claim a sign-in domain
-     * @description Claims a Google Workspace domain for the organization. Proof of control: the owner's
-     *     linked Google account must have signed in last with that Workspace domain (`hd`),
-     *     otherwise 403 `urn:maiak:problem:domain-not-verified`. A domain belongs to one
-     *     organization of the installation only (409 `urn:maiak:problem:domain-taken`). At most 10
-     *     domains per organization (422). `defaultRole` defaults to `viewer`. Audited as
-     *     `org.auth_domain_changed`. Owner only.
+     * @description Claims a Google Workspace domain for the organization. The operator allows only the
+     *     domains in `MAIAK_OAUTH_ALLOWED_DOMAINS` (403 `urn:maiak:problem:domain-not-allowed`; an
+     *     empty list turns claiming off). Proof of control: the owner's linked Google account must
+     *     have signed in or been linked with that Workspace domain (`hd`) in the last 10 minutes
+     *     (link Google again right before claiming), otherwise 403
+     *     `urn:maiak:problem:domain-not-verified`. A domain belongs to one organization of the
+     *     installation only (409 `urn:maiak:problem:domain-taken`). At most 10 domains per
+     *     organization (422). A new domain always starts with `defaultRole` `viewer` (another value
+     *     is 422); raise it with `updateAuthDomain`. Auto-join stops for a domain that the operator
+     *     removes from the list. Audited as `org.auth_domain_changed`. Owner only.
      */
     post: operations["createAuthDomain"];
     delete?: never;
@@ -2305,6 +2310,7 @@ export interface components {
     AuthDomainCreate: {
       /** @description A Google Workspace primary domain such as example.com; lowercased by the server (422 when not a domain name) */
       domain: string;
+      /** @description Only `viewer` is accepted at creation (422 otherwise); change it with PATCH */
       defaultRole?: components["schemas"]["AuthDomainRole"];
       enabled?: boolean;
     };
@@ -2776,7 +2782,7 @@ export interface operations {
       /** @description The authorization URL to navigate to */
       200: {
         headers: {
-          /** @description The signed state cookie (`maiak_oauth`, HttpOnly, SameSite=Lax, 10 minutes) */
+          /** @description The signed state cookie (`__Host-maiak_oauth`, Secure, HttpOnly, SameSite=Lax, 10 minutes) */
           "Set-Cookie"?: string;
           [name: string]: unknown;
         };

@@ -27,11 +27,12 @@ DELETE FROM auth_identities
 WHERE user_id = @user_id AND provider = @provider;
 
 -- name: HasGoogleDomain :one
--- The proof of control for claiming a domain: the user's Google identity signed in last with
--- that Workspace domain (hd).
+-- The proof of control for claiming a domain: the user's Google identity signed in or was linked
+-- with that Workspace domain (hd) not before @not_before (a fresh sign-in, O-04).
 SELECT EXISTS (
     SELECT 1 FROM auth_identities
     WHERE user_id = @user_id AND provider = 'google' AND hosted_domain = @domain
+      AND last_login_at >= @not_before
 );
 
 -- name: LockUserForIdentities :one

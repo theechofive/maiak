@@ -154,6 +154,10 @@ keys (ADR-0016, L-042). Arg: root context
 {{- end }}
 - name: MAIAK_PASSWORD_LOGIN_ENABLED
   value: {{ ternary "false" "true" $passwordOff | quote }}
+{{- with .Values.oauth.allowedDomains }}
+- name: MAIAK_OAUTH_ALLOWED_DOMAINS
+  value: {{ join "," . | quote }}
+{{- end }}
 {{- range $p := list "google" "github" }}
 {{- if (index $.Values.oauth $p).enabled }}
 - name: MAIAK_OAUTH_{{ upper $p }}_CLIENT_ID

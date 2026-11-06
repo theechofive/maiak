@@ -423,3 +423,25 @@ func TestLoadAPIOAuth(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadAPIAllowedDomains(t *testing.T) {
+	e := apiEnv(t)
+	e["MAIAK_OAUTH_ALLOWED_DOMAINS"] = " example.com, sub.example.org ,example.com"
+	cfg, err := LoadAPI(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(cfg.OAuth.AllowedDomains, ",") != "example.com,sub.example.org" {
+		t.Fatalf("allowed domains: %v", cfg.OAuth.AllowedDomains)
+	}
+	if cfg, err := LoadAPI(env(apiEnv(t))); err != nil || len(cfg.OAuth.AllowedDomains) != 0 {
+		t.Fatalf("default: %v %v", cfg.OAuth.AllowedDomains, err)
+	}
+	for _, bad := range []string{"Example.com", "*.example.com", "example", "example.com.", "exa mple.com"} {
+		e := apiEnv(t)
+		e["MAIAK_OAUTH_ALLOWED_DOMAINS"] = bad
+		if _, err := LoadAPI(env(e)); err == nil || !strings.Contains(err.Error(), "MAIAK_OAUTH_ALLOWED_DOMAINS") {
+			t.Errorf("%q: err = %v", bad, err)
+		}
+	}
+}

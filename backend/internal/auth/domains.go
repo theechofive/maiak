@@ -22,6 +22,10 @@ import (
 // maxAuthDomains is how many sign-in domains one organization may claim.
 const maxAuthDomains = 10
 
+// DomainProofWindow is how recent the owner's Google sign-in or link with the domain's hd must be
+// to claim it (O-04): the web sends the owner through the link flow right before claiming.
+const DomainProofWindow = 10 * time.Minute
+
 // domainPattern is the org_auth_domains.domain check: lowercase labels, at least one dot, a
 // top-level label that starts with a letter.
 var domainPattern = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -32,6 +36,9 @@ var (
 	// ErrDomainNotVerified means the owner's linked Google account did not last sign in with that
 	// Workspace domain (the proof of control, ADR-0104).
 	ErrDomainNotVerified = errors.New("auth: domain not verified by a Google Workspace sign-in")
+	// ErrDomainNotAllowed means the domain is not in MAIAK_OAUTH_ALLOWED_DOMAINS (or the list is
+	// empty and claiming is off, O-04).
+	ErrDomainNotAllowed = errors.New("auth: domain not allowed by the operator")
 	// ErrDomainTaken means another organization claimed the domain.
 	ErrDomainTaken = errors.New("auth: domain claimed by another organization")
 )
@@ -66,26 +73,35 @@ func (s *Service) ListAuthDomains(ctx context.Context, tenantID uuid.UUID) ([]Au
 	return out, nil
 }
 
-// CreateAuthDomain claims a domain for the actor's organization (owner only). The actor's linked
-// Google identity must have signed in last with that hd.
+// CreateAuthDomain claims a domain for the actor's organization (owner only, O-04): the domain must
+// be on the operator's allow-list, the actor's linked Google identity must have signed in or been
+// linked with that hd within DomainProofWindow, and a new claim always starts with the viewer role
+// (defaultRole may only be empty or viewer; raise it with UpdateAuthDomain).
 func (s *Service) CreateAuthDomain(ctx context.Context, a Actor, domain, defaultRole string, enabled bool) (AuthDomain, error) {
 	domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	var verr validation.Error
 	if len(domain) < 3 || len(domain) > 253 || !domainPattern.MatchString(domain) {
-		var verr validation.Error
 		verr.Add("domain", "must be a domain name such as example.com")
-		return AuthDomain{}, verr.Err()
 	}
-	if defaultRole == "" {
-		defaultRole = RoleViewer
+	if defaultRole != "" && defaultRole != RoleViewer {
+		verr.Add("defaultRole", "a new domain starts as viewer; raise the role afterwards")
 	}
+	if err := verr.Err(); err != nil {
+		return AuthDomain{}, err
+	}
+	if !s.allowedDomains[domain] {
+		return AuthDomain{}, ErrDomainNotAllowed
+	}
+	defaultRole = RoleViewer
 	now := s.clock.Now()
+	notBefore := now.Add(-DomainProofWindow)
 	d := AuthDomain{ID: uuidv7.New(), Domain: domain, DefaultRole: defaultRole, Enabled: enabled, CreatedAt: now, UpdatedAt: now}
 	err := db.WithTenantTx(ctx, s.pool, a.TenantID, func(tx pgx.Tx) error {
 		if err := requireOwner(ctx, tx, a); err != nil {
 			return err
 		}
 		q := authdb.New(tx)
-		proven, err := q.HasGoogleDomain(ctx, authdb.HasGoogleDomainParams{UserID: a.UserID, Domain: &domain})
+		proven, err := q.HasGoogleDomain(ctx, authdb.HasGoogleDomainParams{UserID: a.UserID, Domain: &domain, NotBefore: &notBefore})
 		if err != nil {
 			return fmt.Errorf("check domain proof: %w", err)
 		}
@@ -207,7 +223,7 @@ func wrapDomainErr(op string, err error) error {
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, ErrAuthDomainNotFound), errors.Is(err, ErrDomainNotVerified), errors.Is(err, ErrDomainTaken),
+	case errors.Is(err, ErrAuthDomainNotFound), errors.Is(err, ErrDomainNotVerified), errors.Is(err, ErrDomainTaken), errors.Is(err, ErrDomainNotAllowed),
 		errors.Is(err, authz.ErrForbidden), errors.Is(err, ErrUnauthenticated), errors.As(err, &verr):
 		return err
 	}

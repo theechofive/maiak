@@ -136,7 +136,13 @@
       "required": ["google", "github"],
       "properties": {
         "google": {"type": "object", "required": ["enabled"], "properties": {"enabled": {"type": "boolean"}}},
-        "github": {"type": "object", "required": ["enabled"], "properties": {"enabled": {"type": "boolean"}}}
+        "github": {"type": "object", "required": ["enabled"], "properties": {"enabled": {"type": "boolean"}}},
+        "allowedDomains": {
+          "type": "array",
+          "description": "MAIAK_OAUTH_ALLOWED_DOMAINS: lowercase Google Workspace domains organizations may claim (O-04); empty turns claiming off",
+          "uniqueItems": true,
+          "items": {"type": "string", "maxLength": 253, "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"}
+        }
       }
     },
     "externalSecrets": {

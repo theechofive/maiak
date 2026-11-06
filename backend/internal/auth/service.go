@@ -79,6 +79,9 @@ type Options struct {
 	// PasswordLoginDisabled turns password login and password registration off for everyone
 	// but the configured admin login (MAIAK_PASSWORD_LOGIN_ENABLED=false, ADR-0104).
 	PasswordLoginDisabled bool
+	// AllowedDomains are the Google Workspace domains organizations may claim and join by
+	// (MAIAK_OAUTH_ALLOWED_DOMAINS, lowercase, O-04). Empty: claiming and domain auto-join are off.
+	AllowedDomains []string
 }
 
 // Service implements authentication.
@@ -100,6 +103,7 @@ type Service struct {
 	oauthLogins   *prometheus.CounterVec
 
 	passwordLoginDisabled bool
+	allowedDomains        map[string]bool
 	// adminLogin is set by BootstrapAdmin: the one login that keeps the password form when
 	// password login is turned off.
 	adminLogin string
@@ -147,6 +151,7 @@ func NewService(pool *db.Pool, opts Options) (*Service, error) {
 		hashWait:              opts.HashQueueWait,
 		afterVerify:           func() {},
 		passwordLoginDisabled: opts.PasswordLoginDisabled,
+		allowedDomains:        map[string]bool{},
 		beforeJoin:            func() {},
 		logins: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "maiak_auth_logins_total",
@@ -160,6 +165,9 @@ func NewService(pool *db.Pool, opts Options) (*Service, error) {
 			Name: "maiak_auth_oauth_logins_total",
 			Help: "OAuth sign-ins and links by provider and result (succeeded, or the error code of the redirect).",
 		}, []string{"provider", "result"}),
+	}
+	for _, d := range opts.AllowedDomains {
+		s.allowedDomains[d] = true
 	}
 	if opts.Registerer != nil {
 		for _, c := range []prometheus.Collector{s.logins, s.registrations, s.oauthLogins} {

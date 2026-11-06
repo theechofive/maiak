@@ -185,7 +185,8 @@ func (s *Service) oauthLogin(ctx context.Context, in OAuthLoginInput) (LoginResu
 	if len(in.InviteHash) > 0 {
 		return s.oauthJoinInvitation(ctx, in, uuid.Nil)
 	}
-	if id.Provider == ProviderGoogle && id.HostedDomain != "" {
+	// A stored claim joins only while its domain is still on the operator's allow-list (O-04).
+	if id.Provider == ProviderGoogle && id.HostedDomain != "" && s.allowedDomains[id.HostedDomain] {
 		var tenantID *uuid.UUID
 		err := db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
 			err := tx.QueryRow(ctx, `SELECT tenant_id FROM auth_domain_lookup($1)`, id.HostedDomain).Scan(&tenantID)
@@ -541,6 +542,11 @@ func (s *Service) LinkIdentity(ctx context.Context, p Principal, id OAuthIdentit
 			if db.IsUniqueViolation(err, "auth_identities_pkey") {
 				reason = "identity_in_use"
 				return ErrIdentityInUse
+			}
+			// A concurrent link of the same provider for this user (O-04 L2).
+			if db.IsUniqueViolation(err, "auth_identities_user_provider_key") {
+				reason = "already_linked"
+				return ErrAlreadyLinked
 			}
 			return fmt.Errorf("insert identity: %w", err)
 		}

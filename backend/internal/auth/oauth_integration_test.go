@@ -13,6 +13,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/authz"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
+	"github.com/theechofive/maiak/backend/internal/platform/db"
 	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
 )
 
@@ -21,6 +22,7 @@ type oauthEnv struct {
 	ctx   context.Context
 	svc   *auth.Service
 	admin *pgx.Conn
+	pool  *db.Pool
 }
 
 func newOAuthEnv(t *testing.T, name string, opts auth.Options) *oauthEnv {
@@ -28,15 +30,25 @@ func newOAuthEnv(t *testing.T, name string, opts auth.Options) *oauthEnv {
 	env := pgtest.New(t, pgtest.DBName(name))
 	ctx := context.Background()
 	opts.SessionTTL = time.Hour
-	svc, err := auth.NewService(env.Pool(t, env.APIURL, 8), opts)
+	pool := env.Pool(t, env.APIURL, 8)
+	e := &oauthEnv{t: t, ctx: ctx, admin: env.AdminConn(t), pool: pool}
+	e.svc = e.service(opts)
+	return e
+}
+
+// service builds another auth service on the same database (another configuration).
+func (e *oauthEnv) service(opts auth.Options) *auth.Service {
+	e.t.Helper()
+	opts.SessionTTL = time.Hour
+	svc, err := auth.NewService(e.pool, opts)
 	if err != nil {
-		t.Fatal(err)
+		e.t.Fatal(err)
 	}
 	hash, _ := crypto.HashPassword("admin password", cheap)
-	if err := svc.BootstrapAdmin(ctx, "admin", hash); err != nil {
-		t.Fatal(err)
+	if err := svc.BootstrapAdmin(e.ctx, "admin", hash); err != nil {
+		e.t.Fatal(err)
 	}
-	return &oauthEnv{t: t, ctx: ctx, svc: svc, admin: env.AdminConn(t)}
+	return svc
 }
 
 var oauthIP = netip.MustParseAddr("198.51.100.20")
@@ -228,23 +240,42 @@ func TestIntegrationOAuthInvitation(t *testing.T) {
 }
 
 func TestIntegrationOAuthDomains(t *testing.T) {
-	e := newOAuthEnv(t, "auth_oauth_domains", auth.Options{})
+	e := newOAuthEnv(t, "auth_oauth_domains", auth.Options{AllowedDomains: []string{"example.com", "proof.example"}})
 	admin := e.adminLogin()
 	ap := e.principal(admin)
 	owner := auth.Actor{TenantID: admin.Tenant.ID, UserID: admin.User.ID}
 
-	// Claiming needs a Google Workspace sign-in with that hd (proof of control).
+	// Claiming is limited to the operator's list (O-04); without a list it is off.
+	off0 := e.service(auth.Options{})
+	if _, err := off0.CreateAuthDomain(e.ctx, owner, "example.com", "", true); !errors.Is(err, auth.ErrDomainNotAllowed) {
+		t.Fatalf("claim with an empty allow-list: %v", err)
+	}
+	// Claiming needs a fresh Google Workspace sign-in with that hd (proof of control).
 	if _, err := e.svc.CreateAuthDomain(e.ctx, owner, "Example.com", "", true); !errors.Is(err, auth.ErrDomainNotVerified) {
 		t.Fatalf("claim without proof: %v", err)
 	}
 	if err := e.svc.LinkIdentity(e.ctx, ap, google("g-admin", "it@example.com", "example.com"), oauthIP); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.svc.CreateAuthDomain(e.ctx, owner, "other.com", "", true); !errors.Is(err, auth.ErrDomainNotVerified) {
-		t.Fatalf("claim of another domain: %v", err)
+	if _, err := e.svc.CreateAuthDomain(e.ctx, owner, "other.com", "", true); !errors.Is(err, auth.ErrDomainNotAllowed) {
+		t.Fatalf("claim of a domain off the list: %v", err)
+	}
+	if _, err := e.svc.CreateAuthDomain(e.ctx, owner, "proof.example", "", true); !errors.Is(err, auth.ErrDomainNotVerified) {
+		t.Fatalf("claim of an allowed domain without its proof: %v", err)
 	}
 	if _, err := e.svc.CreateAuthDomain(e.ctx, owner, "not a domain", "", true); err == nil {
 		t.Fatal("invalid domain accepted")
+	}
+	if _, err := e.svc.CreateAuthDomain(e.ctx, owner, "example.com", auth.RoleAdmin, true); err == nil {
+		t.Fatal("a new claim with the admin role was accepted")
+	}
+	// A proof older than the window does not count; a new link or sign-in refreshes it.
+	pgtest.MustExec(t, e.admin, `UPDATE auth_identities SET last_login_at = now() - interval '11 minutes' WHERE subject = 'g-admin'`)
+	if _, err := e.svc.CreateAuthDomain(e.ctx, owner, "example.com", "", true); !errors.Is(err, auth.ErrDomainNotVerified) {
+		t.Fatalf("claim with a stale proof: %v", err)
+	}
+	if err := e.svc.LinkIdentity(e.ctx, ap, google("g-admin", "it@example.com", "example.com"), oauthIP); err != nil {
+		t.Fatal(err)
 	}
 	d, err := e.svc.CreateAuthDomain(e.ctx, owner, "Example.com.", "", true)
 	if err != nil {
@@ -271,7 +302,7 @@ func TestIntegrationOAuthDomains(t *testing.T) {
 		t.Fatal(err)
 	}
 	secondOwner := auth.Actor{TenantID: second.Tenant.ID, UserID: second.User.ID}
-	pgtest.MustExec(t, e.admin, `UPDATE auth_identities SET hosted_domain = 'example.com' WHERE subject = 'g-second'`)
+	pgtest.MustExec(t, e.admin, `UPDATE auth_identities SET hosted_domain = 'example.com', last_login_at = now() WHERE subject = 'g-second'`)
 	if _, err := e.svc.CreateAuthDomain(e.ctx, secondOwner, "example.com", "", true); !errors.Is(err, auth.ErrDomainTaken) {
 		t.Fatalf("second claim: %v", err)
 	}
@@ -311,6 +342,10 @@ func TestIntegrationOAuthDomains(t *testing.T) {
 	m, err := e.login(auth.OAuthLoginInput{Identity: google("g-m", "m@example.com", "example.com")})
 	if err != nil || m.Role != auth.RoleMember {
 		t.Fatalf("member join: %v %+v", err, m.SessionInfo)
+	}
+	// A stored claim stops joining once the operator removes the domain from the list.
+	if _, err := off0.OAuthLogin(e.ctx, auth.OAuthLoginInput{Identity: google("g-o", "o@example.com", "example.com"), IP: oauthIP}); !errors.Is(err, auth.ErrOAuthNotInvited) {
+		t.Fatalf("join through a domain removed from the list: %v", err)
 	}
 	off := false
 	if _, err := e.svc.UpdateAuthDomain(e.ctx, owner, d.ID, nil, &off); err != nil {
@@ -357,6 +392,21 @@ func TestIntegrationOAuthLinkUnlink(t *testing.T) {
 	}
 	if err := e.svc.LinkIdentity(e.ctx, up, github("10", "solo@example.com"), oauthIP); !errors.Is(err, auth.ErrAlreadyLinked) {
 		t.Fatalf("second github identity: %v", err)
+	}
+	// Two concurrent links of one provider for one user: exactly one wins, the other is
+	// already_linked whether it loses at the check or at the unique index (O-04 L2).
+	pw2, err := e.login(auth.OAuthLoginInput{Identity: google("g-race", "race@example.com", ""), RegistrationEnabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rp := e.principal(pw2)
+	errs := make(chan error, 2)
+	for _, sub := range []string{"r-1", "r-2"} {
+		go func() { errs <- e.svc.LinkIdentity(e.ctx, rp, github(sub, "race@example.com"), oauthIP) }()
+	}
+	e1, e2 := <-errs, <-errs
+	if (e1 == nil) == (e2 == nil) || !errors.Is(errors.Join(e1, e2), auth.ErrAlreadyLinked) {
+		t.Fatalf("concurrent links: %v, %v", e1, e2)
 	}
 	m, err := e.svc.ListIdentities(e.ctx, up)
 	if err != nil || len(m.Identities) != 2 || m.PasswordSet || !m.PasswordLoginEnabled {

@@ -73,6 +73,10 @@ type oauthServer struct {
 }
 
 func newOAuthServer(t *testing.T, env *pgtest.Env, opts auth.Options, cfg api.Config) *oauthServer {
+	return newOAuthServerCookies(t, env, opts, cfg, false)
+}
+
+func newOAuthServerCookies(t *testing.T, env *pgtest.Env, opts auth.Options, cfg api.Config, insecureCookies bool) *oauthServer {
 	t.Helper()
 	ctx := context.Background()
 	pool := env.Pool(t, env.APIURL, 8)
@@ -94,7 +98,10 @@ func newOAuthServer(t *testing.T, env *pgtest.Env, opts auth.Options, cfg api.Co
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Version, cfg.Commit, cfg.CookieSecure, cfg.TrustedProxyHops, cfg.PublicURL = "test", "test", true, 1, "https://maiak.example.com"
+	cfg.Version, cfg.Commit, cfg.TrustedProxyHops, cfg.PublicURL = "test", "test", 1, "https://maiak.example.com"
+	if !insecureCookies {
+		cfg.CookieSecure = true
+	}
 	h, err := api.NewHandler(cfg, api.Deps{Auth: svc, Queries: queries.New(pool, nil), Plans: plans.NewService(pool),
 		Projects: projects.NewService(pool), Logger: log, OAuth: flow})
 	if err != nil {
@@ -121,7 +128,7 @@ func (s *oauthServer) start(provider, body string, hdr map[string]string) (strin
 		}
 	}
 	if cookie == nil || !cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteLaxMode ||
-		cookie.Path != "/api/v1/auth/oauth/" || cookie.MaxAge != 600 {
+		cookie.Path != "/" || cookie.Domain != "" || cookie.MaxAge != 600 {
 		s.t.Fatalf("state cookie: %+v", cookie)
 	}
 	u, err := url.Parse(r.body["authorizationUrl"].(string))
@@ -176,7 +183,11 @@ func (s *oauthServer) callback(provider, query, stateCookie string, extra map[st
 	for _, c := range resp.Cookies() {
 		out.cookies[c.Name] = c
 	}
-	if c := out.cookies[api.OAuthCookie]; c == nil || c.MaxAge >= 0 {
+	c := out.cookies[api.OAuthCookie]
+	if c == nil {
+		c = out.cookies[api.OAuthCookieInsecure]
+	}
+	if c == nil || c.MaxAge >= 0 {
 		s.t.Fatalf("callback did not clear the state cookie: %+v", c)
 	}
 	return out
@@ -273,7 +284,9 @@ func TestIntegrationOAuthHTTPFlow(t *testing.T) {
 
 func TestIntegrationOAuthHTTPInviteAndLink(t *testing.T) {
 	env := pgtest.New(t, pgtest.DBName("apioauthlink"))
-	s := newOAuthServer(t, env, membersOpts(), api.Config{RegistrationEnabled: false, PasswordLoginEnabled: true})
+	opts := membersOpts()
+	opts.AllowedDomains = []string{"example.com"}
+	s := newOAuthServer(t, env, opts, api.Config{RegistrationEnabled: false, PasswordLoginEnabled: true})
 	owner := adminSession(s.client)
 
 	// Registration is off: a stranger is not invited.
@@ -331,9 +344,16 @@ func TestIntegrationOAuthHTTPInviteAndLink(t *testing.T) {
 		t.Fatalf("identities: %d %s", ids.code, ids.raw)
 	}
 
-	// The owner now proves the domain and claims it; a member is refused by role.
-	r := s.do(http.MethodPost, "/api/v1/organization/auth-domains", `{"domain":"example.com","defaultRole":"member"}`, owner)
-	if r.code != http.StatusCreated || r.body["domain"] != "example.com" {
+	// The owner now proves the domain and claims it (always as viewer); a member is refused by role.
+	if r := s.do(http.MethodPost, "/api/v1/organization/auth-domains", `{"domain":"other.example"}`, owner); r.code != http.StatusForbidden ||
+		r.body["type"] != "urn:maiak:problem:domain-not-allowed" {
+		t.Fatalf("claim off the list: %d %s", r.code, r.raw)
+	}
+	if r := s.do(http.MethodPost, "/api/v1/organization/auth-domains", `{"domain":"example.com","defaultRole":"member"}`, owner); r.code != http.StatusUnprocessableEntity {
+		t.Fatalf("claim as member: %d %s", r.code, r.raw)
+	}
+	r := s.do(http.MethodPost, "/api/v1/organization/auth-domains", `{"domain":"example.com"}`, owner)
+	if r.code != http.StatusCreated || r.body["domain"] != "example.com" || r.body["defaultRole"] != "viewer" {
 		t.Fatalf("claim: %d %s", r.code, r.raw)
 	}
 	memberHdr := withCSRF(invited, meOf(t, s.client, invited).body["csrf_token"].(string))
@@ -392,5 +412,45 @@ func TestIntegrationOAuthHTTPRateLimitAndPasswordOff(t *testing.T) {
 	// The break-glass admin signs in with the password from another address.
 	if r := s.do(http.MethodPost, "/api/v1/auth/login", `{"login":"admin","password":"`+adminPassword+`"}`, map[string]string{"X-Forwarded-For": "198.51.100.42"}); r.code != http.StatusOK {
 		t.Fatalf("admin password login: %d %s", r.code, r.raw)
+	}
+}
+
+// Without secure cookies (local HTTP development) browsers refuse __Host- cookies: the flow uses
+// the unprefixed cookie limited to the OAuth paths, end to end.
+func TestIntegrationOAuthHTTPInsecureCookie(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("apioauthdev"))
+	s := newOAuthServerCookies(t, env, membersOpts(), api.Config{RegistrationEnabled: true, PasswordLoginEnabled: true}, true)
+	r := s.do(http.MethodPost, "/api/v1/auth/oauth/google/start", `{}`, nil)
+	if r.code != http.StatusOK {
+		t.Fatalf("start: %d %s", r.code, r.raw)
+	}
+	var cookie *http.Cookie
+	for _, c := range (&http.Response{Header: r.header}).Cookies() {
+		if c.Name == api.OAuthCookie {
+			t.Fatal("__Host- cookie set without Secure")
+		}
+		if c.Name == api.OAuthCookieInsecure {
+			cookie = c
+		}
+	}
+	if cookie == nil || cookie.Secure || !cookie.HttpOnly || cookie.Path != "/api/v1/auth/oauth/" {
+		t.Fatalf("dev state cookie: %+v", cookie)
+	}
+	u, _ := url.Parse(r.body["authorizationUrl"].(string))
+	s.google.on("dev", oauth.Identity{Provider: "google", Subject: "dev-1", Email: "dev@example.com"})
+	req, _ := http.NewRequest(http.MethodGet, s.srv.URL+"/api/v1/auth/oauth/google/callback?"+q("dev", u.Query().Get("state")), nil)
+	req.Header.Set("Cookie", api.OAuthCookieInsecure+"="+cookie.Value)
+	req.Header.Set("X-Forwarded-For", "198.51.100.50")
+	resp, err := s.noRedirect.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/" {
+		t.Fatalf("callback: %d %s", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	// The secure name is ignored when cookies are not secure.
+	if got := s.callback("google", q("dev", "x"), "", map[string]string{"Cookie": api.OAuthCookie + "=" + cookie.Value}); got.location != "/login?error=state_invalid" {
+		t.Fatalf("prefixed cookie accepted in dev mode: %+v", got)
 	}
 }

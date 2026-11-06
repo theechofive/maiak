@@ -166,7 +166,7 @@ def check(path):
             ref = api[n].get("valueFrom", {}).get("secretKeyRef", {})
             if ref != {"name": "maiak-oauth", "key": names[n]}:
                 fail(f"api {n} must come from maiak-oauth/{names[n]}, got {ref}")
-    if api and api.get("MAIAK_PASSWORD_LOGIN_ENABLED", {}).get("value") == "false" and not any(n.startswith("MAIAK_OAUTH_") for n in api):
+    if api and api.get("MAIAK_PASSWORD_LOGIN_ENABLED", {}).get("value") == "false" and not any(n.endswith("_CLIENT_ID") for n in api):
         fail("password login is off but no OAuth provider is configured")
     for comp in deployments:
         if comp != "api" and any(n.startswith("MAIAK_OAUTH_") or n == "MAIAK_PASSWORD_LOGIN_ENABLED" for n in env_of(comp)):

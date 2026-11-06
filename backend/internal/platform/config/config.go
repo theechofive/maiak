@@ -12,6 +12,8 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -112,6 +114,9 @@ type OAuth struct {
 	GoogleClientSecret Secret
 	GitHubClientID     string
 	GitHubClientSecret Secret
+	// AllowedDomains are the Google Workspace domains organizations may claim for auto-join
+	// (MAIAK_OAUTH_ALLOWED_DOMAINS, comma-separated lowercase domains, O-04). Empty: claiming off.
+	AllowedDomains []string
 }
 
 // GoogleEnabled reports whether Google sign-in is configured.
@@ -234,7 +239,30 @@ func (l *loader) oauth() OAuth {
 	var o OAuth
 	o.GoogleClientID, o.GoogleClientSecret = pair("MAIAK_OAUTH_GOOGLE")
 	o.GitHubClientID, o.GitHubClientSecret = pair("MAIAK_OAUTH_GITHUB")
+	o.AllowedDomains = l.domains("MAIAK_OAUTH_ALLOWED_DOMAINS")
 	return o
+}
+
+// domainName is the org_auth_domains.domain check: lowercase labels, at least one dot.
+var domainName = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// domains reads a comma-separated list of lowercase domain names (no wildcards, no trailing dot).
+func (l *loader) domains(name string) []string {
+	var out []string
+	for _, part := range strings.Split(l.optional(name), ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if len(part) > 253 || !domainName.MatchString(part) {
+			l.fail(name, fmt.Sprintf("%q is not a lowercase domain name such as example.com", part))
+			continue
+		}
+		if !slices.Contains(out, part) {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 // LoadWorker loads the worker configuration.

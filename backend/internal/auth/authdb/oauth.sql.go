@@ -111,18 +111,20 @@ const hasGoogleDomain = `-- name: HasGoogleDomain :one
 SELECT EXISTS (
     SELECT 1 FROM auth_identities
     WHERE user_id = $1 AND provider = 'google' AND hosted_domain = $2
+      AND last_login_at >= $3
 )
 `
 
 type HasGoogleDomainParams struct {
-	UserID uuid.UUID
-	Domain *string
+	UserID    uuid.UUID
+	Domain    *string
+	NotBefore *time.Time
 }
 
-// The proof of control for claiming a domain: the user's Google identity signed in last with
-// that Workspace domain (hd).
+// The proof of control for claiming a domain: the user's Google identity signed in or was linked
+// with that Workspace domain (hd) not before @not_before (a fresh sign-in, O-04).
 func (q *Queries) HasGoogleDomain(ctx context.Context, arg HasGoogleDomainParams) (bool, error) {
-	row := q.db.QueryRow(ctx, hasGoogleDomain, arg.UserID, arg.Domain)
+	row := q.db.QueryRow(ctx, hasGoogleDomain, arg.UserID, arg.Domain, arg.NotBefore)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
