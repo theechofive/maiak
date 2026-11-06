@@ -72,8 +72,9 @@ const usageOf = (
     channels: 1,
     members: 3,
     projects: 50,
+    statusPages: 1,
   },
-  usage: { monitors, heartbeats, channels: 1, members: 1, projects: 1 },
+  usage: { monitors, heartbeats, channels: 1, members: 1, projects: 1, statusPages: 0 },
 });
 
 describe("monitors list", () => {

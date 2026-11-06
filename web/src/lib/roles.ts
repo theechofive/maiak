@@ -15,7 +15,7 @@ export const ROLE_LABELS: Record<MembershipRole, string> = {
 
 export const ROLE_DESCRIPTIONS: Record<MembershipRole, string> = {
   owner: "Everything, including deleting the organization and granting owner.",
-  admin: "Members, invitations, notification channels and every monitor.",
+  admin: "Members, invitations, notification channels, the status page and every monitor.",
   member: "Creates, edits, pauses and deletes monitors.",
   viewer: "Reads monitors, incidents and channels only.",
 };
@@ -31,6 +31,7 @@ export interface Abilities {
   manageChannels: boolean;
   manageMembers: boolean;
   deleteOrganization: boolean;
+  manageStatusPage: boolean;
 }
 
 export function abilities(session: SessionInfo | null | undefined): Abilities {
@@ -41,6 +42,7 @@ export function abilities(session: SessionInfo | null | undefined): Abilities {
     manageChannels: roleAtLeast(role, "admin"),
     manageMembers: roleAtLeast(role, "admin"),
     deleteOrganization: role === "owner",
+    manageStatusPage: roleAtLeast(role, "admin"),
   };
 }
 
@@ -65,4 +67,5 @@ export const ROLE_HINTS = {
   editMonitors: "Viewers can look but not change monitors. Ask an admin for the member role.",
   manageChannels: "Only admins and owners can change notification channels.",
   manageMembers: "Only admins and owners can invite people or change roles.",
+  manageStatusPage: "Only admins and owners can change or publish the status page.",
 } as const;

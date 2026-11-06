@@ -46,6 +46,9 @@ export default function Layout() {
       <NavLink to="/members" className={navClass}>
         Members
       </NavLink>
+      <NavLink to="/status-page" className={navClass}>
+        Status page
+      </NavLink>
       <NavLink to="/settings" className={navClass}>
         Settings
       </NavLink>

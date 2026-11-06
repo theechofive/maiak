@@ -12,6 +12,7 @@ import NotFound from "./pages/NotFound";
 import Projects from "./pages/Projects";
 import Register from "./pages/Register";
 import Settings from "./pages/Settings";
+import StatusPageSettings from "./pages/StatusPage";
 import AdminOverview from "./pages/admin/AdminOverview";
 import AdminTenantDetails from "./pages/admin/AdminTenantDetails";
 import AdminTenants from "./pages/admin/AdminTenants";
@@ -31,6 +32,7 @@ export default function App() {
           <Route path="/settings" element={<Settings />} />
           <Route path="/members" element={<Members />} />
           <Route path="/projects" element={<Projects />} />
+          <Route path="/status-page" element={<StatusPageSettings />} />
           <Route path="/admin" element={<RequirePlatformAdmin />}>
             <Route index element={<AdminOverview />} />
             <Route path="tenants" element={<AdminTenants />} />

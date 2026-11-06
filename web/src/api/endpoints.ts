@@ -33,6 +33,12 @@ export type InvitationPreview = Schemas["InvitationPreview"];
 export type Project = Schemas["Project"];
 export type ProjectMember = Schemas["ProjectMember"];
 export type ProjectRole = Schemas["ProjectRole"];
+export type StatusPage = Schemas["StatusPage"];
+export type StatusPageCreate = Schemas["StatusPageCreate"];
+export type StatusPageUpdate = Schemas["StatusPageUpdate"];
+export type StatusPageComponent = Schemas["StatusPageComponent"];
+export type StatusPageComponentInput = Schemas["StatusPageComponentInput"];
+export type StatusPageSnapshot = Schemas["StatusPageSnapshot"];
 
 /** Page size of the admin lists (the API default; at most 100). */
 export const ADMIN_PAGE_SIZE = 25;
@@ -53,6 +59,9 @@ export const queryKeys = {
   projects: ["projects"] as const,
   projectMembers: (id: string) => ["projects", id, "members"] as const,
   usage: ["usage"] as const,
+  statusPages: ["status-pages"] as const,
+  statusPageComponents: (id: string) => ["status-pages", id, "components"] as const,
+  statusPagePreview: (id: string) => ["status-pages", id, "preview"] as const,
   publicConfig: ["public-config"] as const,
   adminStats: ["admin", "stats"] as const,
   adminTenants: (query: string, offset: number, includeDeleted: boolean) =>
@@ -307,3 +316,52 @@ export const removeProjectMember = (projectId: string, userId: string) =>
       params: { path: { projectId, userId } },
     }),
   );
+
+// Status page (P-05, ADR-0103). Every role reads the settings; admins and owners change them.
+
+export const listStatusPages = () => unwrap(client.GET("/api/v1/status-pages"));
+
+const statusPagePath = (statusPageId: string) => ({ params: { path: { statusPageId } } });
+
+export const createStatusPage = (body: StatusPageCreate) =>
+  unwrap(client.POST("/api/v1/status-pages", { body }));
+
+export const updateStatusPage = (statusPageId: string, body: StatusPageUpdate) =>
+  unwrap(
+    client.PATCH("/api/v1/status-pages/{statusPageId}", { ...statusPagePath(statusPageId), body }),
+  );
+
+export const deleteStatusPage = (statusPageId: string) =>
+  unwrap(client.DELETE("/api/v1/status-pages/{statusPageId}", statusPagePath(statusPageId)));
+
+/** Write-only: the password is never returned. */
+export const setStatusPagePassword = (statusPageId: string, password: string) =>
+  unwrap(
+    client.PUT("/api/v1/status-pages/{statusPageId}/password", {
+      ...statusPagePath(statusPageId),
+      body: { password },
+    }),
+  );
+
+export const clearStatusPagePassword = (statusPageId: string) =>
+  unwrap(
+    client.DELETE("/api/v1/status-pages/{statusPageId}/password", statusPagePath(statusPageId)),
+  );
+
+export const listStatusPageComponents = (statusPageId: string) =>
+  unwrap(
+    client.GET("/api/v1/status-pages/{statusPageId}/components", statusPagePath(statusPageId)),
+  );
+
+/** Replaces the components: the list is the new content and order of the page. */
+export const putStatusPageComponents = (statusPageId: string, items: StatusPageComponentInput[]) =>
+  unwrap(
+    client.PUT("/api/v1/status-pages/{statusPageId}/components", {
+      ...statusPagePath(statusPageId),
+      body: { items },
+    }),
+  );
+
+/** The public view as /status/<slug>.json would serve it now, also while unpublished. */
+export const previewStatusPage = (statusPageId: string) =>
+  unwrap(client.GET("/api/v1/status-pages/{statusPageId}/preview", statusPagePath(statusPageId)));
