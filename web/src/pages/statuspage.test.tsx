@@ -154,6 +154,12 @@ describe("status page settings", () => {
       await userEvent.click(screen.getByRole("button", { name: "Save components" }));
       expect(await screen.findByText("Enter a public name.")).toBeInTheDocument();
       const names = screen.getAllByLabelText("Public name");
+      await userEvent.type(names[1]!, "Bad\u202ename");
+      await userEvent.click(screen.getByRole("button", { name: "Save components" }));
+      expect(
+        await screen.findByText("Remove invisible formatting characters."),
+      ).toBeInTheDocument();
+      await userEvent.clear(names[1]!);
       await userEvent.type(names[1]!, "Nightly job");
       await userEvent.click(screen.getByRole("button", { name: "Move Nightly job up" }));
       await userEvent.click(screen.getByRole("button", { name: "Save components" }));

@@ -52,6 +52,8 @@ import {
   embedSnippets,
   formatUptime,
   groupComponents,
+  hasInvisible,
+  INVISIBLE_MESSAGE,
   logoError,
   move,
   NAME_MAX,
@@ -142,6 +144,7 @@ function CreatePage() {
     e.preventDefault();
     const next: Record<string, string> = {};
     if (!title.trim()) next.title = "Enter a title.";
+    else if (hasInvisible(title)) next.title = INVISIBLE_MESSAGE;
     const se = slugError(slug);
     if (se) next.slug = se;
     setErrors(next);
@@ -362,6 +365,8 @@ function Branding({
     e.preventDefault();
     const next: Record<string, string> = {};
     if (!value.title.trim()) next.title = "Enter a title.";
+    else if (hasInvisible(value.title)) next.title = INVISIBLE_MESSAGE;
+    if (hasInvisible(value.description)) next.description = INVISIBLE_MESSAGE;
     const se = slugError(value.slug);
     if (se) next.slug = se;
     const le = logoError(value.logoUrl);
@@ -575,9 +580,11 @@ function ComponentEditor({ page, initial }: { page: Page; initial: StatusPageCom
     const next: Record<string, string> = {};
     rows.forEach((r, i) => {
       if (!r.publicName.trim()) next[`items.${i}.publicName`] = "Enter a public name.";
+      else if (hasInvisible(r.publicName)) next[`items.${i}.publicName`] = INVISIBLE_MESSAGE;
       else if ([...r.publicName.trim()].length > NAME_MAX)
         next[`items.${i}.publicName`] = `Use ${NAME_MAX} characters or fewer.`;
-      if ([...r.groupName.trim()].length > NAME_MAX)
+      if (hasInvisible(r.groupName)) next[`items.${i}.groupName`] = INVISIBLE_MESSAGE;
+      else if ([...r.groupName.trim()].length > NAME_MAX)
         next[`items.${i}.groupName`] = `Use ${NAME_MAX} characters or fewer.`;
     });
     setErrors(next);
@@ -746,7 +753,9 @@ function Password({ page }: { page: Page }) {
       </h2>
       <p className="text-caption text-muted-foreground">
         Optional. A protected page asks for the password once per browser (12 hours) and has no
-        badge, JSON or RSS feed. Changing the password signs every visitor out.
+        badge, JSON or RSS feed. Changing the password signs every visitor out. Setting, changing or
+        removing it applies within about a minute: until then visitors and caches may still see the
+        previous state.
       </p>
       {page.passwordProtected && !editing ? (
         <div className="flex flex-col gap-2">
@@ -803,7 +812,10 @@ function Password({ page }: { page: Page }) {
           onConfirm={() => clear.mutate()}
           onCancel={() => setClearing(false)}
         >
-          <p>Anyone with the link can open the page again, and its badge, JSON and RSS work.</p>
+          <p>
+            Anyone with the link can open the page again, and its badge, JSON and RSS work, within
+            about a minute.
+          </p>
         </ConfirmDialog>
       )}
     </section>

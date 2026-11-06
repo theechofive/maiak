@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
@@ -352,7 +354,7 @@ func TestPasswordFlow(t *testing.T) {
 		t.Fatalf("unlock: %d %v", ok.code, ok.header)
 	}
 	c := (&http.Response{Header: ok.header}).Cookies()
-	if len(c) != 1 || c[0].Name != CookieName || c[0].Path != "/status/acme" || !c[0].HttpOnly || !c[0].Secure || c[0].SameSite != http.SameSiteStrictMode {
+	if len(c) != 1 || c[0].Name != CookieName || c[0].Path != "/status/acme" || !c[0].HttpOnly || !c[0].Secure || c[0].SameSite != http.SameSiteLaxMode {
 		t.Fatalf("cookie: %+v", c)
 	}
 	cookie := map[string]string{"Cookie": CookieName + "=" + c[0].Value}
@@ -422,5 +424,103 @@ func TestStylesheetAndFormatting(t *testing.T) {
 	}
 	if formatTime(time.Date(2026, 11, 6, 14, 3, 0, 0, time.FixedZone("CET", 3600))) != "6 Nov 2026, 13:03 UTC" {
 		t.Fatal(formatTime(time.Date(2026, 11, 6, 14, 3, 0, 0, time.FixedZone("CET", 3600))))
+	}
+}
+
+func TestLimitKeyGroupsIPv6By64(t *testing.T) {
+	for in, want := range map[string]string{
+		"203.0.113.9":                      "203.0.113.9",
+		"::ffff:203.0.113.9":               "203.0.113.9",
+		"2001:db8:1:2:aaaa:bbbb:cccc:dddd": "2001:db8:1:2::/64",
+		"2001:db8:1:2::1":                  "2001:db8:1:2::/64",
+	} {
+		if got := limitKey(netip.MustParseAddr(in)); got != want {
+			t.Errorf("limitKey(%s) = %s, want %s", in, got, want)
+		}
+	}
+	// Two addresses of one /64 share the view limit; another /64 does not.
+	h := newHarness(t)
+	var last resp
+	for i := range viewBurst + 1 {
+		last = h.do(http.MethodGet, "/status/acme", "", map[string]string{"X-Forwarded-For": fmt.Sprintf("2001:db8:1:2::%x", i+1)})
+	}
+	if last.code != http.StatusTooManyRequests {
+		t.Fatalf("addresses of one /64 are not limited together: %d", last.code)
+	}
+	if r := h.do(http.MethodGet, "/status/acme", "", map[string]string{"X-Forwarded-For": "2001:db8:1:3::1"}); r.code != http.StatusOK {
+		t.Fatalf("another /64: %d", r.code)
+	}
+}
+
+// An attacker spreading wrong passwords over many addresses exhausts the page's failure budget,
+// but cannot lock out a visitor who knows the password: only failures count against the page, and
+// every client keeps a small reserve of its own.
+func TestPageFailuresDoNotLockOutVisitors(t *testing.T) {
+	h := newHarness(t)
+	hash, err := crypto.HashPassword("correct horse battery", crypto.Argon2Params{Memory: 64, Iterations: 1, Parallelism: 1, SaltLength: 16, KeyLength: 32})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.src.pages["acme"] = stored{payload: payload(t, nil), hash: hash}
+	attempt := func(ip, password string) int {
+		return h.do(http.MethodPost, "/status/acme/unlock", "password="+url.QueryEscape(password),
+			map[string]string{"Content-Type": "application/x-www-form-urlencoded", "Origin": publicURL, "X-Forwarded-For": ip}).code
+	}
+	// failuresPerPage wrong passwords from 50 attackers (2 each, below the per-client limit).
+	for i := range failuresPerPage {
+		if c := attempt(fmt.Sprintf("198.51.%d.%d", i/2/250, i/2%250+1), "wrong guess"); c != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: %d", i, c)
+		}
+	}
+	// An attacker that already failed and exhausts its reserve is refused now.
+	for range reservePerVisitor {
+		attempt("198.51.0.1", "wrong guess")
+	}
+	if c := attempt("198.51.0.1", "wrong guess"); c != http.StatusTooManyRequests {
+		t.Fatalf("attacker after the page budget and its reserve: %d", c)
+	}
+	// A visitor with the password still gets in, and a visitor's typo is still answered.
+	if c := attempt("192.0.2.50", "typo typo typo"); c != http.StatusUnauthorized {
+		t.Fatalf("visitor typo: %d", c)
+	}
+	if c := attempt("192.0.2.50", "correct horse battery"); c != http.StatusSeeOther {
+		t.Fatalf("visitor with the password: %d", c)
+	}
+}
+
+func TestLimiterEvictsLeastRecentlyUsed(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC))
+	l := NewLimiter(0.001, 1, 3, clk)
+	l.Allow("a")
+	l.Allow("b")
+	l.Allow("c")
+	l.Allow("a") // a is now the most recent; b the oldest
+	l.Allow("d") // evicts b only
+	if l.Len() != 3 {
+		t.Fatalf("len %d", l.Len())
+	}
+	if ok, _ := l.Allow("a"); ok {
+		t.Fatal("a was reset by the eviction")
+	}
+	if ok, _ := l.Allow("c"); ok {
+		t.Fatal("c was reset by the eviction")
+	}
+	if ok, _ := l.Allow("b"); !ok {
+		t.Fatal("b should have been evicted (fresh bucket)")
+	}
+	// Take goes below zero but not without bound; Has does not spend.
+	l2 := NewLimiter(1, 2, 10, clk)
+	for range 10 {
+		l2.Take("x")
+	}
+	if ok, _ := l2.Has("x"); ok {
+		t.Fatal("Has after Take")
+	}
+	clk.Advance(5 * time.Second)
+	if ok, _ := l2.Has("x"); !ok {
+		t.Fatal("bucket did not refill from its floor of -burst")
+	}
+	if ok, _ := l2.Has("x"); !ok {
+		t.Fatal("Has spent a token")
 	}
 }

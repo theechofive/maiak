@@ -120,8 +120,10 @@ func writeError(w http.ResponseWriter, r *http.Request, log *slog.Logger, err er
 	case errors.Is(err, projects.ErrSlugTaken):
 		p.Type, p.Title, p.Status = problemSlugTaken, "This slug is already used by another project", http.StatusConflict
 	case errors.Is(err, statuspages.ErrSlugTaken):
-		p.Type, p.Title, p.Status = problemSlugTaken, "This address is already used by another status page", http.StatusConflict
-		p.Detail = "Status page addresses are shared by every organization on this Maiak; choose another slug."
+		// One answer for every reason (a live page anywhere, or an address another organization freed
+		// recently), so it reveals nothing about other organizations' pages.
+		p.Type, p.Title, p.Status = problemSlugTaken, "This address is not available", http.StatusConflict
+		p.Detail = "Status page addresses are shared by every organization on this Maiak; choose another."
 	case errors.Is(err, projects.ErrNotEmpty):
 		p.Type, p.Title, p.Status = problemProjectNotEmpty, "The project is not empty", http.StatusConflict
 		p.Detail = "Move or delete its monitors and channels first."

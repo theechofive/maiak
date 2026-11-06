@@ -28,6 +28,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/platform/validation"
 	"github.com/theechofive/maiak/backend/internal/projects"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
+	"github.com/theechofive/maiak/backend/internal/statuspages"
 )
 
 // Statuses of a monitor.
@@ -492,6 +493,10 @@ func (s *Service) Delete(ctx context.Context, a Actor, id uuid.UUID) error {
 		if err := q.SoftDeleteMonitor(ctx, monitorsdb.SoftDeleteMonitorParams{TenantID: a.TenantID, ID: id}); err != nil {
 			return fmt.Errorf("delete monitor: %w", err)
 		}
+		// A published status page drops the component at once (ADR-0103, P-06).
+		if err := statuspages.RefreshForMonitor(ctx, tx, a.TenantID, id, time.Now()); err != nil {
+			return err
+		}
 		return s.audit(ctx, tx, a, ActionDeleted, id, nil)
 	})
 	return wrap("delete", err)
@@ -553,6 +558,10 @@ func (s *Service) setPaused(ctx context.Context, a Actor, id uuid.UUID, paused b
 				}
 			}
 			if err := s.audit(ctx, tx, a, action, id, nil); err != nil {
+				return err
+			}
+			// A published status page shows the paused component as "no data" at once (P-06).
+			if err := statuspages.RefreshForMonitor(ctx, tx, a.TenantID, id, time.Now()); err != nil {
 				return err
 			}
 		}

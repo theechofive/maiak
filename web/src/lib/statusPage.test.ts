@@ -3,6 +3,7 @@ import {
   embedSnippets,
   formatUptime,
   groupComponents,
+  hasInvisible,
   logoError,
   move,
   passwordError,
@@ -34,6 +35,12 @@ describe("status page rules", () => {
       "not a url",
     ])
       expect(logoError(bad)).toBeDefined();
+  });
+
+  it("refuses invisible formatting characters like the server", () => {
+    expect(hasInvisible("API\u202egnp.exe")).toBe(true);
+    expect(hasInvisible("Pay\u200bments")).toBe(true);
+    expect(hasInvisible("Zürich – 東京 🚀")).toBe(false);
   });
 
   it("requires 12 characters for a password", () => {

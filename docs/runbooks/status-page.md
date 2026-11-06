@@ -23,8 +23,14 @@ SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace AN
 - jobs logs "status page snapshot rebuild failed" with the tenant and page id when one page fails; the others continue.
 - A suspended or deleted organization's page answers 404 (by design).
 
+## Timing of changes
+The api rebuilds a page's snapshot with every change (and when a monitor on it is paused, resumed or deleted); the renderer caches each page 15 s per replica and answers with `max-age=30`. So publishing, unpublishing, deleting and setting or removing a password apply within about a minute, not at once: a visitor or a cache may still see the previous state until then. To take a page down urgently, unpublish it and expect up to a minute.
+
+## Addresses
+A deleted page's address, and the old address after a rename, stay reserved for the organization for 30 days (`status_page_released_slugs`); the organization may reuse them, others get "This address is not available", the same answer as for an address in use. To free one early for someone else (rare, on request of the organization that released it), delete its row as `maiak_owner` with `app.tenant_id` set to that organization.
+
 ## A visitor cannot open a protected page
-- Wrong passwords and 429s are counted in `maiak_statuspage_unlock_attempts_total` and `maiak_statuspage_rate_limited_total{kind="unlock"}`: 10 attempts per client IP and 100 per page per 15 minutes, per replica.
+- Wrong passwords and 429s are counted in `maiak_statuspage_unlock_attempts_total` and `maiak_statuspage_rate_limited_total{kind="unlock"}`: 10 attempts per client (IPv4 address or IPv6 /64) and 100 wrong passwords per page per 15 minutes, per replica. When the page budget is used up, each client still has 3 wrong passwords of its own, so a visitor with the right password gets in during an attack.
 - Changing the password signs every visitor out; so does rotating the cookie key (delete the Secret `maiak-statuspage`, sync, restart the `statuspage` Deployment).
 - Behind the gateway the client IP comes from `X-Forwarded-For` (`config.trustedProxyHops`); without it every visitor shares one limit.
 

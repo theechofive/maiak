@@ -395,13 +395,55 @@ func (q *Queries) LockPage(ctx context.Context, arg LockPageParams) (LockPageRow
 	return i, err
 }
 
+const publishedPagesWithMonitor = `-- name: PublishedPagesWithMonitor :many
+SELECT DISTINCT p.id
+FROM status_page_components AS c
+JOIN status_pages AS p ON p.tenant_id = c.tenant_id AND p.id = c.page_id
+WHERE c.tenant_id = $1 AND c.monitor_id = $2 AND p.published AND p.deleted_at IS NULL
+`
+
+type PublishedPagesWithMonitorParams struct {
+	TenantID  uuid.UUID
+	MonitorID uuid.UUID
+}
+
+// Published pages that show a monitor, to refresh them in the transaction that pauses, resumes or
+// deletes it.
+func (q *Queries) PublishedPagesWithMonitor(ctx context.Context, arg PublishedPagesWithMonitorParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, publishedPagesWithMonitor, arg.TenantID, arg.MonitorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const recentIncidents = `-- name: RecentIncidents :many
 SELECT id, monitor_id, started_at, resolved_at
-FROM incidents
-WHERE tenant_id = $1 AND monitor_id = ANY($2::uuid[])
-  AND (resolved_at IS NULL OR resolved_at >= $3)
+FROM (
+    SELECT i.id, i.monitor_id, i.started_at, i.resolved_at,
+           row_number() OVER (PARTITION BY i.monitor_id ORDER BY i.started_at DESC, i.id) AS n
+    FROM incidents AS i
+    WHERE i.tenant_id = $1 AND i.monitor_id = ANY($2::uuid[])
+      AND i.resolved_at IS NOT NULL AND i.resolved_at >= $3
+) AS r
+WHERE r.n <= 2000
+UNION ALL
+SELECT i.id, i.monitor_id, i.started_at, i.resolved_at
+FROM incidents AS i
+WHERE i.tenant_id = $1 AND i.monitor_id = ANY($2::uuid[]) AND i.resolved_at IS NULL
 ORDER BY started_at DESC, id
-LIMIT 500
 `
 
 type RecentIncidentsParams struct {
@@ -417,7 +459,9 @@ type RecentIncidentsRow struct {
 	ResolvedAt *time.Time
 }
 
-// Automatic incidents of the given monitors that are open or ended after since, newest first.
+// Automatic incidents of the given monitors: every open one, and per monitor the newest
+// resolved ones that ended after since (at most 2000 each, so one flapping monitor cannot push
+// out the others), newest first. The heartbeat bars use all of them; the page lists fewer.
 func (q *Queries) RecentIncidents(ctx context.Context, arg RecentIncidentsParams) ([]RecentIncidentsRow, error) {
 	rows, err := q.db.Query(ctx, recentIncidents, arg.TenantID, arg.MonitorIds, arg.Since)
 	if err != nil {
@@ -443,6 +487,23 @@ func (q *Queries) RecentIncidents(ctx context.Context, arg RecentIncidentsParams
 	return items, nil
 }
 
+const releaseSlug = `-- name: ReleaseSlug :exec
+INSERT INTO status_page_released_slugs (tenant_id, slug)
+VALUES ($1, $2)
+ON CONFLICT (tenant_id, slug) DO UPDATE SET released_at = now()
+`
+
+type ReleaseSlugParams struct {
+	TenantID uuid.UUID
+	Slug     string
+}
+
+// Holds a freed address for its organization for 30 days (P-06).
+func (q *Queries) ReleaseSlug(ctx context.Context, arg ReleaseSlugParams) error {
+	_, err := q.db.Exec(ctx, releaseSlug, arg.TenantID, arg.Slug)
+	return err
+}
+
 const setPagePassword = `-- name: SetPagePassword :exec
 UPDATE status_pages
 SET password_hash = $1, updated_at = now()
@@ -458,6 +519,17 @@ type SetPagePasswordParams struct {
 func (q *Queries) SetPagePassword(ctx context.Context, arg SetPagePasswordParams) error {
 	_, err := q.db.Exec(ctx, setPagePassword, arg.PasswordHash, arg.TenantID, arg.ID)
 	return err
+}
+
+const slugHeld = `-- name: SlugHeld :one
+SELECT status_page_slug_held($1::text)::boolean AS held
+`
+
+func (q *Queries) SlugHeld(ctx context.Context, slug string) (bool, error) {
+	row := q.db.QueryRow(ctx, slugHeld, slug)
+	var held bool
+	err := row.Scan(&held)
+	return held, err
 }
 
 const softDeletePage = `-- name: SoftDeletePage :exec

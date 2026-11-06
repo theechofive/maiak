@@ -97,6 +97,13 @@ export function logoError(value: string): string | undefined {
   return undefined;
 }
 
+/** Invisible format characters (bidi overrides, zero-width spaces) that the server refuses. */
+export function hasInvisible(value: string): boolean {
+  return /\p{Cf}/u.test(value);
+}
+
+export const INVISIBLE_MESSAGE = "Remove invisible formatting characters.";
+
 export function passwordError(value: string): string | undefined {
   if ([...value].length < PASSWORD_MIN) return `Use at least ${PASSWORD_MIN} characters.`;
   if (new TextEncoder().encode(value).length > 128) return "Use at most 128 bytes.";

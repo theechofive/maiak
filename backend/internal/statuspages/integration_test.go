@@ -12,8 +12,11 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/theechofive/maiak/backend/internal/authz"
+	"github.com/theechofive/maiak/backend/internal/incidents"
+	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/platform/clock"
 	"github.com/theechofive/maiak/backend/internal/platform/crypto"
+	"github.com/theechofive/maiak/backend/internal/scheduler"
 	"github.com/theechofive/maiak/backend/internal/statuspages"
 	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
 )
@@ -232,5 +235,118 @@ func TestIntegrationSnapshotBuildAndRebuild(t *testing.T) {
 	}
 	if got := fmt.Sprint(len(sa.Components[0].Days)); got != "90" {
 		t.Fatal(got)
+	}
+}
+
+// TestIntegrationManyIncidents: 600 flaps of one heartbeat do not push out the open incident of
+// another component, the heartbeat's bars and uptime use every flap, and the page lists at most
+// MaxPastIncidents past incidents.
+func TestIntegrationManyIncidents(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("statuspageflaps"))
+	ctx := context.Background()
+	f := fixture{t: t, admin: env.AdminConn(t)}
+	tenant := uuid.NewString()
+	f.exec(`INSERT INTO tenants (id, slug, name) VALUES ($1, 'flaps', 'F')`, tenant)
+	f.exec(`INSERT INTO users (id, email) VALUES ($1, 'owner@example.com')`, owner)
+	now := time.Now().UTC()
+	flappy := f.monitor(tenant, "flappy", "heartbeat", "up", 0, now.AddDate(0, 0, -200))
+	broken := f.monitor(tenant, "broken", "http", "down", 2, now.AddDate(0, 0, -200))
+	// 600 one-minute incidents spread over the last 60 days, then the open one, which is the oldest.
+	f.exec(`INSERT INTO incidents (id, tenant_id, monitor_id, started_at, resolved_at, resolve_reason, reason)
+		SELECT gen_random_uuid(), $1, $2, now() - (g * interval '2 hours'), now() - (g * interval '2 hours') + interval '1 minute', 'recovered', 'heartbeat_missed'
+		FROM generate_series(1, 600) AS g`, tenant, flappy)
+	f.incident(tenant, broken, now.AddDate(0, 0, -70), nil)
+
+	svc := statuspages.NewService(env.Pool(t, env.APIURL, 2), statuspages.Options{})
+	a := ownerOf(tenant)
+	page, err := svc.Create(ctx, a, statuspages.CreateInput{Slug: "flaps", Title: "Flaps"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.PutComponents(ctx, a, page.ID, []statuspages.ComponentInput{{MonitorID: flappy, PublicName: "Cron"}, {MonitorID: broken, PublicName: "API"}}); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := svc.Preview(ctx, a, page.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.ActiveIncidents) != 1 || snap.ActiveIncidents[0].Title != "API is unavailable" {
+		t.Fatalf("open incident lost: %+v", snap.ActiveIncidents)
+	}
+	if len(snap.PastIncidents) != statuspages.MaxPastIncidents {
+		t.Fatalf("past incidents: %d", len(snap.PastIncidents))
+	}
+	// 600 minutes down over the 90-day window the monitor existed in (from 89 days ago to now).
+	cron := snap.Components[0]
+	window := now.Sub(statuspages.HistoryWindow(now)[0])
+	want := 100 * (1 - (600*time.Minute).Seconds()/window.Seconds())
+	if cron.Uptime == nil || *cron.Uptime > want+0.01 || *cron.Uptime < want-0.01 {
+		t.Fatalf("heartbeat uptime %v, want about %.3f (every flap counted)", cron.Uptime, want)
+	}
+}
+
+// TestIntegrationPauseAndDeleteRefreshThePage: pausing and deleting a monitor change a published
+// page in the same transaction, without waiting for jobs.
+func TestIntegrationPauseAndDeleteRefreshThePage(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("statuspagepause"))
+	ctx := context.Background()
+	f := fixture{t: t, admin: env.AdminConn(t)}
+	tenant := uuid.NewString()
+	f.exec(`INSERT INTO tenants (id, slug, name) VALUES ($1, 'pause', 'P')`, tenant)
+	f.exec(`INSERT INTO users (id, email) VALUES ($1, 'owner@example.com')`, owner)
+	pool := env.Pool(t, env.APIURL, 2)
+	sched := scheduler.New()
+	mon := monitors.NewService(pool, sched, incidents.NewService(sched))
+	ma := monitors.Actor{TenantID: uuid.MustParse(tenant), UserID: owner, Access: authz.Actor{UserID: owner, Role: authz.Owner}}
+	u1, u2 := "https://example.com/1", "https://example.com/2"
+	m1, err := mon.Create(ctx, ma, monitors.CreateInput{Type: "http", Name: "one", URL: &u1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2, err := mon.Create(ctx, ma, monitors.CreateInput{Type: "http", Name: "two", URL: &u2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.exec(`UPDATE monitor_state SET status = 'up' WHERE monitor_id = $1`, m1.ID)
+	svc := statuspages.NewService(pool, statuspages.Options{})
+	a := ownerOf(tenant)
+	page, err := svc.Create(ctx, a, statuspages.CreateInput{Slug: "pause-me", Title: "P"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.PutComponents(ctx, a, page.ID, []statuspages.ComponentInput{{MonitorID: m1.ID, PublicName: "One"}, {MonitorID: m2.ID, PublicName: "Two"}}); err != nil {
+		t.Fatal(err)
+	}
+	yes := true
+	if _, err := svc.Update(ctx, a, page.ID, statuspages.UpdateInput{Published: &yes}); err != nil {
+		t.Fatal(err)
+	}
+	public := env.Conn(t, env.StatuspageURL)
+	read := func() statuspages.Snapshot {
+		t.Helper()
+		var raw []byte
+		if err := public.QueryRow(ctx, `SELECT payload FROM status_page_snapshot('pause-me')`).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var s statuspages.Snapshot
+		if err := json.Unmarshal(raw, &s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	if s := read(); s.Components[0].Status != statuspages.Operational {
+		t.Fatalf("before: %+v", s.Components[0])
+	}
+	if _, err := mon.Pause(ctx, ma, m1.ID); err != nil {
+		t.Fatal(err)
+	}
+	if s := read(); s.Components[0].Status != statuspages.NoData {
+		t.Fatalf("after pause: %+v", s.Components[0])
+	}
+	if err := mon.Delete(ctx, ma, m2.ID); err != nil {
+		t.Fatal(err)
+	}
+	if s := read(); len(s.Components) != 1 || s.Components[0].Name != "One" {
+		t.Fatalf("after delete: %+v", s.Components)
 	}
 }

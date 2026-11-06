@@ -119,7 +119,31 @@ func build(ctx context.Context, q *statuspagesdb.Queries, tenantID uuid.UUID, pa
 			snap.PastIncidents = append(snap.PastIncidents, pub)
 		}
 	}
+	// Every open incident is listed; past ones only the newest MaxPastIncidents (the bars above
+	// used all of them).
+	if len(snap.PastIncidents) > MaxPastIncidents {
+		snap.PastIncidents = snap.PastIncidents[:MaxPastIncidents]
+	}
 	return snap, nil
+}
+
+// MaxPastIncidents is how many resolved incidents a snapshot lists.
+const MaxPastIncidents = 100
+
+// RefreshForMonitor refreshes, in the caller's tenant transaction, every published page that shows
+// the monitor. monitors calls it when it pauses, resumes or deletes one, so the public page
+// changes with the next cache miss instead of the next 30 s rebuild.
+func RefreshForMonitor(ctx context.Context, tx pgx.Tx, tenantID, monitorID uuid.UUID, now time.Time) error {
+	ids, err := statuspagesdb.New(tx).PublishedPagesWithMonitor(ctx, statuspagesdb.PublishedPagesWithMonitorParams{TenantID: tenantID, MonitorID: monitorID})
+	if err != nil {
+		return fmt.Errorf("statuspages: pages of monitor: %w", err)
+	}
+	for _, id := range ids {
+		if _, err := Refresh(ctx, tx, tenantID, id, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Refresh rebuilds and stores the snapshot of a page in the caller's tenant transaction, or

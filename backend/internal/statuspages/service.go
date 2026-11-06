@@ -40,7 +40,8 @@ const (
 var (
 	// ErrNotFound means no live status page with that id exists in the tenant.
 	ErrNotFound = errors.New("statuspages: not found")
-	// ErrSlugTaken means a live page of any organization has the slug (slugs are global).
+	// ErrSlugTaken means the address is not available: a live page of any organization has it, or
+	// another organization released it less than 30 days ago (P-06). Both look the same.
 	ErrSlugTaken = errors.New("statuspages: slug taken")
 )
 
@@ -202,6 +203,9 @@ func (s *Service) Create(ctx context.Context, a Actor, in CreateInput) (Page, er
 		if err := plans.CheckCreate(ctx, tx, a.TenantID, plans.ResourceStatusPage); err != nil {
 			return err
 		}
+		if err := checkSlugFree(ctx, statuspagesdb.New(tx), f.slug); err != nil {
+			return err
+		}
 		if err := statuspagesdb.New(tx).InsertPage(ctx, statuspagesdb.InsertPageParams{
 			ID: id, TenantID: a.TenantID, Slug: f.slug, Title: f.title, Description: f.description, LogoUrl: f.logo, AccentColor: f.accent,
 		}); err != nil {
@@ -314,6 +318,14 @@ func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateIn
 			out, err = getPage(ctx, tx, a.TenantID, id)
 			return err
 		}
+		if next.Slug != cur.Slug {
+			if err := checkSlugFree(ctx, q, next.Slug); err != nil {
+				return err
+			}
+			if err := q.ReleaseSlug(ctx, statuspagesdb.ReleaseSlugParams{TenantID: a.TenantID, Slug: cur.Slug}); err != nil {
+				return fmt.Errorf("statuspages: release slug: %w", err)
+			}
+		}
 		if err := q.UpdatePage(ctx, next); err != nil {
 			return mapWriteErr("update page", err)
 		}
@@ -376,7 +388,8 @@ func (s *Service) SetPassword(ctx context.Context, a Actor, id uuid.UUID, passwo
 	})
 }
 
-// Delete soft-deletes a page and removes its snapshot; the slug becomes free.
+// Delete soft-deletes a page and removes its snapshot; the slug stays reserved for this
+// organization for 30 days (P-06).
 func (s *Service) Delete(ctx context.Context, a Actor, id uuid.UUID) error {
 	if err := requireAdmin(a); err != nil {
 		return err
@@ -389,6 +402,9 @@ func (s *Service) Delete(ctx context.Context, a Actor, id uuid.UUID) error {
 		}
 		if err := q.SoftDeletePage(ctx, statuspagesdb.SoftDeletePageParams{TenantID: a.TenantID, ID: id}); err != nil {
 			return fmt.Errorf("statuspages: delete: %w", err)
+		}
+		if err := q.ReleaseSlug(ctx, statuspagesdb.ReleaseSlugParams{TenantID: a.TenantID, Slug: cur.Slug}); err != nil {
+			return fmt.Errorf("statuspages: release slug: %w", err)
 		}
 		if err := q.DeleteSnapshot(ctx, statuspagesdb.DeleteSnapshotParams{TenantID: a.TenantID, PageID: id}); err != nil {
 			return fmt.Errorf("statuspages: delete snapshot: %w", err)
@@ -577,6 +593,19 @@ func lockPage(ctx context.Context, q *statuspagesdb.Queries, tenantID, id uuid.U
 		return row, fmt.Errorf("statuspages: lock page: %w", err)
 	}
 	return row, nil
+}
+
+// checkSlugFree refuses an address another organization released less than 30 days ago (a live
+// page's address is refused by the unique index). The answer does not say which case it is.
+func checkSlugFree(ctx context.Context, q *statuspagesdb.Queries, slug string) error {
+	held, err := q.SlugHeld(ctx, slug)
+	if err != nil {
+		return fmt.Errorf("statuspages: slug hold: %w", err)
+	}
+	if held {
+		return ErrSlugTaken
+	}
+	return nil
 }
 
 func mapWriteErr(op string, err error) error {

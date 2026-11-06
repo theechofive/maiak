@@ -85,13 +85,40 @@ WHERE tenant_id = @tenant_id AND monitor_id = ANY(@monitor_ids::uuid[]) AND hour
 GROUP BY monitor_id, day;
 
 -- name: RecentIncidents :many
--- Automatic incidents of the given monitors that are open or ended after since, newest first.
+-- Automatic incidents of the given monitors: every open one, and per monitor the newest
+-- resolved ones that ended after since (at most 2000 each, so one flapping monitor cannot push
+-- out the others), newest first. The heartbeat bars use all of them; the page lists fewer.
 SELECT id, monitor_id, started_at, resolved_at
-FROM incidents
-WHERE tenant_id = @tenant_id AND monitor_id = ANY(@monitor_ids::uuid[])
-  AND (resolved_at IS NULL OR resolved_at >= @since)
-ORDER BY started_at DESC, id
-LIMIT 500;
+FROM (
+    SELECT i.id, i.monitor_id, i.started_at, i.resolved_at,
+           row_number() OVER (PARTITION BY i.monitor_id ORDER BY i.started_at DESC, i.id) AS n
+    FROM incidents AS i
+    WHERE i.tenant_id = @tenant_id AND i.monitor_id = ANY(@monitor_ids::uuid[])
+      AND i.resolved_at IS NOT NULL AND i.resolved_at >= @since
+) AS r
+WHERE r.n <= 2000
+UNION ALL
+SELECT i.id, i.monitor_id, i.started_at, i.resolved_at
+FROM incidents AS i
+WHERE i.tenant_id = @tenant_id AND i.monitor_id = ANY(@monitor_ids::uuid[]) AND i.resolved_at IS NULL
+ORDER BY started_at DESC, id;
+
+-- name: PublishedPagesWithMonitor :many
+-- Published pages that show a monitor, to refresh them in the transaction that pauses, resumes or
+-- deletes it.
+SELECT DISTINCT p.id
+FROM status_page_components AS c
+JOIN status_pages AS p ON p.tenant_id = c.tenant_id AND p.id = c.page_id
+WHERE c.tenant_id = @tenant_id AND c.monitor_id = @monitor_id AND p.published AND p.deleted_at IS NULL;
+
+-- name: ReleaseSlug :exec
+-- Holds a freed address for its organization for 30 days (P-06).
+INSERT INTO status_page_released_slugs (tenant_id, slug)
+VALUES (@tenant_id, @slug)
+ON CONFLICT (tenant_id, slug) DO UPDATE SET released_at = now();
+
+-- name: SlugHeld :one
+SELECT status_page_slug_held(@slug::text)::boolean AS held;
 
 -- name: UpsertSnapshot :exec
 INSERT INTO status_page_snapshots (page_id, tenant_id, slug, payload, etag, generated_at)

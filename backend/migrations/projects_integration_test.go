@@ -52,8 +52,8 @@ func TestIntegrationProjects(t *testing.T) {
 		`INSERT INTO notification_channels (id, tenant_id, type, config_encrypted) VALUES ('`+chanA+`', '`+tenantA+`', 'slack_webhook', '\x01')`,
 		`INSERT INTO notification_channels (id, tenant_id, type, deleted_at, status) VALUES ('`+chanGone+`', '`+tenantA+`', 'slack_webhook', now(), 'failed')`,
 		`INSERT INTO monitor_channels (tenant_id, monitor_id, channel_id) VALUES ('`+tenantA+`', '`+monA+`', '`+chanA+`')`)
-	if n, err := env.Migrate(ctx); err != nil || n != 2 {
-		t.Fatalf("re-applied %d migrations, err=%v; want 2 (T-02, P-05)", n, err)
+	if n, err := env.Migrate(ctx); err != nil || n != 3 {
+		t.Fatalf("re-applied %d migrations, err=%v; want 3 (T-02, P-05, P-06)", n, err)
 	}
 
 	defaultOf := func(tenant string) string {

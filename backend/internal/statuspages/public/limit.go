@@ -1,6 +1,7 @@
 package public
 
 import (
+	"container/list"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -13,17 +14,20 @@ import (
 )
 
 // Limiter is a token bucket per key, in memory and per replica (L-274). Memory is bounded: when
-// the table is full, idle buckets are dropped first, then arbitrary ones.
+// the table is full, the least recently used key is dropped (one at a time, so a flood of new keys
+// only forgets the oldest ones, never every key at once).
 type Limiter struct {
 	mu      sync.Mutex
 	clock   clock.Clock
 	rate    float64 // tokens per second
 	burst   float64
 	maxKeys int
-	buckets map[string]*bucket
+	buckets map[string]*list.Element
+	lru     *list.List // front = most recently used
 }
 
 type bucket struct {
+	key    string
 	tokens float64
 	last   time.Time
 }
@@ -33,45 +37,69 @@ func NewLimiter(rate float64, burst, maxKeys int, c clock.Clock) *Limiter {
 	if c == nil {
 		c = clock.System{}
 	}
-	return &Limiter{clock: c, rate: rate, burst: float64(burst), maxKeys: maxKeys, buckets: map[string]*bucket{}}
+	return &Limiter{clock: c, rate: rate, burst: float64(burst), maxKeys: maxKeys, buckets: map[string]*list.Element{}, lru: list.New()}
+}
+
+// refill returns the key's bucket, refilled to now and marked as recently used.
+func (l *Limiter) refill(key string, now time.Time) *bucket {
+	if e, ok := l.buckets[key]; ok {
+		l.lru.MoveToFront(e)
+		b := e.Value.(*bucket)
+		b.tokens = math.Min(l.burst, b.tokens+now.Sub(b.last).Seconds()*l.rate)
+		b.last = now
+		return b
+	}
+	for len(l.buckets) >= l.maxKeys {
+		oldest := l.lru.Back()
+		delete(l.buckets, oldest.Value.(*bucket).key)
+		l.lru.Remove(oldest)
+	}
+	b := &bucket{key: key, tokens: l.burst, last: now}
+	l.buckets[key] = l.lru.PushFront(b)
+	return b
+}
+
+func (l *Limiter) wait(b *bucket) time.Duration {
+	return max(time.Duration((1-b.tokens)/l.rate*float64(time.Second)), time.Second)
 }
 
 // Allow takes a token for key; when there is none it returns false and the wait until the next one.
 func (l *Limiter) Allow(key string) (bool, time.Duration) {
-	now := l.clock.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	b, ok := l.buckets[key]
-	if !ok {
-		if len(l.buckets) >= l.maxKeys {
-			l.evict(now)
-		}
-		b = &bucket{tokens: l.burst, last: now}
-		l.buckets[key] = b
-	}
-	b.tokens = math.Min(l.burst, b.tokens+now.Sub(b.last).Seconds()*l.rate)
-	b.last = now
+	b := l.refill(key, l.clock.Now())
 	if b.tokens >= 1 {
 		b.tokens--
 		return true, 0
 	}
-	wait := time.Duration((1 - b.tokens) / l.rate * float64(time.Second))
-	return false, max(wait, time.Second)
+	return false, l.wait(b)
 }
 
-func (l *Limiter) evict(now time.Time) {
-	full := time.Duration(l.burst / l.rate * float64(time.Second))
-	for k, b := range l.buckets {
-		if now.Sub(b.last) >= full {
-			delete(l.buckets, k)
-		}
+// Has reports whether key has a token, without taking it.
+func (l *Limiter) Has(key string) (bool, time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	b := l.refill(key, l.clock.Now())
+	if b.tokens >= 1 {
+		return true, 0
 	}
-	for k := range l.buckets {
-		if len(l.buckets) < l.maxKeys/2 {
-			return
-		}
-		delete(l.buckets, k)
-	}
+	return false, l.wait(b)
+}
+
+// Take spends a token of key even when there is none left (it then goes negative, up to one burst),
+// for counting an outcome after the fact, such as a wrong password.
+func (l *Limiter) Take(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	b := l.refill(key, l.clock.Now())
+	b.tokens = math.Max(b.tokens-1, -l.burst)
+}
+
+// Len is the number of keys tracked.
+func (l *Limiter) Len() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.buckets)
 }
 
 // Cookie of an unlocked password-protected page (ADR-0103). Its value is the expiry and an

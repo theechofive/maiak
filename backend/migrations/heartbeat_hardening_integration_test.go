@@ -113,8 +113,8 @@ func TestIntegrationHeartbeatHardening(t *testing.T) {
 			`DELETE FROM goose_db_version WHERE version_id = 20261021180000`,
 			`UPDATE monitors SET config = jsonb_set(config, '{graceSeconds}', '`+grace+`'::jsonb) WHERE id = '`+id+`'`)
 		n, err := env.Migrate(ctx)
-		if err == nil && n != 8 {
-			t.Fatalf("re-applied %d migrations, want 8 (with T-01, T-02 and P-05)", n)
+		if err == nil && n != 9 {
+			t.Fatalf("re-applied %d migrations, want 9 (with T-01, T-02, P-05 and P-06)", n)
 		}
 		return err
 	}

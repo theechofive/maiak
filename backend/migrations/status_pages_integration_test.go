@@ -12,9 +12,12 @@ import (
 	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
 )
 
-// rollbackStatusPages undoes the P-05 migration (ADR-0103), so a test can replay an older
+// rollbackStatusPages undoes the P-05 and P-06 migrations (ADR-0103), so a test can replay an older
 // migration (goose refuses to apply a missing older version).
 var rollbackStatusPages = []string{
+	`DROP FUNCTION IF EXISTS status_page_slug_held(text)`,
+	`DROP TABLE IF EXISTS status_page_released_slugs`,
+	`DELETE FROM goose_db_version WHERE version_id = 20261106150000`,
 	`DROP FUNCTION IF EXISTS status_page_snapshot(text)`,
 	`DROP FUNCTION IF EXISTS status_page_published_pages()`,
 	`DROP TABLE IF EXISTS status_page_snapshots`,
@@ -207,6 +210,40 @@ func TestIntegrationStatusPages(t *testing.T) {
 			if _, err := admin.Exec(ctx, sql); err == nil {
 				t.Errorf("%s accepted", name)
 			}
+		}
+	})
+
+	t.Run("slug hold", func(t *testing.T) {
+		pgtest.MustExec(t, admin, `INSERT INTO status_page_released_slugs (tenant_id, slug) VALUES ('`+tenantA+`', 'freed')`,
+			`INSERT INTO status_page_released_slugs (tenant_id, slug, released_at) VALUES ('`+tenantA+`', 'old-one', now() - interval '31 days')`)
+		held := func(tenant, slug string) bool {
+			t.Helper()
+			var h bool
+			if err := inTenant(t, api, tenant, func(tx pgx.Tx) error {
+				return tx.QueryRow(ctx, `SELECT status_page_slug_held($1)`, slug).Scan(&h)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			return h
+		}
+		if !held(tenantB, "freed") || held(tenantA, "freed") || held(tenantB, "old-one") || held(tenantB, "never") {
+			t.Fatal("slug hold answers")
+		}
+		// The api cannot read or delete other tenants' released slugs.
+		err := inTenant(t, api, tenantB, func(tx pgx.Tx) error {
+			var n int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM status_page_released_slugs`).Scan(&n); err != nil {
+				return err
+			}
+			if n != 0 {
+				t.Errorf("tenant B sees %d released slugs", n)
+			}
+			_, err := tx.Exec(ctx, `DELETE FROM status_page_released_slugs`)
+			return err
+		})
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+			t.Errorf("api delete of released slugs: %v", err)
 		}
 	})
 

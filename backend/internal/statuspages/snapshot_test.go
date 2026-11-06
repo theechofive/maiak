@@ -305,13 +305,19 @@ func TestValidateTextAndPassword(t *testing.T) {
 	if v, msg := ValidateText("  API  ", 1, MaxNameLength); msg != "" || v != "API" {
 		t.Fatal(v, msg)
 	}
-	for _, bad := range []string{"", strings.Repeat("x", 61), "a\x00b", "line\nbreak"} {
+	for _, bad := range []string{"", strings.Repeat("x", 61), "a\x00b", "line\nbreak", "API\u202egnp.exe", "Pay\u200bments", "\ufeffAPI", "A\u2066B"} {
 		if _, msg := ValidateText(bad, 1, MaxNameLength); msg == "" {
 			t.Errorf("%q accepted", bad)
 		}
 	}
 	if _, msg := ValidateText("two\nlines", 0, MaxDescription); msg != "" {
 		t.Error("description may have line breaks")
+	}
+	if _, msg := ValidateText("bidi \u202e override", 0, MaxDescription); msg == "" {
+		t.Error("description with a bidi override accepted")
+	}
+	if _, msg := ValidateText("Zürich – 東京 🚀", 1, MaxNameLength); msg != "" {
+		t.Errorf("ordinary non-ASCII refused: %s", msg)
 	}
 	if ValidatePassword("short") == "" || ValidatePassword(strings.Repeat("x", 129)) == "" || ValidatePassword("twelve chars") != "" {
 		t.Fatal("password rules")

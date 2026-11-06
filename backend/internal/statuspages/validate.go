@@ -95,7 +95,8 @@ func LogoOrigin(v string) (string, bool) {
 }
 
 // ValidateText trims a title, description, public name or group name and checks its length in
-// characters; control characters are refused (line breaks only in the description).
+// characters; control and invisible format characters are refused (line breaks only in the
+// description).
 func ValidateText(v string, minLen, maxLen int) (string, string) {
 	v = strings.TrimSpace(v)
 	n := utf8.RuneCountInString(v)
@@ -108,6 +109,11 @@ func ValidateText(v string, minLen, maxLen int) (string, string) {
 	for _, r := range v {
 		if unicode.IsControl(r) && (r != '\n' || maxLen != MaxDescription) {
 			return v, "must not contain control characters"
+		}
+		// Format characters (bidi overrides, zero-width joiners and spaces) can make a public
+		// name read differently from what it is.
+		if unicode.Is(unicode.Cf, r) {
+			return v, "must not contain invisible formatting characters"
 		}
 	}
 	return v, ""

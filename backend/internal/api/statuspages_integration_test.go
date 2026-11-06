@@ -59,7 +59,8 @@ func TestIntegrationStatusPageAdmin(t *testing.T) {
 	reg := c.do(http.MethodPost, "/api/v1/auth/register", registerBody("other-org@example.com", ownerPassword), map[string]string{"X-Forwarded-For": "198.51.100.40"})
 	other, csrf := session(t, reg)
 	other = withCSRF(other, csrf)
-	if r := c.do(http.MethodPost, "/api/v1/status-pages", `{"slug":"acme-status","title":"Mine"}`, other); r.code != http.StatusConflict || r.body["type"] != "urn:maiak:problem:slug-taken" {
+	if r := c.do(http.MethodPost, "/api/v1/status-pages", `{"slug":"acme-status","title":"Mine"}`, other); r.code != http.StatusConflict ||
+		r.body["type"] != "urn:maiak:problem:slug-taken" || r.body["title"] != "This address is not available" {
 		t.Fatalf("taken slug: %d %s", r.code, r.raw)
 	}
 	// Another organization cannot see or change this page.
@@ -194,8 +195,24 @@ func TestIntegrationStatusPageAdmin(t *testing.T) {
 	if r := c.do(http.MethodDelete, base, "", owner); r.code != http.StatusNoContent {
 		t.Fatalf("delete: %d %s", r.code, r.raw)
 	}
-	if r := c.do(http.MethodPost, "/api/v1/status-pages", `{"slug":"acme","title":"Other org"}`, other); r.code != http.StatusCreated {
-		t.Fatalf("slug not freed: %d %s", r.code, r.raw)
+	// The freed address stays reserved for 30 days (P-06): another organization gets the same
+	// answer as for a live page anywhere, which says nothing about whose it is; the old address of a
+	// rename is held too. The organization itself may reclaim it.
+	for _, slug := range []string{"acme", "acme-status"} {
+		r := c.do(http.MethodPost, "/api/v1/status-pages", `{"slug":"`+slug+`","title":"Other org"}`, other)
+		if r.code != http.StatusConflict || r.body["type"] != "urn:maiak:problem:slug-taken" || r.body["title"] != "This address is not available" {
+			t.Fatalf("held slug %s: %d %s", slug, r.code, r.raw)
+		}
+	}
+	if r := c.do(http.MethodPost, "/api/v1/status-pages", `{"slug":"acme","title":"Back"}`, owner); r.code != http.StatusCreated {
+		t.Fatalf("own slug not reclaimable: %d %s", r.code, r.raw)
+	}
+	if r := c.do(http.MethodPost, "/api/v1/status-pages", `{"slug":"acme","title":"Taken"}`, other); r.code != http.StatusConflict ||
+		r.body["title"] != "This address is not available" {
+		t.Fatalf("live slug: %d %s", r.code, r.raw)
+	}
+	if r := c.do(http.MethodPost, "/api/v1/status-pages", `{"slug":"other-org","title":"Other org"}`, other); r.code != http.StatusCreated {
+		t.Fatalf("free slug: %d %s", r.code, r.raw)
 	}
 
 	// Usage counts the page; audit rows carry field names, never the password.

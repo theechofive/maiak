@@ -55,8 +55,8 @@ func TestIntegrationPlans(t *testing.T) {
 		`DROP TABLE plans`,
 		`DELETE FROM goose_db_version WHERE version_id = 20261021090000`,
 		`INSERT INTO tenants (id, slug, name, limits) VALUES ('`+tenantA+`', 'default', 'Default', '{}'), ('`+tenantB+`', 'b', 'B', '{"max_monitors": 4}')`)
-	if n, err := env.Migrate(ctx); err != nil || n != 12 {
-		t.Fatalf("re-applied %d migrations, err=%v; want 12 (plans and the later registration, heartbeat, P-07, P-08, P-04, P-09, two S-01, T-01, T-02 and P-05 migrations)", n, err)
+	if n, err := env.Migrate(ctx); err != nil || n != 13 {
+		t.Fatalf("re-applied %d migrations, err=%v; want 13 (plans and the later registration, heartbeat, P-07, P-08, P-04, P-09, two S-01, T-01, T-02, P-05 and P-06 migrations)", n, err)
 	}
 	// Existing rows satisfy the P-07 limits check, which is validated.
 	var validated bool

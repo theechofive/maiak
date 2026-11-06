@@ -12,6 +12,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
@@ -47,16 +48,22 @@ func mustRead(name string) []byte {
 	return b
 }
 
-// Limits of one replica (L-274): page views per client IP, and password attempts per client IP and
-// per page (the second bound slows a guess spread over many addresses).
+// Limits of one replica (L-274). Clients are keyed by IPv4 address or IPv6 /64.
+//   - page views per client;
+//   - password attempts per client (all attempts);
+//   - wrong passwords per page: slows a guess spread over many addresses. Only failures count, so
+//     successful unlocks and visitors with a valid cookie never use it; when it is exhausted, each
+//     client still has a small reserve of its own wrong passwords on that page, so an attacker
+//     cannot lock legitimate visitors out of the page.
 const (
-	viewRate        = 2.0 // per second on average
-	viewBurst       = 60
-	unlockPerIP     = 10 // per 15 minutes
-	unlockPerPage   = 100
-	unlockWindow    = 15 * time.Minute
-	maxLimiterKeys  = 50_000
-	maxPasswordForm = 4 << 10
+	viewRate          = 2.0 // per second on average
+	viewBurst         = 60
+	unlockPerIP       = 10 // per 15 minutes
+	failuresPerPage   = 100
+	reservePerVisitor = 3
+	unlockWindow      = 15 * time.Minute
+	maxLimiterKeys    = 50_000
+	maxPasswordForm   = 4 << 10
 )
 
 // Config are the renderer's settings.
@@ -88,7 +95,9 @@ type handler struct {
 	log      *slog.Logger
 	views    *Limiter
 	unlockIP *Limiter
-	unlockPg *Limiter
+	// pageFails counts wrong passwords per page; reserve counts them per page and client.
+	pageFails *Limiter
+	reserve   *Limiter
 	// argon is a semaphore: one password verification at a time per replica (64 MiB each).
 	argon chan struct{}
 	m     *rendererMetrics
@@ -142,11 +151,12 @@ func NewHandler(cfg Config, deps Deps) http.Handler {
 		log = slog.New(slog.DiscardHandler)
 	}
 	h := &handler{cfg: cfg, cache: NewCache(deps.Source, clk), cookies: deps.Cookies, clock: clk, log: log,
-		views:    NewLimiter(viewRate, viewBurst, maxLimiterKeys, clk),
-		unlockIP: NewLimiter(float64(unlockPerIP)/unlockWindow.Seconds(), unlockPerIP, maxLimiterKeys, clk),
-		unlockPg: NewLimiter(float64(unlockPerPage)/unlockWindow.Seconds(), unlockPerPage, maxLimiterKeys, clk),
-		argon:    make(chan struct{}, 1),
-		m:        newMetrics(deps.Registerer)}
+		views:     NewLimiter(viewRate, viewBurst, maxLimiterKeys, clk),
+		unlockIP:  NewLimiter(float64(unlockPerIP)/unlockWindow.Seconds(), unlockPerIP, maxLimiterKeys, clk),
+		pageFails: NewLimiter(float64(failuresPerPage)/unlockWindow.Seconds(), failuresPerPage, maxLimiterKeys, clk),
+		reserve:   NewLimiter(float64(reservePerVisitor)/unlockWindow.Seconds(), reservePerVisitor, maxLimiterKeys, clk),
+		argon:     make(chan struct{}, 1),
+		m:         newMetrics(deps.Registerer)}
 	h.cache.OnLookup = func(hit bool) {
 		if hit {
 			h.m.cache.WithLabelValues("hit").Inc()
@@ -192,6 +202,17 @@ func (h *handler) clientKey(r *http.Request) string {
 	if !ok || !ip.IsValid() {
 		// Without a usable X-Forwarded-For every such request shares one bucket.
 		return "unknown"
+	}
+	return limitKey(ip)
+}
+
+// limitKey is an IPv4 address, or the /64 of an IPv6 address: one subscriber usually holds a
+// whole /64, so per-address IPv6 limits would be free to dodge.
+func limitKey(ip netip.Addr) string {
+	ip = ip.Unmap()
+	if ip.Is6() {
+		p, _ := ip.Prefix(64)
+		return p.String()
 	}
 	return ip.String()
 }
@@ -343,15 +364,19 @@ func (h *handler) unlock(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	if ok, wait := h.unlockIP.Allow(h.clientKey(r)); !ok {
+	client := h.clientKey(r)
+	reserveKey := slug + "\x00" + client
+	if ok, wait := h.unlockIP.Allow(client); !ok {
 		h.m.limited.WithLabelValues("unlock").Inc()
 		tooMany(w, wait)
 		return
 	}
-	if ok, wait := h.unlockPg.Allow(slug); !ok {
-		h.m.limited.WithLabelValues("unlock").Inc()
-		tooMany(w, wait)
-		return
+	if ok, _ := h.pageFails.Has(slug); !ok {
+		if ok, wait := h.reserve.Has(reserveKey); !ok {
+			h.m.limited.WithLabelValues("unlock").Inc()
+			tooMany(w, wait)
+			return
+		}
 	}
 	if err := r.ParseForm(); err != nil {
 		h.renderLock(w, r, slug, e, "The password could not be read. Try again.", http.StatusBadRequest)
@@ -360,14 +385,18 @@ func (h *handler) unlock(w http.ResponseWriter, r *http.Request) {
 	password := r.PostForm.Get("password")
 	if password == "" || len(password) > statuspages.MaxPasswordBytes || !h.verify(r.Context(), password, e.PasswordHash) {
 		h.m.unlocks.WithLabelValues("wrong").Inc()
+		h.pageFails.Take(slug)
+		h.reserve.Take(reserveKey)
 		h.renderLock(w, r, slug, e, "That password is not correct.", http.StatusUnauthorized)
 		return
 	}
 	h.m.unlocks.WithLabelValues("ok").Inc()
 	// Secure comes from MAIAK_COOKIE_SECURE (default true); gosec G124 only accepts a literal true.
-	c := &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Strict are literal, Secure is configurable (default true)
+	// Lax, not Strict: a visitor who unlocked the page and later follows a link to it from a mail or
+	// chat (a cross-site navigation) stays unlocked; the cookie only reads a page, so Lax is enough.
+	c := &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are literal, Secure is configurable (default true)
 		Name: CookieName, Value: h.cookies.Value(slug, e.PasswordHash, h.clock.Now()), Path: "/status/" + slug,
-		MaxAge: int(CookieTTL.Seconds()), HttpOnly: true, Secure: h.cfg.CookieSecure, SameSite: http.SameSiteStrictMode,
+		MaxAge: int(CookieTTL.Seconds()), HttpOnly: true, Secure: h.cfg.CookieSecure, SameSite: http.SameSiteLaxMode,
 	}
 	http.SetCookie(w, c)
 	w.Header().Set("Cache-Control", "no-store")

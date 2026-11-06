@@ -31,7 +31,7 @@ func TestIntegrationMigrateFromScratchAndRerun(t *testing.T) {
 	}
 	want := "audit_log,auth_identities,check_results,heartbeat_tokens,incident_monitors,incidents,invitations,memberships,monitor_channels,monitor_location_state," +
 		"monitor_locations,monitor_state,monitors,notification_channels,notification_deliveries,plans,probe_locations,project_members,projects,result_rollups_hourly,rollup_state,sessions," +
-		"status_page_components,status_page_snapshots,status_pages,tenants,users"
+		"status_page_components,status_page_released_slugs,status_page_snapshots,status_pages,tenants,users"
 	if got := strings.Join(tables, ","); got != want {
 		t.Fatalf("tables = %s, want %s", got, want)
 	}
@@ -93,6 +93,9 @@ var definerAllowList = map[string][]string{
 	// snapshots, and the public renderer reads one prepared snapshot by slug, its only privilege.
 	"status_page_published_pages": {"maiak_worker"},
 	"status_page_snapshot":        {"maiak_statuspage"},
+	// A freed address stays reserved for its organization for 30 days; the api asks whether it is
+	// held for someone else before the tenant could see the row (P-06).
+	"status_page_slug_held": {"maiak_api"},
 }
 
 // extraPolicies are the permissive policies on tenant tables that are not tenant isolation
@@ -128,6 +131,8 @@ var extraPolicies = map[string]struct {
 	// status_page_published_pages and status_page_snapshot (P-05, ADR-0103).
 	"status_pages.owner_statuspage_read":          {cmd: "r", roles: []string{"maiak_owner"}},
 	"status_page_snapshots.owner_statuspage_read": {cmd: "r", roles: []string{"maiak_owner"}},
+	// status_page_slug_held (P-06).
+	"status_page_released_slugs.owner_slug_hold_read": {cmd: "r", roles: []string{"maiak_owner"}},
 }
 
 var runtimeRoles = []string{"maiak_api", "maiak_statuspage", "maiak_worker"}
