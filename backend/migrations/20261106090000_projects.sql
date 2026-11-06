@@ -1,6 +1,15 @@
 -- +goose Up
 SET LOCAL lock_timeout = '5s';
 
+-- Every existing table this migration changes is locked up front, in the order the application
+-- locks them (the tenant row before monitors and channels), so the migration never upgrades a lock
+-- halfway and cannot deadlock with a running transaction; with lock_timeout it fails fast instead.
+-- monitors and notification_channels stay ACCESS EXCLUSIVE until commit (ADD COLUMN, backfill):
+-- fine at today's sizes, see L-290 for larger tables.
+LOCK TABLE tenants IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE monitors, notification_channels IN ACCESS EXCLUSIVE MODE;
+LOCK TABLE plans IN ROW EXCLUSIVE MODE;
+
 -- T-02 (ADR-0102): projects inside an organization. Expand step only; the contract step
 -- (monitors.project_id NOT NULL, dropping monitors_fill_project) waits for the next release
 -- (L-285). The previous app version keeps working:
@@ -168,9 +177,11 @@ CREATE INDEX notification_channels_project_idx ON notification_channels (tenant_
 -- override is possible). The previous release ignores unknown keys.
 UPDATE plans SET limits = limits || '{"max_projects": 50}'::jsonb;
 
--- Reminders follow the T-02 routing rule: a monitor with a selection reaches its selected
--- channels that are organization-wide or of its project; a monitor without one reaches the active
--- channels of its own project only (closes L-261, L-263). Same signature, owner and grants.
+-- Reminders follow the T-02 routing rule: a monitor with a valid selection reaches its selected
+-- channels that are organization-wide or of its project; a monitor without a valid selection (none,
+-- or only links to other projects' channels, which the previous release could create during the
+-- rollout, L-286) reaches the active channels of its own project only (closes L-261, L-263). The
+-- same rule is in ListDeliveryChannels. Same signature, owner and grants.
 -- +goose StatementBegin
 CREATE OR REPLACE FUNCTION enqueue_incident_reminders(p_limit integer)
 RETURNS integer
@@ -197,7 +208,9 @@ AS $$
                        WHERE mc.tenant_id = i.tenant_id AND mc.monitor_id = m.id AND mc.channel_id = c.id)
                AND (c.project_id IS NULL OR c.project_id = m.project_id))
               OR (NOT EXISTS (SELECT 1 FROM monitor_channels AS mc
-                              WHERE mc.tenant_id = i.tenant_id AND mc.monitor_id = m.id)
+                              JOIN notification_channels AS c2 ON c2.tenant_id = mc.tenant_id AND c2.id = mc.channel_id
+                              WHERE mc.tenant_id = i.tenant_id AND mc.monitor_id = m.id
+                                AND (c2.project_id IS NULL OR c2.project_id = m.project_id))
                   AND c.project_id = m.project_id)
           )
           AND coalesce(

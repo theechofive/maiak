@@ -1,7 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { errorMessage, errorMeta } from "../api/client";
+import { ApiError, errorMessage, errorMeta } from "../api/client";
 import {
   listMonitors,
   POLL_MS,
@@ -45,18 +45,29 @@ import { useNow } from "../lib/useNow";
 import { useAuth } from "../auth/AuthProvider";
 import { abilities, ROLE_HINTS } from "../lib/roles";
 import { useProjectScope } from "../lib/useProjectScope";
+import { ALL_PROJECTS } from "../lib/projects";
 
 export default function Monitors() {
   const now = useNow();
   const [query, setQuery] = useState("");
   const filter = useRef<HTMLInputElement>(null);
-  const { projectId, projects } = useProjectScope();
+  const { projectId, projects, setChoice } = useProjectScope();
+  const queryClient = useQueryClient();
   const monitors = useQuery({
     queryKey: queryKeys.monitorList(projectId),
     queryFn: () => listMonitors(projectId),
     refetchInterval: POLL_MS,
   });
   const projectName = projects.data?.items.find((p) => p.id === projectId)?.name;
+  // The remembered project was deleted or the user lost access to it (404): back to all projects,
+  // with a fresh project list.
+  const goneProject =
+    projectId !== undefined && monitors.error instanceof ApiError && monitors.error.status === 404;
+  useEffect(() => {
+    if (!goneProject) return;
+    setChoice(ALL_PROJECTS);
+    void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
+  }, [goneProject, setChoice, queryClient]);
   const usage = useUsage();
   const down = monitors.data?.summary.down ?? 0;
   // The sweep marks refreshes, not the first load.

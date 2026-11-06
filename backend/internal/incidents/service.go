@@ -280,6 +280,17 @@ func StillDown(ctx context.Context, tx pgx.Tx, tenantID, incidentID uuid.UUID) (
 	return ok, nil
 }
 
+// StillRouted reports whether a queued delivery may still go to its channel: the channel is
+// organization-wide or belongs to the monitor's current project (T-13). jobs checks it before
+// sending, so a move of the monitor or the channel after the row was queued fails the row.
+func StillRouted(ctx context.Context, tx pgx.Tx, tenantID, monitorID, channelID uuid.UUID) (bool, error) {
+	ok, err := incidentsdb.New(tx).DeliveryStillRouted(ctx, incidentsdb.DeliveryStillRoutedParams{TenantID: tenantID, MonitorID: monitorID, ChannelID: channelID})
+	if err != nil {
+		return false, fmt.Errorf("incidents: still routed: %w", err)
+	}
+	return ok, nil
+}
+
 // payloadBase and payload are the outbox payload: what the Slack message (B-13) needs and no
 // secret. The URL is reduced to scheme, host and path because query strings often carry tokens.
 type payloadBase struct {

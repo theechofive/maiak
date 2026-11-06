@@ -1,11 +1,13 @@
 package api_test
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/theechofive/maiak/backend/internal/authz"
@@ -19,6 +21,7 @@ import (
 //     organization-wide channel.
 type projectWorld struct {
 	c                         *client
+	env                       *pgtest.Env
 	sessions                  map[authz.Role]map[string]string
 	userIDs                   map[authz.Role]string
 	def, alpha, beta, gamma   string
@@ -34,7 +37,7 @@ func newProjectWorld(t *testing.T, name string) *projectWorld {
 	t.Helper()
 	env := pgtest.New(t, pgtest.DBName(name))
 	c := newRegistrationServer(t, env, membersOpts(), true, &lockedBuffer{})
-	w := &projectWorld{c: c, sessions: map[authz.Role]map[string]string{}, userIDs: map[authz.Role]string{},
+	w := &projectWorld{c: c, env: env, sessions: map[authz.Role]map[string]string{}, userIDs: map[authz.Role]string{},
 		monitorName: map[string]string{}, channelName: map[string]string{}, projectNames: map[string]string{}}
 	owner := adminSession(c)
 	w.sessions[authz.Owner] = owner
@@ -398,5 +401,62 @@ func TestIntegrationProjectsLifecycle(t *testing.T) {
 	if r := c.do(http.MethodPost, "/api/v1/projects", `{"name":"one too many"}`, owner); r.code != http.StatusConflict ||
 		r.body["type"] != "urn:maiak:problem:plan-limit-reached" || r.body["limit"] != "projects" || r.body["max"] != float64(50) {
 		t.Fatalf("51st project: %d %s", r.code, r.raw)
+	}
+}
+
+// TestIntegrationProjectMovesT13 covers the T-13 review fixes: the monitor detail shows only
+// channels routing honours (a stray link of the previous release to another project's channel is
+// hidden), and concurrent monitor and channel moves serialise (no deadlock, no stray link left).
+func TestIntegrationProjectMovesT13(t *testing.T) {
+	w := newProjectWorld(t, "projectmoves")
+	c := w.c
+	owner := w.sessions[authz.Owner]
+	admin := w.env.AdminConn(t)
+
+	pgtest.MustExec(t, admin, `INSERT INTO monitor_channels (tenant_id, monitor_id, channel_id)
+		SELECT tenant_id, '`+w.mAlpha+`', id FROM notification_channels WHERE id IN ('`+w.chBeta+`', '`+w.chOrg+`')`)
+	r := c.do(http.MethodGet, "/api/v1/monitors/"+w.mAlpha, "", owner)
+	if ids, _ := r.body["channelIds"].([]any); len(ids) != 1 || ids[0] != w.chOrg {
+		t.Fatalf("detail channelIds with a stray link: %s", r.raw)
+	}
+	pgtest.MustExec(t, admin, `DELETE FROM monitor_channels WHERE monitor_id = '`+w.mAlpha+`'`)
+
+	// m-alpha selects c-alpha; at the same time the monitor and the channel move. Whatever the
+	// order, both succeed and no monitor keeps a channel of another project.
+	for i := 0; i < 10; i++ {
+		monProject, chProject := w.beta, w.gamma
+		if i%2 == 1 {
+			monProject, chProject = w.gamma, w.beta
+		}
+		if r := c.do(http.MethodPatch, "/api/v1/channels/"+w.chAlpha, `{"projectId":"`+w.alpha+`"}`, owner); r.code != http.StatusOK {
+			t.Fatalf("reset channel: %d %s", r.code, r.raw)
+		}
+		if r := c.do(http.MethodPatch, "/api/v1/monitors/"+w.mAlpha, `{"projectId":"`+w.alpha+`","channelIds":["`+w.chAlpha+`"]}`, owner); r.code != http.StatusOK {
+			t.Fatalf("reset monitor: %d %s", r.code, r.raw)
+		}
+		var wg sync.WaitGroup
+		var codes [2]int
+		var raws [2]string
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			r := c.do(http.MethodPatch, "/api/v1/monitors/"+w.mAlpha, `{"projectId":"`+monProject+`"}`, owner)
+			codes[0], raws[0] = r.code, r.raw
+		}()
+		go func() {
+			defer wg.Done()
+			r := c.do(http.MethodPatch, "/api/v1/channels/"+w.chAlpha, `{"projectId":"`+chProject+`"}`, owner)
+			codes[1], raws[1] = r.code, r.raw
+		}()
+		wg.Wait()
+		if codes[0] != http.StatusOK || codes[1] != http.StatusOK {
+			t.Fatalf("round %d: monitor move %d %s, channel move %d %s", i, codes[0], raws[0], codes[1], raws[1])
+		}
+		var stray int
+		if err := admin.QueryRow(context.Background(), `SELECT count(*) FROM monitor_channels mc
+			JOIN monitors m ON m.id = mc.monitor_id JOIN notification_channels ch ON ch.id = mc.channel_id
+			WHERE ch.project_id IS NOT NULL AND ch.project_id <> m.project_id`).Scan(&stray); err != nil || stray != 0 {
+			t.Fatalf("round %d: %d stray links (%v)", i, stray, err)
+		}
 	}
 }

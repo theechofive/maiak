@@ -801,3 +801,37 @@ func TestIntegrationGracefulShutdown(t *testing.T) {
 		t.Fatalf("abandoned send was recorded: %+v", r)
 	}
 }
+
+// TestIntegrationDeliveryRouteChanged checks T-13: a delivery queued for a channel that no longer
+// serves the monitor (the monitor or the channel moved to another project afterwards) is failed
+// with route_changed instead of sent; an organization-wide channel serves every project.
+func TestIntegrationDeliveryRouteChanged(t *testing.T) {
+	e := newEnv(t, "jobsroute")
+	d := e.deliverer(prometheus.NewRegistry(), nil)
+	other := uuid.New()
+	pgtest.MustExec(t, e.admin, `INSERT INTO projects (id, tenant_id, name, slug) VALUES ('`+other.String()+`', '`+tenantA+`', 'Other', 'other')`)
+	moved := e.monitor(tenantA, "Moved")
+	queued := e.deliver(tenantA, moved, notify.DeliveryOpened, map[string]any{"monitorName": "Moved", "reason": "timeout"})
+	pgtest.MustExec(t, e.admin, `UPDATE monitors SET project_id = '`+other.String()+`' WHERE id = '`+moved.String()+`'`)
+	d.RunOnce(e.ctx)
+	if r := e.row(queued); r.status != "failed" || r.lastError == nil || *r.lastError != "route_changed" || len(e.slack.sent()) != 0 {
+		t.Fatalf("delivery after the monitor moved: %+v, posts %d", r, len(e.slack.sent()))
+	}
+
+	// The same channel made organization-wide serves the moved monitor again.
+	again := e.deliver(tenantA, moved, notify.DeliveryOpened, map[string]any{"monitorName": "Moved", "reason": "timeout"})
+	pgtest.MustExec(t, e.admin, `UPDATE notification_channels SET project_id = NULL WHERE id = '`+e.channels[tenantA].String()+`'`)
+	d.RunOnce(e.ctx)
+	if r := e.row(again); r.status != "sent" || len(e.slack.sent()) != 1 {
+		t.Fatalf("delivery to an organization-wide channel: %+v, posts %d", r, len(e.slack.sent()))
+	}
+
+	// A channel moved away from the monitor's project after queueing.
+	stay := e.monitor(tenantA, "Stay")
+	late := e.deliver(tenantA, stay, notify.DeliveryResolved, map[string]any{"monitorName": "Stay", "durationSeconds": 60})
+	pgtest.MustExec(t, e.admin, `UPDATE notification_channels SET project_id = '`+other.String()+`' WHERE id = '`+e.channels[tenantA].String()+`'`)
+	d.RunOnce(e.ctx)
+	if r := e.row(late); r.status != "failed" || r.lastError == nil || *r.lastError != "route_changed" || len(e.slack.sent()) != 1 {
+		t.Fatalf("delivery after the channel moved: %+v, posts %d", r, len(e.slack.sent()))
+	}
+}

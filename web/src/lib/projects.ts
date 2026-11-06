@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import type { MembershipRole, Project } from "../api/endpoints";
 import { roleAtLeast } from "./roles";
 
@@ -54,7 +54,13 @@ export function useProjectChoice(key: string | null): [string, (choice: string) 
   const choice = useSyncExternalStore(subscribe, () =>
     key === null ? ALL_PROJECTS : readProjectChoice(key),
   );
-  return [choice, (c: string) => key !== null && saveProjectChoice(key, c)];
+  const set = useCallback(
+    (c: string) => {
+      if (key !== null) saveProjectChoice(key, c);
+    },
+    [key],
+  );
+  return [choice, set];
 }
 
 /** Whether the role may create and change monitors in a project (its role there, ADR-0102). */

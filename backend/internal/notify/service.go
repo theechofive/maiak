@@ -304,6 +304,12 @@ func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateIn
 	var out Channel
 	err := db.WithTenantTx(ctx, s.pool, a.TenantID, func(tx pgx.Tx) error {
 		q := notifydb.New(tx)
+		if in.ProjectID != nil {
+			// Monitors before the channel, the order of a monitor move (T-13).
+			if _, err := q.LockLinkedMonitors(ctx, notifydb.LockLinkedMonitorsParams{TenantID: a.TenantID, ChannelID: id}); err != nil {
+				return fmt.Errorf("notify: lock linked monitors: %w", err)
+			}
+		}
 		if _, err := lock(ctx, q, a.TenantID, id); err != nil {
 			return err
 		}
@@ -557,7 +563,13 @@ func projectMeta(p *uuid.UUID) string {
 // projectID (organization-wide channels stay); monitors calls it when a monitor moves (T-02).
 // It returns the number of channels dropped.
 func DetachForeignChannels(ctx context.Context, tx pgx.Tx, tenantID, monitorID, projectID uuid.UUID) (int64, error) {
-	n, err := notifydb.New(tx).DetachForeignChannels(ctx, notifydb.DetachForeignChannelsParams{TenantID: tenantID, MonitorID: monitorID, ProjectID: projectID})
+	q := notifydb.New(tx)
+	// The caller holds the monitor row lock; the selected channels are locked after it, so a
+	// concurrent channel move (monitors, then the channel) waits instead of racing (T-13).
+	if _, err := q.LockSelectedChannels(ctx, notifydb.LockSelectedChannelsParams{TenantID: tenantID, MonitorID: monitorID}); err != nil {
+		return 0, fmt.Errorf("notify: lock selected channels: %w", err)
+	}
+	n, err := q.DetachForeignChannels(ctx, notifydb.DetachForeignChannelsParams{TenantID: tenantID, MonitorID: monitorID, ProjectID: projectID})
 	if err != nil {
 		return 0, fmt.Errorf("notify: detach channels of other projects: %w", err)
 	}
@@ -596,7 +608,8 @@ func SetMonitorChannels(ctx context.Context, tx pgx.Tx, tenantID, monitorID, pro
 		for _, c := range live {
 			if c.ProjectID != nil && *c.ProjectID != projectID {
 				var verr validation.Error
-				verr.Add("channelIds", "contains a channel of another project")
+				// The same answer as an unknown id: channels of other projects do not exist for it.
+				verr.Add("channelIds", "contains a channel that does not exist")
 				return false, &verr
 			}
 		}

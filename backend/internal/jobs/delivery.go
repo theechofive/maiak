@@ -209,7 +209,7 @@ func (r *Deliverer) deliver(ctx context.Context, dl delivery) {
 	log := r.d.Log.With("delivery_id", dl.ID, "monitor_id", dl.MonitorID, "kind", dl.Kind)
 
 	var target notify.Target
-	stillDown := true
+	stillDown, routed := true, true
 	err := r.tenantTx(ctx, dl.TenantID, func(tx pgx.Tx) error {
 		var err error
 		if dl.Kind == notify.DeliveryReminder && dl.IncidentID != nil {
@@ -219,7 +219,10 @@ func (r *Deliverer) deliver(ctx context.Context, dl delivery) {
 				return err
 			}
 		}
-		target, err = r.d.Channels.DeliveryTarget(ctx, tx, dl.TenantID, dl.ChannelID)
+		if target, err = r.d.Channels.DeliveryTarget(ctx, tx, dl.TenantID, dl.ChannelID); err != nil {
+			return err
+		}
+		routed, err = incidents.StillRouted(ctx, tx, dl.TenantID, dl.MonitorID, dl.ChannelID)
 		return err
 	})
 	var reason string
@@ -235,6 +238,9 @@ func (r *Deliverer) deliver(ctx context.Context, dl delivery) {
 		return
 	case target.Deleted:
 		reason = "channel_deleted"
+	case !routed:
+		// The monitor or the channel moved to another project after the row was queued (T-13).
+		reason = "route_changed"
 	case target.Status != notify.StatusActive:
 		reason = "channel_failed"
 	}

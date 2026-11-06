@@ -336,6 +336,43 @@ func (q *Queries) LockChannel(ctx context.Context, arg LockChannelParams) (LockC
 	return i, err
 }
 
+const lockLinkedMonitors = `-- name: LockLinkedMonitors :many
+SELECT m.id
+FROM monitors AS m
+JOIN monitor_channels AS mc ON mc.tenant_id = m.tenant_id AND mc.monitor_id = m.id
+WHERE mc.tenant_id = $1 AND mc.channel_id = $2
+ORDER BY m.id
+FOR SHARE OF m
+`
+
+type LockLinkedMonitorsParams struct {
+	TenantID  uuid.UUID
+	ChannelID uuid.UUID
+}
+
+// A channel move locks the monitors that selected it before the channel itself, the order a
+// monitor move uses (monitor, then its channels), so the two cannot deadlock and a concurrent
+// monitor move cannot slip a stray link past DetachChannelFromOtherProjects (T-13).
+func (q *Queries) LockLinkedMonitors(ctx context.Context, arg LockLinkedMonitorsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, lockLinkedMonitors, arg.TenantID, arg.ChannelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockLiveChannels = `-- name: LockLiveChannels :many
 SELECT id, project_id
 FROM notification_channels
@@ -368,6 +405,42 @@ func (q *Queries) LockLiveChannels(ctx context.Context, arg LockLiveChannelsPara
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockSelectedChannels = `-- name: LockSelectedChannels :many
+SELECT c.id
+FROM notification_channels AS c
+JOIN monitor_channels AS mc ON mc.tenant_id = c.tenant_id AND mc.channel_id = c.id
+WHERE mc.tenant_id = $1 AND mc.monitor_id = $2
+ORDER BY c.id
+FOR SHARE OF c
+`
+
+type LockSelectedChannelsParams struct {
+	TenantID  uuid.UUID
+	MonitorID uuid.UUID
+}
+
+// A monitor move locks the channels it selected (after the monitor row) before dropping those of
+// other projects, so a concurrent channel move waits for it (T-13).
+func (q *Queries) LockSelectedChannels(ctx context.Context, arg LockSelectedChannelsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, lockSelectedChannels, arg.TenantID, arg.MonitorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

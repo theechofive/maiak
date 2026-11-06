@@ -47,10 +47,10 @@ RETURNING started_at, resolved_at;
 
 -- name: ListDeliveryChannels :many
 -- Read-only (channels are owned by internal/notify): the active channels of a monitor with the
--- events they receive (ADR-0100, T-02). A monitor with a selection in monitor_channels notifies
--- its selected channels that are organization-wide or of its project; a monitor without one
--- notifies the active channels of its own project only (closes L-261, L-263). The same rule is in
--- enqueue_incident_reminders.
+-- events they receive (ADR-0100, T-02). A monitor with a valid selection notifies its selected
+-- channels that are organization-wide or of its project; a monitor without a valid selection (none,
+-- or only stray links to other projects' channels, L-286) notifies the active channels of its own
+-- project only (closes L-261, L-263). The same rule is in enqueue_incident_reminders.
 SELECT c.id, c.events
 FROM notification_channels AS c
 JOIN monitors AS m ON m.tenant_id = c.tenant_id AND m.id = @monitor_id
@@ -60,7 +60,9 @@ WHERE c.tenant_id = @tenant_id AND c.deleted_at IS NULL AND c.status = 'active'
                WHERE mc.tenant_id = c.tenant_id AND mc.monitor_id = m.id AND mc.channel_id = c.id)
        AND (c.project_id IS NULL OR c.project_id = m.project_id))
       OR (NOT EXISTS (SELECT 1 FROM monitor_channels AS mc
-                      WHERE mc.tenant_id = c.tenant_id AND mc.monitor_id = m.id)
+                      JOIN notification_channels AS c2 ON c2.tenant_id = mc.tenant_id AND c2.id = mc.channel_id
+                      WHERE mc.tenant_id = c.tenant_id AND mc.monitor_id = m.id
+                        AND (c2.project_id IS NULL OR c2.project_id = m.project_id))
           AND c.project_id = m.project_id)
   )
 ORDER BY c.created_at, c.id;
@@ -79,3 +81,14 @@ SELECT EXISTS (
 -- name: InsertDelivery :exec
 INSERT INTO notification_deliveries (id, tenant_id, kind, monitor_id, incident_id, channel_id, payload)
 VALUES (@id, @tenant_id, @kind, @monitor_id, @incident_id, @channel_id, @payload);
+
+-- name: DeliveryStillRouted :one
+-- A queued delivery is sent only while its channel may still serve the monitor: organization-wide,
+-- or of the monitor's current project (T-13). A move of either after the row was queued fails it.
+SELECT EXISTS (
+    SELECT 1
+    FROM monitors AS m
+    JOIN notification_channels AS c ON c.tenant_id = m.tenant_id AND c.id = @channel_id
+    WHERE m.tenant_id = @tenant_id AND m.id = @monitor_id
+      AND (c.project_id IS NULL OR c.project_id IS NOT DISTINCT FROM m.project_id)
+)::boolean;

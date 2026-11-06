@@ -196,6 +196,8 @@ function NotificationChannels() {
     // Channels count against the plan, and deleting one changes monitors' selections.
     void queryClient.invalidateQueries({ queryKey: queryKeys.usage });
     void queryClient.invalidateQueries({ queryKey: queryKeys.monitors });
+    // Project rows count channels.
+    void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
   };
 
   const test = useMutation({

@@ -221,8 +221,13 @@ func TestIntegrationProjects(t *testing.T) {
 		selecting := seedMonitor(t, admin, tenantA, "now()", false, false)
 		pgtest.MustExec(t, admin,
 			`INSERT INTO monitor_channels (tenant_id, monitor_id, channel_id) VALUES ('`+tenantA+`', '`+selecting+`', '`+orgWide+`'), ('`+tenantA+`', '`+selecting+`', '`+inOther+`')`)
+		// Only a stray link to another project's channel (the previous release, L-286): not a valid
+		// selection, so the project fallback applies (T-13).
+		stray := seedMonitor(t, admin, tenantA, "now()", false, false)
+		pgtest.MustExec(t, admin,
+			`INSERT INTO monitor_channels (tenant_id, monitor_id, channel_id) VALUES ('`+tenantA+`', '`+stray+`', '`+inOther+`')`)
 		incidents := map[string]string{}
-		for _, m := range []string{fallback, selecting} {
+		for _, m := range []string{fallback, selecting, stray} {
 			id := uuid.NewString()
 			incidents[m] = id
 			pgtest.MustExec(t, admin, `INSERT INTO incidents (id, tenant_id, monitor_id, started_at, reason) VALUES ('`+id+`', '`+tenantA+`', '`+m+`', now() - interval '1 hour', 'timeout')`)
@@ -239,7 +244,7 @@ func TestIntegrationProjects(t *testing.T) {
 			t.Fatal(err)
 		}
 		// chanA (Default project) has no reminders configured.
-		want := map[string]bool{fallback + ">" + inDefault: true, selecting + ">" + orgWide: true}
+		want := map[string]bool{fallback + ">" + inDefault: true, selecting + ">" + orgWide: true, stray + ">" + inDefault: true}
 		if len(got) != len(want) {
 			t.Fatalf("reminders %v, want %v", got, want)
 		}

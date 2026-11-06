@@ -104,3 +104,24 @@ USING notification_channels AS c
 WHERE mc.tenant_id = @tenant_id AND mc.monitor_id = @monitor_id
   AND c.tenant_id = mc.tenant_id AND c.id = mc.channel_id
   AND c.project_id IS NOT NULL AND c.project_id <> @project_id::uuid;
+
+-- name: LockLinkedMonitors :many
+-- A channel move locks the monitors that selected it before the channel itself, the order a
+-- monitor move uses (monitor, then its channels), so the two cannot deadlock and a concurrent
+-- monitor move cannot slip a stray link past DetachChannelFromOtherProjects (T-13).
+SELECT m.id
+FROM monitors AS m
+JOIN monitor_channels AS mc ON mc.tenant_id = m.tenant_id AND mc.monitor_id = m.id
+WHERE mc.tenant_id = @tenant_id AND mc.channel_id = @channel_id
+ORDER BY m.id
+FOR SHARE OF m;
+
+-- name: LockSelectedChannels :many
+-- A monitor move locks the channels it selected (after the monitor row) before dropping those of
+-- other projects, so a concurrent channel move waits for it (T-13).
+SELECT c.id
+FROM notification_channels AS c
+JOIN monitor_channels AS mc ON mc.tenant_id = c.tenant_id AND mc.channel_id = c.id
+WHERE mc.tenant_id = @tenant_id AND mc.monitor_id = @monitor_id
+ORDER BY c.id
+FOR SHARE OF c;

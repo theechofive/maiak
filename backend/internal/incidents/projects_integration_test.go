@@ -77,7 +77,8 @@ func TestIntegrationProjectChannelRouting(t *testing.T) {
 	}
 
 	// A selection: own project and organization-wide channels only.
-	if _, err := create(&web, inDefault); err == nil || !strings.Contains(err.Error(), "channelIds") {
+	// The same answer as an unknown id (T-13, L1).
+	if _, err := create(&web, inDefault); err == nil || !strings.Contains(err.Error(), "channelIds: contains a channel that does not exist") {
 		t.Fatalf("channel of another project selected: %v", err)
 	}
 	selMon, err := create(&web, orgWide, inWeb)
@@ -104,6 +105,17 @@ func TestIntegrationProjectChannelRouting(t *testing.T) {
 	if _, err := f.monitors.Update(f.ctx, f.actor, selMon.ID, monitors.UpdateInput{ProjectID: &web, ChannelIDs: &[]uuid.UUID{inDefault}}); err == nil {
 		t.Fatal("selection of the old project accepted with the move")
 	}
+	// A stray link to another project's channel (the previous release, L-286) is not a valid
+	// selection: the monitor notifies its own project's channels (T-13).
+	strayMon, err := create(&web)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pgtest.MustExec(t, f.admin, `INSERT INTO monitor_channels (tenant_id, monitor_id, channel_id) VALUES ('`+tenantA+`', '`+strayMon.ID.String()+`', '`+inDefault.String()+`')`)
+	if got := opened(strayMon.ID); got != "web" {
+		t.Fatalf("stray link notified %q", got)
+	}
+
 	// An unknown project is a field error.
 	unknown := uuid.New()
 	if _, err := create(&unknown); err == nil || !strings.Contains(err.Error(), "projectId") {

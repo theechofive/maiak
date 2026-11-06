@@ -290,3 +290,37 @@ describe("monitor form with projects", () => {
     expect(body.channelIds).toEqual(["org"]);
   });
 });
+
+describe("remembered project that is gone", () => {
+  it("falls back to all projects when the filtered list answers 404", async () => {
+    localStorage.setItem("maiak-project:u1:t1", "w");
+    let projectsCalls = 0;
+    mockApi({
+      ...as("member"),
+      "GET /api/v1/projects": () => {
+        projectsCalls++;
+        // A stale list still names Web the first time.
+        return json({
+          items:
+            projectsCalls === 1
+              ? [
+                  { ...def, role: "member" },
+                  { ...web, role: "member" },
+                ]
+              : [{ ...def, role: "member" }],
+        });
+      },
+      "GET /api/v1/monitors": (r) =>
+        new URL(r.url).searchParams.get("projectId")
+          ? problem(404, "Not found")
+          : json({
+              items: [listItem("in-default", "d")],
+              summary: { up: 1, down: 0, paused: 0, unknown: 0 },
+            }),
+    });
+    renderApp("/");
+    expect(await screen.findByText("in-default")).toBeInTheDocument();
+    expect(localStorage.getItem("maiak-project:u1:t1")).toBeNull();
+    await waitFor(() => expect(projectsCalls).toBeGreaterThan(1));
+  });
+});

@@ -255,7 +255,15 @@ func (s *Service) Monitor(ctx context.Context, tenantID uuid.UUID, sc authz.Scop
 			}
 			*w.dst = up[id]
 		}
-		rows, err := tx.Query(ctx, `SELECT channel_id FROM monitor_channels WHERE tenant_id = $1 AND monitor_id = $2 ORDER BY created_at, channel_id`, tenantID, id)
+		// Only links routing honours: organization-wide channels and those of the monitor's project
+		// (a stray link of the previous release to another project's channel is hidden, L-286).
+		rows, err := tx.Query(ctx, `
+			SELECT mc.channel_id
+			FROM monitor_channels AS mc
+			JOIN notification_channels AS c ON c.tenant_id = mc.tenant_id AND c.id = mc.channel_id
+			WHERE mc.tenant_id = $1 AND mc.monitor_id = $2
+			  AND (c.project_id IS NULL OR c.project_id IS NOT DISTINCT FROM $3::uuid)
+			ORDER BY mc.created_at, mc.channel_id`, tenantID, id, m.ProjectID)
 		if err != nil {
 			return fmt.Errorf("channels: %w", err)
 		}
