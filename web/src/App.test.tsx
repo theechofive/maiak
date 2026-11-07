@@ -19,7 +19,7 @@ describe("auth guard", () => {
     renderApp("/settings");
 
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
-    const loginField = screen.getByLabelText("Email or login");
+    const loginField = await screen.findByLabelText("Email or login");
     expect(loginField).toHaveAttribute("type", "text");
     expect(loginField).toHaveAttribute("autocomplete", "username");
     expect(loginField).toHaveValue("");

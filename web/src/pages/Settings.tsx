@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { ApiError, errorMessage } from "../api/client";
 import {
   createChannel,
@@ -62,6 +62,16 @@ import { countOf, useUsage } from "../lib/usage";
 
 export default function Settings() {
   const auth = useAuth();
+  const { hash } = useLocation();
+  // Links such as /settings#sign-in-domains-heading land on that section: scroll to its heading and
+  // move the focus there, on the first render and on every hash change.
+  useEffect(() => {
+    if (!hash) return;
+    const target = document.getElementById(decodeURIComponent(hash.slice(1)));
+    if (!target) return;
+    target.scrollIntoView?.({ block: "start" });
+    target.focus({ preventScroll: true });
+  }, [hash]);
   return (
     <section className="flex max-w-[960px] flex-col">
       <h1 className="pt-6 pb-6 text-headline leading-[1.1] font-semibold tracking-[-0.02em] sm:pt-10 sm:pb-9 sm:text-display">
@@ -125,7 +135,7 @@ function SettingsSection({
       className="grid gap-4 border-t border-border pt-6 pb-7 sm:grid-cols-[220px_minmax(0,1fr)] sm:gap-12 sm:pt-8 sm:pb-10"
     >
       <div className="flex flex-col gap-1.5">
-        <h2 id={`${id}-heading`} className="text-lead font-semibold">
+        <h2 id={`${id}-heading`} tabIndex={-1} className="text-lead font-semibold">
           {title}
         </h2>
         {description && <p className="text-[13px] text-muted-foreground">{description}</p>}

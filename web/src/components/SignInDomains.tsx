@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState, type FormEvent } from "react";
+import { useCallback, useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { ApiError, errorMessage } from "../api/client";
 import {
   createAuthDomain,
@@ -17,7 +18,8 @@ import {
   DOMAIN_TAKEN_PROBLEM_TYPE,
   goToProvider,
   startErrorMessage,
-  useAuthProviders,
+  useAuthProvidersQuery,
+  useRestoredFromCache,
 } from "../lib/oauth";
 import { ROLE_LABELS } from "../lib/roles";
 import { useToast } from "./Toasts";
@@ -33,10 +35,6 @@ import {
   Loading,
   Select,
   Skeleton,
-  Table,
-  Td,
-  Th,
-  Tr,
 } from "./ui";
 
 const DOMAIN_ROLES: AuthDomainRole[] = ["viewer", "member", "admin"];
@@ -65,13 +63,14 @@ export function claimError(err: unknown): string {
 export default function SignInDomains() {
   const queryClient = useQueryClient();
   const toast = useToast();
-  const providers = useAuthProviders();
+  const providersQuery = useAuthProvidersQuery();
   const domains = useQuery({ queryKey: queryKeys.authDomains, queryFn: listAuthDomains });
   const [domain, setDomain] = useState("");
   const [error, setError] = useState<string | undefined>();
   const [proving, setProving] = useState(false);
   const [toDelete, setToDelete] = useState<AuthDomain | null>(null);
-  const googleOn = providers?.providers.some((p) => p.id === "google") ?? false;
+  const googleOn = providersQuery.data?.providers.some((p) => p.id === "google") ?? false;
+  useRestoredFromCache(useCallback(() => setProving(false), []));
   const refresh = () => void queryClient.invalidateQueries({ queryKey: queryKeys.authDomains });
 
   const claim = useMutation({
@@ -140,22 +139,16 @@ export default function SignInDomains() {
       ) : domains.data.items.length === 0 ? (
         <EmptyNote>No domain is claimed. New people join only through invitations.</EmptyNote>
       ) : (
-        <Table>
-          <thead>
-            <Tr>
-              <Th>Domain</Th>
-              <Th>Joins as</Th>
-              <Th>Auto-join</Th>
-              <Th>
-                <span className="sr-only">Actions</span>
-              </Th>
-            </Tr>
-          </thead>
-          <tbody>
-            {domains.data.items.map((d) => (
-              <Tr key={d.id}>
-                <Td className="font-mono break-all">{d.domain}</Td>
-                <Td>
+        // A list, not a table: the four columns do not fit a phone (O-05 browser check).
+        <ul aria-label="Claimed domains" className="flex flex-col border-t border-border">
+          {domains.data.items.map((d) => (
+            <li key={d.id} className="flex flex-col gap-3 border-b border-border py-3">
+              <span className="font-mono break-all">{d.domain}</span>
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+                <span className="flex items-center gap-2">
+                  <span aria-hidden="true" className="text-caption text-muted-foreground">
+                    Joins as
+                  </span>
                   <Select
                     aria-label={`Role for ${d.domain}`}
                     value={d.defaultRole}
@@ -173,79 +166,105 @@ export default function SignInDomains() {
                       </option>
                     ))}
                   </Select>
-                </Td>
-                <Td>
-                  <Checkbox
-                    label={<span className="sr-only">Auto-join for {d.domain}</span>}
-                    checked={d.enabled}
-                    disabled={update.isPending}
-                    onChange={(e) =>
-                      update.mutate({ id: d.id, body: { enabled: e.target.checked } })
-                    }
-                  />
-                </Td>
-                <Td className="text-right">
-                  <Button
-                    variant="secondary"
-                    size="small"
-                    onClick={() => {
-                      setError(undefined);
-                      setToDelete(d);
-                    }}
-                  >
-                    Release {d.domain}
-                  </Button>
-                </Td>
-              </Tr>
-            ))}
-          </tbody>
-        </Table>
+                </span>
+                <Checkbox
+                  label={
+                    <>
+                      Auto-join<span className="sr-only"> for {d.domain}</span>
+                    </>
+                  }
+                  checked={d.enabled}
+                  disabled={update.isPending}
+                  onChange={(e) => update.mutate({ id: d.id, body: { enabled: e.target.checked } })}
+                />
+                <Button
+                  variant="secondary"
+                  size="small"
+                  className="sm:ml-auto"
+                  onClick={() => {
+                    setError(undefined);
+                    setToDelete(d);
+                  }}
+                >
+                  Release {d.domain}
+                </Button>
+              </div>
+            </li>
+          ))}
+        </ul>
       )}
 
       <div className="flex flex-col gap-3 border-t border-border-faint pt-5">
         <h3 className="font-semibold">Claim a domain</h3>
-        {!googleOn ? (
+        {providersQuery.isPending ? (
+          <Loading label="Loading the sign-in options…">
+            <Skeleton className="w-full" />
+          </Loading>
+        ) : providersQuery.isError ? (
+          <ErrorState
+            variant="section"
+            title="Cannot load the sign-in options."
+            onRetry={() => void providersQuery.refetch()}
+          />
+        ) : !googleOn ? (
           <p className="text-muted-foreground">
             Google sign-in is not configured on this Maiak, so domains cannot be claimed.
           </p>
         ) : (
-          <>
-            <p className="text-muted-foreground">
-              1. Sign in with Google again with an account of the domain; this proves you control it
-              for 10 minutes. 2. Enter the domain and claim it. A new domain lets people join as
-              viewers; raise the role afterwards.
-            </p>
-            <Button
-              variant="secondary"
-              className="self-start"
-              busy={proving}
-              onClick={() => void prove()}
-            >
-              Sign in with Google again
-            </Button>
-            <form onSubmit={onSubmit} className="flex flex-col gap-3 sm:flex-row sm:items-end">
-              <Field label="Domain" className="flex-1">
-                {(c) => (
-                  <Input
-                    {...c}
-                    name="domain"
-                    mono
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    placeholder="example.com"
-                    maxLength={253}
-                    value={domain}
-                    readOnly={claim.isPending}
-                    onChange={(e) => setDomain(e.target.value)}
-                  />
-                )}
-              </Field>
-              <Button type="submit" busy={claim.isPending}>
-                Claim domain
-              </Button>
-            </form>
-          </>
+          <ol className="flex list-decimal flex-col gap-4 pl-5">
+            <li className="pl-1">
+              <div className="flex flex-col gap-2.5">
+                <span>
+                  Sign in with Google again with an account of the domain; this proves you control
+                  it for 10 minutes. If another Google account is already linked to you, unlink it
+                  under{" "}
+                  <Link to="/profile" className="underline underline-offset-3">
+                    Sign-in methods
+                  </Link>{" "}
+                  first, or use that account. You come back to your profile page; its Settings link
+                  brings you back here.
+                </span>
+                <Button
+                  variant="secondary"
+                  className="self-start"
+                  busy={proving}
+                  onClick={() => void prove()}
+                >
+                  Sign in with Google again
+                </Button>
+              </div>
+            </li>
+            <li className="pl-1">
+              <div className="flex flex-col gap-2.5">
+                <span>
+                  Enter the domain and claim it. A new domain lets people join as viewers; raise the
+                  role afterwards.
+                </span>
+                <form onSubmit={onSubmit} className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                  <Field label="Domain" className="flex-1">
+                    {(c) => (
+                      <Input
+                        {...c}
+                        name="domain"
+                        mono
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        placeholder="example.com"
+                        maxLength={253}
+                        value={domain}
+                        readOnly={claim.isPending}
+                        onChange={(e) => setDomain(e.target.value)}
+                      />
+                    )}
+                  </Field>
+                  <Button type="submit" busy={claim.isPending}>
+                    Claim domain
+                  </Button>
+                </form>
+              </div>
+            </li>
+          </ol>
         )}
       </div>
 

@@ -22,7 +22,7 @@ import {
   type RegisterFormErrors,
   type RegisterFormValues,
 } from "../lib/registerForm";
-import { useAuthProviders } from "../lib/oauth";
+import { useAuthProviders, useAuthProvidersQuery } from "../lib/oauth";
 import { ROLE_DESCRIPTIONS, ROLE_LABELS } from "../lib/roles";
 import { PasswordField, registerErrors } from "./Register";
 
@@ -202,7 +202,20 @@ function InviteProviders({ token }: { token: string }) {
 /** Joining without a session: a new account, or an existing account with its password (T-12). */
 function RegisterInvited({ token, preview }: { token: string; preview: InvitationPreview }) {
   const [existing, setExisting] = useState(false);
-  const providers = useAuthProviders();
+  const providersQuery = useAuthProvidersQuery();
+  const providers = providersQuery.data;
+  if (providersQuery.isPending) {
+    return (
+      <AuthScreen>
+        <AuthHeading>Join {preview.organizationName}</AuthHeading>
+        <Offer preview={preview} />
+        <Loading label="Loading the sign-in options…">
+          <Skeleton className="h-11 w-full" />
+        </Loading>
+      </AuthScreen>
+    );
+  }
+  // When the options cannot be loaded, the password forms stay (the server decides anyway).
   if (providers?.passwordLoginEnabled === false) {
     // Password accounts are off (ADR-0104): the providers are the only way in.
     return (

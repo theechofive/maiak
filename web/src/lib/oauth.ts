@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { useEffect } from "react";
 import { ApiError } from "../api/client";
 import {
   getAuthProviders,
@@ -15,15 +16,38 @@ export const DOMAIN_NOT_VERIFIED_PROBLEM_TYPE = "urn:maiak:problem:domain-not-ve
 export const DOMAIN_TAKEN_PROBLEM_TYPE = "urn:maiak:problem:domain-taken";
 export const PASSWORD_LOGIN_DISABLED_PROBLEM_TYPE = "urn:maiak:problem:password-login-disabled";
 
-/** The sign-in methods the login page offers; undefined while loading or when it cannot load. */
-export function useAuthProviders(): AuthProviders | undefined {
-  const query = useQuery({
+/** The query of the sign-in methods (providers and the password switch); no session needed. */
+export function useAuthProvidersQuery() {
+  return useQuery({
     queryKey: queryKeys.authProviders,
     queryFn: getAuthProviders,
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
+    // A failed list is not fetched again whenever another component starts reading it: the
+    // fallback (the password form) depends on the failure staying put, and a remount would
+    // otherwise show the skeleton again and loop.
+    retryOnMount: false,
   });
-  return query.data;
+}
+
+/** The sign-in methods the login page offers; undefined while loading or when it cannot load. */
+export function useAuthProviders(): AuthProviders | undefined {
+  return useAuthProvidersQuery().data;
+}
+
+/**
+ * Calls reset when the browser shows this page again from its back-forward cache (the user came
+ * back from the provider with the back button): a button left busy before the navigation would
+ * otherwise stay busy.
+ */
+export function useRestoredFromCache(reset: () => void): void {
+  useEffect(() => {
+    const onShow = (event: PageTransitionEvent) => {
+      if (event.persisted) reset();
+    };
+    globalThis.addEventListener("pageshow", onShow);
+    return () => globalThis.removeEventListener("pageshow", onShow);
+  }, [reset]);
 }
 
 /** Leaves the app for the provider. A seam so tests can watch the navigation. */
@@ -66,7 +90,8 @@ const MESSAGES: Record<string, string> = {
 /** The plain message for an error code of the OAuth callback redirect (never the provider's text). */
 export function oauthErrorMessage(code: string | null): string | undefined {
   if (!code) return undefined;
-  return MESSAGES[code] ?? MESSAGES.failed;
+  // Own keys only: "__proto__" or "constructor" from the address bar must not reach the prototype.
+  return Object.hasOwn(MESSAGES, code) ? MESSAGES[code] : MESSAGES.failed;
 }
 
 /** The message for a failed start request. */

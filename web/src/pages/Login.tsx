@@ -5,12 +5,12 @@ import { useAuth } from "../auth/AuthProvider";
 import { redirectTarget } from "../auth/RequireAuth";
 import AuthScreen, { AuthHeading, authLink, ShowPassword } from "../components/AuthScreen";
 import ProviderButtons, { OrDivider } from "../components/ProviderButtons";
-import { Alert, Button, Field, Input } from "../components/ui";
+import { Alert, Button, Field, Input, Loading, Skeleton } from "../components/ui";
 import { formatDuration } from "../lib/format";
 import {
   oauthErrorMessage,
   PASSWORD_LOGIN_DISABLED_PROBLEM_TYPE,
-  useAuthProviders,
+  useAuthProvidersQuery,
 } from "../lib/oauth";
 import { useRegistrationEnabled } from "../lib/publicConfig";
 
@@ -41,7 +41,8 @@ export default function Login() {
   const auth = useAuth();
   const location = useLocation();
   const registrationEnabled = useRegistrationEnabled();
-  const providers = useAuthProviders();
+  const providersQuery = useAuthProvidersQuery();
+  const providers = providersQuery.data;
   const [params] = useSearchParams();
   // The callback of an OAuth sign-in comes back with a code, never the provider's text.
   const callbackError = oauthErrorMessage(params.get("error"));
@@ -93,53 +94,62 @@ export default function Login() {
     >
       <AuthHeading>Sign in</AuthHeading>
       {callbackError && !error && <Alert>{callbackError}</Alert>}
-      <ProviderButtons providers={buttons} verb="Sign in with" />
-      {buttons.length > 0 && showPassword && <OrDivider />}
-      {showPassword && (
-        <form onSubmit={onSubmit} className="flex flex-col gap-[18px]">
-          {error && <Alert title={error.title}>{error.text}</Alert>}
-          <Field label="Email or login">
-            {(c) => (
-              <Input
-                {...c}
-                type="text"
-                name="login"
-                autoComplete="username"
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-                required
-                readOnly={submitting}
-                value={login}
-                onChange={(e) => setLogin(e.target.value)}
-              />
-            )}
-          </Field>
-          <Field label="Password">
-            {(c) => (
-              <Input
-                {...c}
-                type={shown ? "text" : "password"}
-                name="password"
-                autoComplete="current-password"
-                required
-                readOnly={submitting}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                action={
-                  <ShowPassword
-                    shown={shown}
-                    controls={c.id}
-                    onToggle={() => setShown((s) => !s)}
+      {providersQuery.isPending ? (
+        // Until the sign-in methods are known, neither the buttons nor a form that may be off.
+        <Loading label="Loading the sign-in options…">
+          <Skeleton className="h-11 w-full" />
+        </Loading>
+      ) : (
+        <>
+          <ProviderButtons providers={buttons} verb="Sign in with" />
+          {buttons.length > 0 && showPassword && <OrDivider />}
+          {showPassword && (
+            <form onSubmit={onSubmit} className="flex flex-col gap-[18px]">
+              {error && <Alert title={error.title}>{error.text}</Alert>}
+              <Field label="Email or login">
+                {(c) => (
+                  <Input
+                    {...c}
+                    type="text"
+                    name="login"
+                    autoComplete="username"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    required
+                    readOnly={submitting}
+                    value={login}
+                    onChange={(e) => setLogin(e.target.value)}
                   />
-                }
-              />
-            )}
-          </Field>
-          <Button type="submit" busy={submitting} className="mt-1.5">
-            {submitting ? "Signing in…" : "Sign in"}
-          </Button>
-        </form>
+                )}
+              </Field>
+              <Field label="Password">
+                {(c) => (
+                  <Input
+                    {...c}
+                    type={shown ? "text" : "password"}
+                    name="password"
+                    autoComplete="current-password"
+                    required
+                    readOnly={submitting}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    action={
+                      <ShowPassword
+                        shown={shown}
+                        controls={c.id}
+                        onToggle={() => setShown((s) => !s)}
+                      />
+                    }
+                  />
+                )}
+              </Field>
+              <Button type="submit" busy={submitting} className="mt-1.5">
+                {submitting ? "Signing in…" : "Sign in"}
+              </Button>
+            </form>
+          )}
+        </>
       )}
     </AuthScreen>
   );

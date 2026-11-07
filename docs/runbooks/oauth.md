@@ -68,7 +68,7 @@ oauth:
 ```
 
 Then an **owner** of the organization:
-1. Opens **Settings → Sign-in domains** and chooses **Sign in with Google again**, using a Google account of that domain. This proves control for 10 minutes.
+1. Opens **Settings → Sign-in domains** and chooses **Sign in with Google again**, using a Google account of that domain. This proves control for 10 minutes. If another Google account is already linked to the owner, they first unlink it under **Sign-in methods** (`/profile`), or they use that account. The proof comes back to `/profile`; the Settings link there leads back to the domains section.
 2. Enters the domain and chooses **Claim domain**. A new domain starts with the role **viewer**; the owner can raise it to member or admin afterwards.
 
 From then on, a person whose verified Google account has `hd = klr.com.ua` joins that organization on their **first** Google sign-in. Existing accounts do not join (L-305). A domain belongs to one organization only.
@@ -83,7 +83,11 @@ Why there is an allow-list (R-214): every employee of a Workspace has the same `
 
 ## Recovery
 - **A user lost access to their provider account** (left the company, GitHub account deleted): OAuth-only users have no password and no self-service recovery (L-303). Remove them from the organization and invite them again with a new provider account. If they still have another linked method, they can sign in with it and unlink the old one on `/profile`.
-- **A provider is down or misconfigured** (all sign-ins end with `failed`; the api logs say `oauth code exchange failed`; `maiak_auth_oauth_logins_total{result="failed"}` rises): sign in as the admin at `/login?admin`. If the problem is configuration (redirect URI, rotated secret), fix it at the provider or in the secret and restart the api. Temporarily setting `config.passwordLoginEnabled: true` again gives password users their form back.
+- **A provider is down or misconfigured.** There are two symptoms:
+  - Google's discovery document cannot be loaded and there is no cached copy. The sign-in buttons answer "The provider cannot be reached right now" (503 from the start request), and the api logs `oauth start failed`.
+  - Otherwise, the code exchange fails: sign-ins return to `/login?error=failed`, the api logs `oauth code exchange failed`, and `maiak_auth_oauth_logins_total{result="failed"}` rises.
+
+  In both cases, sign in as the admin at `/login?admin`. If the problem is configuration (redirect URI, rotated secret), fix it at the provider or in the secret and restart the api. Temporarily setting `config.passwordLoginEnabled: true` again gives password users their form back.
 - **"The sign-in took too long or was started in another browser"** (`state_invalid`): the flow must finish in the same browser within 10 minutes. Rotating the encryption key also ends flows that are in progress (L-304). Start again.
 - **Someone cannot unlink a provider** ("This is your only way to sign in"): link another provider first. When password sign-in is off, a password does not count, except for the admin.
 - **Too many attempts** (`rate_limited`): failed callbacks share the login limit per client address (30 failures per 15 minutes per api replica). Wait, or check for a misconfigured client causing repeated failures.

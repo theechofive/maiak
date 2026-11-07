@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ApiError, errorMessage } from "../api/client";
 import {
@@ -19,10 +19,6 @@ import {
   ErrorState,
   Loading,
   Skeleton,
-  Table,
-  Td,
-  Th,
-  Tr,
 } from "../components/ui";
 import { formatDateTime } from "../lib/format";
 import {
@@ -31,6 +27,7 @@ import {
   oauthErrorMessage,
   startErrorMessage,
   useAuthProviders,
+  useRestoredFromCache,
 } from "../lib/oauth";
 
 const LAST_METHOD =
@@ -45,9 +42,19 @@ const PROVIDER_NAMES: Record<OAuthProvider, string> = { google: "Google", github
 export default function Profile() {
   const auth = useAuth();
   const [params] = useSearchParams();
-  const linked = params.get("linked");
   const callbackError = oauthErrorMessage(params.get("error"));
   const isOwner = auth.session?.role === "owner";
+  // Shares the list query of SignInMethods (one request).
+  const identities = useQuery({ queryKey: queryKeys.identities, queryFn: listIdentities });
+  // ?linked= is only a hint from the callback redirect: it is believed for a known provider that
+  // the account really has, and anything else in the address bar is ignored.
+  const param = params.get("linked");
+  const linked =
+    param !== null &&
+    Object.hasOwn(PROVIDER_NAMES, param) &&
+    identities.data?.items.some((i) => i.provider === param)
+      ? (param as OAuthProvider)
+      : undefined;
   return (
     <section className="flex max-w-[960px] flex-col gap-6">
       <h1 className="pt-6 text-headline leading-[1.1] font-semibold tracking-[-0.02em] sm:pt-10 sm:text-display">
@@ -61,10 +68,7 @@ export default function Profile() {
         .
       </p>
       {linked && !callbackError && (
-        <Alert
-          tone="neutral"
-          title={`${PROVIDER_NAMES[linked as OAuthProvider] ?? linked} linked.`}
-        >
+        <Alert tone="neutral" title={`${PROVIDER_NAMES[linked]} linked.`}>
           You can now sign in with it.
           {isOwner && linked === "google" && (
             <>
@@ -97,6 +101,7 @@ function SignInMethods() {
   const [confirm, setConfirm] = useState<Identity | null>(null);
   const [error, setError] = useState<string | undefined>();
   const [starting, setStarting] = useState<OAuthProvider | null>(null);
+  useRestoredFromCache(useCallback(() => setStarting(null), []));
 
   const unlink = useMutation({
     mutationFn: (provider: OAuthProvider) => unlinkIdentity(provider),
@@ -163,41 +168,38 @@ function SignInMethods() {
       {data.items.length === 0 ? (
         <EmptyNote>No provider is linked to your account.</EmptyNote>
       ) : (
-        <Table>
-          <thead>
-            <Tr>
-              <Th>Provider</Th>
-              <Th>Email</Th>
-              <Th>Last used</Th>
-              <Th>
-                <span className="sr-only">Actions</span>
-              </Th>
-            </Tr>
-          </thead>
-          <tbody>
-            {data.items.map((i) => (
-              <Tr key={i.provider}>
-                <Td>{PROVIDER_NAMES[i.provider]}</Td>
-                <Td className="break-all">{i.email}</Td>
-                <Td>{i.lastLoginAt ? formatDateTime(i.lastLoginAt) : "Never"}</Td>
-                <Td className="text-right">
-                  <Button
-                    variant="secondary"
-                    size="small"
-                    disabled={lastMethod}
-                    aria-describedby={lastMethod ? "last-method-hint" : undefined}
-                    onClick={() => {
-                      setError(undefined);
-                      setConfirm(i);
-                    }}
-                  >
-                    Unlink {PROVIDER_NAMES[i.provider]}
-                  </Button>
-                </Td>
-              </Tr>
-            ))}
-          </tbody>
-        </Table>
+        // A list, not a table: on a phone a four-column table squeezes the email letter by letter.
+        <ul aria-label="Linked providers" className="flex flex-col border-t border-border">
+          {data.items.map((i) => (
+            <li
+              key={i.provider}
+              className="flex flex-col gap-2 border-b border-border py-3 sm:flex-row sm:items-center sm:gap-4"
+            >
+              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="font-medium">{PROVIDER_NAMES[i.provider]}</span>
+                <span className="font-mono text-[13px] break-all text-muted-foreground">
+                  {i.email}
+                </span>
+                <span className="text-caption text-muted-foreground">
+                  Last used {i.lastLoginAt ? formatDateTime(i.lastLoginAt) : "never"}
+                </span>
+              </div>
+              <Button
+                variant="secondary"
+                size="small"
+                className="self-start sm:self-center"
+                disabled={lastMethod}
+                aria-describedby={lastMethod ? "last-method-hint" : undefined}
+                onClick={() => {
+                  setError(undefined);
+                  setConfirm(i);
+                }}
+              >
+                Unlink {PROVIDER_NAMES[i.provider]}
+              </Button>
+            </li>
+          ))}
+        </ul>
       )}
       {lastMethod && (
         <p id="last-method-hint" className="text-caption text-muted-foreground">

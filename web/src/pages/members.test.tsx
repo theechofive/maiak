@@ -381,7 +381,7 @@ describe("invitation page", () => {
     expect(await lookup.clone().json()).toEqual({ token: "TOKEN-123" });
     expect(new URL(lookup.url).search).toBe("");
 
-    await userEvent.type(screen.getByLabelText("Email"), "new@example.com");
+    await userEvent.type(await screen.findByLabelText("Email"), "new@example.com");
     await userEvent.type(screen.getByLabelText("Password"), "a long passphrase");
     await userEvent.type(screen.getByLabelText("Confirm password"), "a long passphrase");
     await userEvent.click(screen.getByRole("button", { name: "Create account and join" }));
@@ -463,7 +463,7 @@ describe("invitation page (T-12)", () => {
     expect(window.location.hash).toBe("");
     expect(window.location.pathname).toBe("/invite");
 
-    await userEvent.click(screen.getByRole("button", { name: "Join with it" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Join with it" }));
     await userEvent.type(screen.getByLabelText("Email"), "old@example.com");
     await userEvent.type(screen.getByLabelText("Password"), "wrong one");
     await userEvent.click(screen.getByRole("button", { name: "Sign in and join Acme" }));
@@ -491,7 +491,7 @@ describe("invitation page (T-12)", () => {
     });
     renderApp("/invite#TOKEN-123");
     await screen.findByRole("heading", { name: "Join Acme" });
-    await userEvent.type(screen.getByLabelText("Email"), "old@example.com");
+    await userEvent.type(await screen.findByLabelText("Email"), "old@example.com");
     await userEvent.type(screen.getByLabelText("Password"), "a long passphrase");
     await userEvent.type(screen.getByLabelText("Confirm password"), "a long passphrase");
     await userEvent.click(screen.getByRole("button", { name: "Create account and join" }));

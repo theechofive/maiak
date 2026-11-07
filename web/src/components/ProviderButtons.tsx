@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import type { AuthProviders, OAuthProvider } from "../api/endpoints";
-import { goToProvider, startErrorMessage } from "../lib/oauth";
+import { goToProvider, startErrorMessage, useRestoredFromCache } from "../lib/oauth";
 import { Alert, Button } from "./ui";
 
 /**
@@ -20,6 +20,7 @@ export default function ProviderButtons({
 }) {
   const [busy, setBusy] = useState<OAuthProvider | null>(null);
   const [error, setError] = useState<string | undefined>();
+  useRestoredFromCache(useCallback(() => setBusy(null), []));
   if (providers.length === 0) return null;
 
   async function start(provider: OAuthProvider) {
