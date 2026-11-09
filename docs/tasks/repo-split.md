@@ -40,7 +40,8 @@ Counts were taken on 2026-11-09 with `git grep` over tracked files (`web/package
 | `README.md` | rewrite | Check for internal names; add licence, trademark policy and edition notes |
 | `docs/adr/**` | public, except below | ADRs are design history; scrub internal names where they appear |
 | `docs/adr/0010-deployment.md`, `0014-db-bootstrap-automation.md`, `0091-generated-admin-and-encryption-secrets.md` | rewrite (or private) | Name `klr-platform`, `devops-charts-infra`, Grafana's RDS, `platform/*` secrets |
-| `docs/adr/0015`, `0092`, `0101`, `0102`, `0103`, `0104` | rewrite | Mention `klr-platform`, `klr.com.ua` or the VPN in passing |
+| `docs/adr/0092`, `0101`, `0102`, `0103` | rewrite | Mention `klr-platform`, `klr.com.ua` or the VPN in passing |
+| `docs/adr/0104-oauth-login.md` | rewrite | Names the secret path `platform/maiak/oauth` only |
 | `docs/architecture/**`, `docs/design-system.md` | public | `overview.md` and `data-model.md` mention `klr-ops.net` / `eu-central-1`: rewrite |
 | `docs/runbooks/migrations.md`, `invitations.md`, `admin-panel.md`, `status-page.md`, `oauth.md` | rewrite | Product runbooks for any operator; replace `klr-platform`, `klr-ops.net`, `klr.com.ua`, `platform/maiak/*` with placeholders. Keep a private copy with the real values |
 | `docs/runbooks/first-deploy.md`, `first-install.md`, `database-bootstrap.md`, `heartbeat-alertmanager.md`, `observability.md` | private | Operations of our installation (RDS shared with Grafana, VictoriaMetrics, ArgoCD, AWS profiles). A generic self-hosted install guide is written new for the public repository |
@@ -58,7 +59,7 @@ Counts were taken on 2026-11-09 with `git grep` over tracked files (`web/package
 | Internal hostname | `klr-ops.net` | 19, incl. `api/openapi.yaml`, generated Go and TS clients, `config_test.go`, chart values, docs | Placeholder `maiak.example.com` (after the rename: the new name) |
 | Cluster name | `klr-platform` | 22, incl. a comment in `backend/migrations/20261020120000_monitors_locations.sql` (immutable: leave or accept) and the chart's `networkpolicy.yaml` | Remove from public files; the migration comment is harmless but visible |
 | Company domain | `klr.com.ua` | 4 docs (ADR-0102, `first-install.md`, `oauth.md`, `phase4.md`) | Placeholder `example.com` |
-| Personal GitHub account | `theechofive` | 139 (Go module path, imports, image names, spec contact, `release.yml`) | Changes with the rename and the move to an organization account |
+| Personal GitHub account | `theechofive` | 145 files, 567 hits at the O-09 commit (Go module path, imports, image names, spec contact, `release.yml`) | Changes with the rename and the move to an organization account |
 | AWS region | `eu-central-1` | 24 (default worker location, seed migration, tests, docs) | Product default `home`; keep only in the private values |
 | RDS endpoint | `czqsaiesae4n` / `rds.amazonaws.com` | `values-platform.yaml` only | Private |
 | Gateway names | `envoy-gateway`, `envoy-gateway-internal` | `values.yaml`, `values-platform.yaml`, `first-deploy.md` | Neutral defaults in public values |
@@ -73,13 +74,13 @@ Counts were taken on 2026-11-09 with `git grep` over tracked files (`web/package
 
 ## 3. Where the name `maiak` appears, by cost of change
 
-About 2 600 occurrences in 300 tracked files (case-insensitive). Grouped so the rename is mechanical: do group A anywhere, group B in one commit with regeneration, group C only together with a reinstall or a planned migration.
+About 3 200 occurrences on about 2 650 lines in about 300 tracked files (case-insensitive, re-counted at the O-09 commit). Grouped so the rename is mechanical: do group A anywhere, group B in one commit with regeneration, group C only together with a reinstall or a planned migration.
 
 **A. Text only (cheap, no runtime effect).**
 - Prose in docs, ADRs, runbooks, comments, test names; UI copy and the page title (`Maiak` in `web/src`, `document.title`, login screen) and the public status page footer "Powered by Maiak" (`backend/internal/statuspages/public/assets/templates.html`); `web/package.json` name `maiak-web`; `info.title` of the spec.
 
 **B. Identifiers in code and build (medium: one coordinated commit, regenerate, redeploy).**
-- Go module path `github.com/theechofive/maiak/backend` (537 hits, 129 files) and the binary `maiakctl` (58 hits, 26 files; image entrypoints `/app/maiakctl` in the chart).
+- Go module path `github.com/theechofive/maiak/backend` (547 hits, 135 files at the O-09 commit) and the binary `maiakctl` (58 hits, 26 files; image entrypoints `/app/maiakctl` in the chart).
 - Images `ghcr.io/theechofive/maiak-backend`, `maiak-web` (11 hits, 7 files: `release.yml`, chart values, docs) and the ghcr packages themselves.
 - Environment variables `MAIAK_*` (458 hits, 73 files: `internal/platform/config`, chart `_helpers.tpl`, docs, tests). Changing them changes every deployment's configuration; a transition period that reads both prefixes avoids a flag day.
 - Prometheus metric names prefixed `maiak_` (`maiak_build_info`, `maiak_http_requests_total`, every service's own metrics; about 160 hits): dashboards and alert rules (private) break; rename together.

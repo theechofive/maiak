@@ -91,8 +91,21 @@ Procedure: [first-install.md](../runbooks/first-install.md).
 ## Implementation notes (O-08, 2026-11-09)
 Owner decisions that close three ledger entries:
 - **Last used organization at login (L-307).** `memberships.last_used_at` is set whenever a session is created in that organization (login, OAuth sign-in, registration, accepting an invitation, switching). `auth_login_tenant` keeps its signature, owner and grants and orders: live, active, last used, `default`, oldest membership. Never used since O-08 means the old order.
-- **Member emails for owners and admins only (L-278).** `Member.login` and `ProjectMember.login` are `null` unless the caller is an owner or admin; members and viewers get the display name and role. The web app names people by login when it has one and by display name otherwise. Response field made nullable on purpose (our web app is the only client; recorded here instead of a separate ADR).
+- **Member emails for owners and admins only (L-278).** `Member.login` and `ProjectMember.login` are `null` unless the caller is an owner or admin; members and viewers get the display name and role. The web app names people by login when it has one, by display name otherwise, and as "Member" plus four hex digits of the public user id when there is neither (O-09). The breaking-change acceptance is the O-09 amendment below.
 - **Organization usage for owners and admins only (L-288).** `GET /usage` needs the admin role. Members and viewers no longer see organization-wide counts; they learn about a reached limit from the 409 `plan-limit` problem of the create that hits it. The web app does not load usage for them and hides the Plan section of Settings.
+- **Accepted leftovers** (owner decision, O-09): `GET /members` still shows viewers how many members the organization has, and the 409 `plan-limit` problem shows the plan name to members. Neither reveals an email or another project's contents.
+- **"Last used" means the last session created** in that organization (login, OAuth sign-in, registration, accepting an invitation, switching), not the last request. `auth_login_tenant` also feeds `admin_reset_user_password`: the audit row of a password reset now goes to the user's last used organization.
+
+## Amendment (O-09, 2026-11-09): breaking API changes of O-08 accepted
+Owner decision. `oasdiff breaking --fail-on ERR` against the spec before O-08 reports four errors, all from L-278:
+1. `response-property-became-nullable`: `GET /api/v1/members`, `items/items/login`, status 200.
+2. `response-property-became-nullable`: `PATCH /api/v1/members/{userId}`, `login`, status 200.
+3. `response-property-became-nullable`: `GET /api/v1/projects/{projectId}/members`, `items/items/login`, status 200.
+4. `response-property-became-nullable`: `PUT /api/v1/projects/{projectId}/members/{userId}`, `login`, status 200.
+
+And one permission change oasdiff cannot see: `GET /api/v1/usage` now answers 403 to members and viewers (L-288; the spec lists the 403 since O-09).
+
+`oasdiff` reports them as breaking; this ADR accepts them. The only client is our web app, changed in the same release. The four findings are listed in `api/oasdiff-err-ignore.txt`, which the CI contract check passes to `oasdiff --err-ignore`; every future entry there needs an ADR. The check runs on pull requests only (L-315).
 
 ## Alternatives considered
 - Project-aware RLS (`app.project_ids` set per transaction): stronger, but every definer function, rollup and outbox path would need it, and a member's project list changes at runtime. Kept as the upgrade path if R-212 bites.
