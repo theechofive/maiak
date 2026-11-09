@@ -327,6 +327,7 @@ func (s *server) Register(ctx context.Context, req gen.RegisterRequestObject) (g
 		IP:          s.limiterIP(ctx, r),
 		UserAgent:   r.UserAgent(),
 		InviteToken: invite,
+		DisplayName: deref(req.Body.DisplayName),
 	})
 	if err != nil {
 		return nil, err

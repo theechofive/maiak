@@ -52,15 +52,15 @@ func TestValidateRegistration(t *testing.T) {
 		}
 		return m
 	}
-	email, err := validateRegistration(" Owner@Example.com ", "correct horse battery")
-	if err != nil || email != "owner@example.com" {
-		t.Fatalf("valid input: %q, %v", email, err)
+	email, name, err := validateRegistration(" Owner@Example.com ", "correct horse battery", "  Ann Lee ")
+	if err != nil || email != "owner@example.com" || name != "Ann Lee" {
+		t.Fatalf("valid input: %q %q, %v", email, name, err)
 	}
 	// Code points are counted, not bytes: 12 two-byte runes pass, 11 do not.
-	if _, err := validateRegistration("a@example.com", strings.Repeat("é", 12)); err != nil {
+	if _, _, err := validateRegistration("a@example.com", strings.Repeat("é", 12), ""); err != nil {
 		t.Fatalf("12 code points rejected: %v", err)
 	}
-	if _, err := validateRegistration("a@example.com", strings.Repeat("ab", 64)); err != nil {
+	if _, _, err := validateRegistration("a@example.com", strings.Repeat("ab", 64), ""); err != nil {
 		t.Fatalf("128 characters rejected: %v", err)
 	}
 	for name, c := range map[string]struct{ email, password, field, msg string }{
@@ -70,13 +70,30 @@ func TestValidateRegistration(t *testing.T) {
 		"password equals email": {"Long.Address@Example.com", "long.address@example.COM", "password", "must not be the same as the email"},
 		"bad email":             {"not-an-email", "correct horse battery", "email", "must contain exactly one @"},
 	} {
-		got := fields(func() error { _, err := validateRegistration(c.email, c.password); return err }())
+		got := fields(func() error { _, _, err := validateRegistration(c.email, c.password, ""); return err }())
 		if got[c.field] != c.msg {
 			t.Errorf("%s: field errors %v, want %s=%q", name, got, c.field, c.msg)
 		}
 	}
+	for name, raw := range map[string]string{
+		"81 characters":   strings.Repeat("é", 81),
+		"bidi override":   "Ann\u202eeL",
+		"zero-width join": "Ann\u200dLee",
+		"control":         "Ann\tLee",
+	} {
+		got := fields(func() error {
+			_, _, err := validateRegistration("a@example.com", "correct horse battery", raw)
+			return err
+		}())
+		if got["displayName"] == "" {
+			t.Errorf("display name %s accepted: %v", name, got)
+		}
+	}
+	if _, name, err := validateRegistration("a@example.com", "correct horse battery", strings.Repeat("é", 80)); err != nil || name == "" {
+		t.Fatalf("80 code points rejected: %v", err)
+	}
 	// Both fields are reported at once.
-	if got := fields(func() error { _, err := validateRegistration("x", "short"); return err }()); len(got) != 2 {
+	if got := fields(func() error { _, _, err := validateRegistration("x", "short", ""); return err }()); len(got) != 2 {
 		t.Fatalf("field errors = %v, want email and password", got)
 	}
 }

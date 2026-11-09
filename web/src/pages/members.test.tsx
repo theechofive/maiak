@@ -47,13 +47,17 @@ describe("members page", () => {
           items: [
             member({ userId: "u1", login: null, displayName: "Admin", role: "owner" }),
             member({ login: null, displayName: "Bob" }),
-            member({ userId: "u3", login: null, displayName: "" }),
+            member({
+              userId: "0192b9c4-7c5e-7000-8000-00000000c0de",
+              login: null,
+              displayName: "",
+            }),
           ],
         }),
     });
     renderApp("/members");
     expect(await screen.findByText("Bob")).toBeInTheDocument();
-    expect(screen.getByText("A member")).toBeInTheDocument();
+    expect(screen.getByText("Member c0de")).toBeInTheDocument();
     expect(screen.queryByText(/@example\.com/)).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   });

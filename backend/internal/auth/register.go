@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -52,6 +53,8 @@ type RegisterInput struct {
 	// InviteToken, when set, makes the user a member of the inviting organization instead of
 	// creating one (ADR-0102). The caller allows it even when registration is turned off.
 	InviteToken string
+	// DisplayName is optional; it is what members and viewers see instead of the login (L-278).
+	DisplayName string
 }
 
 // Register creates a tenant on the free plan, the user as its owner, an audit row and a session
@@ -67,7 +70,8 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (LoginResult, 
 	if s.passwordLoginDisabled {
 		return LoginResult{}, ErrPasswordLoginDisabled
 	}
-	email, err := validateRegistration(in.Email, in.Password)
+	email, name, err := validateRegistration(in.Email, in.Password, in.DisplayName)
+	in.DisplayName = name
 	if err != nil {
 		s.registrations.WithLabelValues("invalid").Inc()
 		return LoginResult{}, err
@@ -129,7 +133,7 @@ func (s *Service) createAccount(ctx context.Context, email, passwordHash string,
 			return err
 		}
 		q := authdb.New(tx)
-		if err := q.InsertUser(ctx, authdb.InsertUserParams{ID: userID, Email: email, PasswordHash: &passwordHash}); err != nil {
+		if err := q.InsertUser(ctx, authdb.InsertUserParams{ID: userID, Email: email, PasswordHash: &passwordHash, DisplayName: in.DisplayName}); err != nil {
 			if db.IsUniqueViolation(err, "users_email_key") {
 				return ErrEmailTaken
 			}
@@ -151,7 +155,7 @@ func (s *Service) createAccount(ctx context.Context, email, passwordHash string,
 			return err
 		}
 		res = LoginResult{Token: sess.token, SessionInfo: SessionInfo{
-			User: User{ID: userID, Login: email}, Tenant: t, Role: RoleOwner, CSRFToken: sess.csrf, ExpiresAt: sess.expiresAt,
+			User: User{ID: userID, Login: email, DisplayName: in.DisplayName}, Tenant: t, Role: RoleOwner, CSRFToken: sess.csrf, ExpiresAt: sess.expiresAt,
 		}}
 		return nil
 	})
@@ -326,7 +330,7 @@ func (s *Service) createInvitedAccount(ctx context.Context, email, passwordHash 
 	var res LoginResult
 	err := db.WithTenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
 		q := authdb.New(tx)
-		if err := q.InsertUser(ctx, authdb.InsertUserParams{ID: userID, Email: email, PasswordHash: &passwordHash}); err != nil {
+		if err := q.InsertUser(ctx, authdb.InsertUserParams{ID: userID, Email: email, PasswordHash: &passwordHash, DisplayName: in.DisplayName}); err != nil {
 			if db.IsUniqueViolation(err, "users_email_key") {
 				return ErrEmailTaken
 			}
@@ -355,7 +359,7 @@ func (s *Service) createInvitedAccount(ctx context.Context, email, passwordHash 
 			return err
 		}
 		res = LoginResult{Token: sess.token, SessionInfo: SessionInfo{
-			User: User{ID: userID, Login: email}, Tenant: t, Role: role, CSRFToken: sess.csrf, ExpiresAt: sess.expiresAt,
+			User: User{ID: userID, Login: email, DisplayName: in.DisplayName}, Tenant: t, Role: role, CSRFToken: sess.csrf, ExpiresAt: sess.expiresAt,
 		}}
 		return nil
 	})
@@ -373,11 +377,15 @@ func (s *Service) registrationRateLimited(ctx context.Context, err error) error 
 }
 
 // validateRegistration applies the email and password policy and returns the normalised email.
-func validateRegistration(rawEmail, password string) (string, error) {
+func validateRegistration(rawEmail, password, rawName string) (string, string, error) {
 	var verr validation.Error
 	email, msg := normalizeEmail(rawEmail)
 	if msg != "" {
 		verr.Add("email", msg)
+	}
+	name, nameMsg := NormalizeDisplayName(rawName)
+	if nameMsg != "" {
+		verr.Add("displayName", nameMsg)
 	}
 	switch n := utf8.RuneCountInString(password); {
 	case n < minPasswordRunes:
@@ -387,7 +395,27 @@ func validateRegistration(rawEmail, password string) (string, error) {
 	case msg == "" && strings.EqualFold(password, email):
 		verr.Add("password", "must not be the same as the email")
 	}
-	return email, verr.Err()
+	return email, name, verr.Err()
+}
+
+// maxDisplayNameRunes caps a display name (the column allows 200).
+const maxDisplayNameRunes = 80
+
+// NormalizeDisplayName trims an optional display name and checks it like other names: empty is
+// fine; control and invisible formatting characters (bidi overrides, zero-width characters) are
+// refused because they make a name render differently from what it contains. It returns a
+// user-facing message when the name is rejected.
+func NormalizeDisplayName(raw string) (string, string) {
+	name := strings.TrimSpace(raw)
+	if utf8.RuneCountInString(name) > maxDisplayNameRunes {
+		return "", fmt.Sprintf("must be at most %d characters", maxDisplayNameRunes)
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return "", "must not contain control or invisible formatting characters"
+		}
+	}
+	return name, ""
 }
 
 // normalizeEmail trims and lowercases an email and checks the registration policy; it returns

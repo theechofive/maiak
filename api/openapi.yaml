@@ -980,6 +980,8 @@ paths:
                 $ref: "#/components/schemas/Usage"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         default:
           $ref: "#/components/responses/Error"
   /api/v1/channels:
@@ -2656,6 +2658,14 @@ components:
           description: The token of an invitation link; join that organization instead of creating one
           minLength: 1
           maxLength: 128
+        displayName:
+          type: string
+          description: |
+            Optional name shown to the other members (members and viewers do not see logins,
+            L-278). At most 80 characters after trimming, no control or invisible formatting
+            characters (422 otherwise). Ignored when an invitation is accepted with an existing
+            account.
+          maxLength: 1024
     PublicConfig:
       type: object
       additionalProperties: false

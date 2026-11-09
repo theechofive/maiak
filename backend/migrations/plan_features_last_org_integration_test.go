@@ -2,8 +2,10 @@ package migrations_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	"github.com/theechofive/maiak/backend/internal/plans"
 	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
 )
 
@@ -32,19 +34,42 @@ func TestIntegrationPlanFeaturesLastOrg(t *testing.T) {
 	admin := env.AdminConn(t)
 	api := env.Conn(t, env.APIURL)
 
-	var plans string
-	if err := admin.QueryRow(ctx, `SELECT string_agg(key || ':' || cardinality(features), ',' ORDER BY key) FROM plans`).Scan(&plans); err != nil ||
-		plans != "community:0,free:0,internal:0" {
-		t.Fatalf("plans = %q (%v)", plans, err)
+	var seeded string
+	if err := admin.QueryRow(ctx, `SELECT string_agg(key || ':' || cardinality(features), ',' ORDER BY key) FROM plans`).Scan(&seeded); err != nil ||
+		seeded != "community:0,free:0,internal:0" {
+		t.Fatalf("plans = %q (%v)", seeded, err)
 	}
 	var unlimited bool
 	if err := admin.QueryRow(ctx, `SELECT bool_and(v::bigint = 2147483647) AND count(*) = 6
 		FROM plans, jsonb_each_text(limits) AS l(k, v) WHERE key = 'community'`).Scan(&unlimited); err != nil || !unlimited {
 		t.Fatalf("community limits unlimited = %t (%v)", unlimited, err)
 	}
+	// Every limit the code knows is unlimited on community (plans.Resolve fails on a missing key).
+	var raw []byte
+	if err := admin.QueryRow(ctx, `SELECT limits FROM plans WHERE key = 'community'`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	l, err := plans.Resolve(plans.KeyCommunity, raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []plans.Resource{plans.ResourceMonitor, plans.ResourceHeartbeat, plans.ResourceChannel,
+		plans.ResourceMember, plans.ResourceProject, plans.ResourceStatusPage} {
+		if l.Of(r) != plans.Unlimited {
+			t.Errorf("community %s limit = %d, want plans.Unlimited", r, l.Of(r))
+		}
+	}
 	if _, err := api.Exec(ctx, `UPDATE plans SET features = '{x}'`); err == nil {
 		t.Fatal("the api changed plan features")
 	}
+	// Feature names are slugs.
+	for _, bad := range []string{`'{Bad}'`, `'{"a b"}'`, `'{""}'`, `ARRAY['` + strings.Repeat("a", 65) + `']`, `'{NULL}'`} {
+		if _, err := admin.Exec(ctx, `UPDATE plans SET features = `+bad+` WHERE key = 'free'`); err == nil {
+			t.Errorf("feature names %s accepted", bad)
+		}
+	}
+	pgtest.MustExec(t, admin, `UPDATE plans SET features = '{sso,audit-export,a_b}' WHERE key = 'free'`,
+		`UPDATE plans SET features = '{}' WHERE key = 'free'`)
 
 	const older, newer = "01920000-0000-7000-8000-0000000000f1", "01920000-0000-7000-8000-0000000000f2"
 	pgtest.MustExec(t, admin,

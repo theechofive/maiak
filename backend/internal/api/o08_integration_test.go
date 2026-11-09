@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
@@ -112,4 +113,51 @@ func TestIntegrationO08Decisions(t *testing.T) {
 	if got := tenantOf(loginAs(t, c, "b@example.com")); got != tenantB {
 		t.Fatalf("login after switching enters %s, want %s", got, tenantB)
 	}
+}
+
+// O-09: registration takes an optional display name (alone and through an invitation), checked
+// like other names; members and viewers see it instead of the login.
+func TestIntegrationRegisterDisplayName(t *testing.T) {
+	env := pgtest.New(t, pgtest.DBName("displayname"))
+	c := newRegistrationServer(t, env, membersOpts(), true, &lockedBuffer{})
+	reg := func(body string) response {
+		return c.do(http.MethodPost, "/api/v1/auth/register", body, map[string]string{"X-Forwarded-For": "198.51.100.23"})
+	}
+	r := reg(`{"email":"ann@example.com","password":"` + ownerPassword + `","displayName":"  Ann Lee "}`)
+	if r.code != http.StatusCreated || r.body["user"].(map[string]any)["display_name"] != "Ann Lee" {
+		t.Fatalf("register with a name: %d %s", r.code, r.raw)
+	}
+	for _, bad := range []string{`"Ann‮eL"`, `"Ann‍Lee"`, `"` + strings.Repeat("é", 81) + `"`} {
+		r := reg(`{"email":"bad@example.com","password":"` + ownerPassword + `","displayName":` + bad + `}`)
+		if r.code != http.StatusUnprocessableEntity || !strings.Contains(r.raw, "displayName") {
+			t.Fatalf("display name %s: %d %s", bad, r.code, r.raw)
+		}
+	}
+	cookie, csrf := session(t, r0(t, c, "owner@example.com"))
+	owner := withCSRF(cookie, csrf)
+	tok, _ := invite(t, c, owner, "viewer")
+	joined := reg(`{"email":"bo@example.com","password":"` + ownerPassword + `","inviteToken":"` + tok + `","displayName":"Bo"}`)
+	if joined.code != http.StatusCreated {
+		t.Fatalf("register through the invitation: %d %s", joined.code, joined.raw)
+	}
+	vCookie, vCSRF := session(t, joined)
+	list := c.do(http.MethodGet, "/api/v1/members", "", withCSRF(vCookie, vCSRF))
+	names := map[string]bool{}
+	for _, it := range list.body["items"].([]any) {
+		m := it.(map[string]any)
+		if m["login"] != nil {
+			t.Fatalf("viewer sees a login: %s", list.raw)
+		}
+		names[m["displayName"].(string)] = true
+	}
+	if !names["Bo"] {
+		t.Fatalf("viewer does not see the display name: %s", list.raw)
+	}
+}
+
+// r0 registers an owner without a display name.
+func r0(t *testing.T, c *client, email string) response {
+	t.Helper()
+	_, _, r := c.register(email)
+	return r
 }

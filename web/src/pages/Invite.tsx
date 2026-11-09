@@ -24,7 +24,7 @@ import {
 } from "../lib/registerForm";
 import { useAuthProviders, useAuthProvidersQuery } from "../lib/oauth";
 import { ROLE_DESCRIPTIONS, ROLE_LABELS } from "../lib/roles";
-import { PasswordField, registerErrors } from "./Register";
+import { DisplayNameField, PasswordField, registerErrors } from "./Register";
 
 /**
  * The page an invitation link opens (ADR-0102). The token is in the URL fragment, which the
@@ -248,6 +248,7 @@ function NewAccount({
   const auth = useAuth();
   const navigate = useNavigate();
   const [values, setValues] = useState<RegisterFormValues>({
+    displayName: "",
     email: "",
     password: "",
     confirm: "",
@@ -268,14 +269,14 @@ function NewAccount({
     const found = validateRegisterForm(values);
     setErrors(found);
     setGeneral(undefined);
-    const first = (["email", "password", "confirm"] as const).find((f) => found[f]);
+    const first = (["displayName", "email", "password", "confirm"] as const).find((f) => found[f]);
     if (first) {
       form.querySelector<HTMLInputElement>(`input[name=${first}]`)?.focus();
       return;
     }
     setSubmitting(true);
     try {
-      await auth.register(normalizeEmail(values.email), values.password, token);
+      await auth.register(normalizeEmail(values.email), values.password, token, values.displayName);
       navigate("/", { replace: true });
     } catch (err) {
       if (err instanceof ApiError && err.type === INVITATION_INVALID_PROBLEM_TYPE) {
@@ -308,6 +309,12 @@ function NewAccount({
       <InviteProviders token={token} />
       <form onSubmit={onSubmit} noValidate className="flex flex-col gap-[18px]">
         {(general || hasErrors) && <Alert>{general ?? "Check the highlighted fields."}</Alert>}
+        <DisplayNameField
+          value={values.displayName}
+          error={errors.displayName}
+          readOnly={submitting}
+          onChange={(v) => set("displayName", v)}
+        />
         <Field label="Email" error={errors.email}>
           {(c) => (
             <Input

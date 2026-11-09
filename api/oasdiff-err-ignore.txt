@@ -1,0 +1,9 @@
+# Breaking changes accepted on purpose; read by `oasdiff breaking --err-ignore` in CI.
+# Each entry needs an ADR. Remove an entry when the next release no longer differs there.
+#
+# O-08, L-278: member logins (email addresses) are shown to owners and admins only.
+# Accepted in ADR-0102, amendment O-09 (2026-11-09).
+GET /api/v1/members the response property `items/items/login` became nullable for the status `200`
+PATCH /api/v1/members/{userId} the response property `login` became nullable for the status `200`
+GET /api/v1/projects/{projectId}/members the response property `items/items/login` became nullable for the status `200`
+PUT /api/v1/projects/{projectId}/members/{userId} the response property `login` became nullable for the status `200`

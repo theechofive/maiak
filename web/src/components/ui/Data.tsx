@@ -1,6 +1,7 @@
 import type { HTMLAttributes, ReactNode, TdHTMLAttributes, ThHTMLAttributes } from "react";
 import { Button } from "./Button";
 import { cx, DiamondShape } from "./shapes";
+import { isUnlimited } from "../../lib/limits";
 
 /** A ruled strip of figures, never a row of cards. */
 export function MetricStrip({ children }: { children: ReactNode }) {
@@ -54,6 +55,18 @@ export function Metric({
 
 /** Usage against a limit: quiet until 80 %, then it says how much is left. */
 export function Meter({ label, used, limit }: { label: string; used: number; limit: number }) {
+  // No quota (the `community` plan, ADR-0105): the count without a bar or a warning.
+  if (isUnlimited(limit)) {
+    return (
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-4 gap-y-2.5 py-3.5">
+        <span className="text-[14px]">{label}</span>
+        <span className="font-mono">
+          <span className="font-medium">{used}</span>
+          <span className="text-muted-foreground"> / Unlimited</span>
+        </span>
+      </div>
+    );
+  }
   const left = limit - used;
   const full = left <= 0;
   const near = !full && limit > 0 && used / limit >= 0.8;

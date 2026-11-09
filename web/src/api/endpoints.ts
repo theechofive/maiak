@@ -98,8 +98,15 @@ export async function register(
   email: string,
   password: string,
   inviteToken?: string,
+  displayName?: string,
 ): Promise<SessionInfo> {
-  const body = inviteToken ? { email, password, inviteToken } : { email, password };
+  const name = displayName?.trim();
+  const body = {
+    email,
+    password,
+    ...(inviteToken ? { inviteToken } : {}),
+    ...(name ? { displayName: name } : {}),
+  };
   const session = await unwrap(client.POST("/api/v1/auth/register", { body }));
   setCsrfToken(session.csrf_token);
   return session;

@@ -1,4 +1,10 @@
-import { codePoints, emailError, normalizeEmail, validateRegisterForm } from "./registerForm";
+import {
+  codePoints,
+  displayNameError,
+  emailError,
+  normalizeEmail,
+  validateRegisterForm,
+} from "./registerForm";
 
 describe("registration policy (mirrors the server)", () => {
   it.each(["owner@example.com", "  User+Tag@Example.COM ", "a_b-c.d@sub.example.co.uk", "a@b.c"])(
@@ -32,12 +38,22 @@ describe("registration policy (mirrors the server)", () => {
 
   it("counts code points, not UTF-16 units", () => {
     expect(codePoints("😀".repeat(12))).toBe(12);
-    const ok = { email: "a@example.com", password: "😀".repeat(12), confirm: "😀".repeat(12) };
+    const ok = {
+      displayName: "",
+      email: "a@example.com",
+      password: "😀".repeat(12),
+      confirm: "😀".repeat(12),
+    };
     expect(validateRegisterForm(ok)).toEqual({});
   });
 
   it("checks length, the email and the confirmation", () => {
-    const base = { email: "a@example.com", password: "x".repeat(12), confirm: "x".repeat(12) };
+    const base = {
+      displayName: "",
+      email: "a@example.com",
+      password: "x".repeat(12),
+      confirm: "x".repeat(12),
+    };
     expect(validateRegisterForm(base)).toEqual({});
     expect(validateRegisterForm({ ...base, password: "x".repeat(11), confirm: "" })).toEqual({
       password: "Use at least 12 characters",
@@ -50,6 +66,7 @@ describe("registration policy (mirrors the server)", () => {
     ).toEqual({});
     expect(
       validateRegisterForm({
+        displayName: "",
         email: "Long.Address@Example.com",
         password: "long.address@example.COM",
         confirm: "long.address@example.COM",
@@ -58,9 +75,21 @@ describe("registration policy (mirrors the server)", () => {
     expect(validateRegisterForm({ ...base, confirm: "y".repeat(12) })).toEqual({
       confirm: "The passwords do not match",
     });
-    expect(validateRegisterForm({ email: "", password: "", confirm: "" })).toEqual({
-      email: "Enter your email address",
-      password: "Use at least 12 characters",
-    });
+    expect(validateRegisterForm({ displayName: "", email: "", password: "", confirm: "" })).toEqual(
+      {
+        email: "Enter your email address",
+        password: "Use at least 12 characters",
+      },
+    );
+  });
+
+  it("checks the optional display name like the server", () => {
+    expect(displayNameError("")).toBeUndefined();
+    expect(displayNameError("  Ann Lee  ")).toBeUndefined();
+    expect(displayNameError("é".repeat(80))).toBeUndefined();
+    expect(displayNameError("é".repeat(81))).toBe("Use at most 80 characters");
+    expect(displayNameError("Ann\u202eeL")).toBe("Remove control or invisible characters");
+    expect(displayNameError("Ann\u200dLee")).toBe("Remove control or invisible characters");
+    expect(displayNameError("Ann\tLee")).toBe("Remove control or invisible characters");
   });
 });

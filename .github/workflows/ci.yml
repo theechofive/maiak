@@ -194,7 +194,9 @@ jobs:
           fi
           git show "origin/${BASE_REF}:${OPENAPI_SPEC}" > "${RUNNER_TEMP}/base-openapi.yaml"
           go install github.com/oasdiff/oasdiff@latest # TODO(L-019) pin oasdiff version
-          "$(go env GOPATH)/bin/oasdiff" breaking "${RUNNER_TEMP}/base-openapi.yaml" "$OPENAPI_SPEC" --fail-on ERR
+          # Accepted breaking changes, each backed by an ADR (api/oasdiff-err-ignore.txt).
+          "$(go env GOPATH)/bin/oasdiff" breaking "${RUNNER_TEMP}/base-openapi.yaml" "$OPENAPI_SPEC" --fail-on ERR \
+            --err-ignore api/oasdiff-err-ignore.txt
 
   web:
     needs: changes

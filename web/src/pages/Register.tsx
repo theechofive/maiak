@@ -23,6 +23,7 @@ import { formatDuration } from "../lib/format";
 import { useRegistrationEnabled } from "../lib/publicConfig";
 import {
   codePoints,
+  DISPLAY_NAME_MAX,
   EMAIL_MAX,
   normalizeEmail,
   PASSWORD_MAX,
@@ -53,9 +54,10 @@ export function registerErrors(err: unknown): { fields: RegisterFormErrors; gene
     if (err.status === 422 || err.status === 400) {
       const map = err.fieldErrorMap();
       const fields: RegisterFormErrors = {};
+      if (map.displayName) fields.displayName = `Name ${map.displayName}`;
       if (map.email) fields.email = `Email ${map.email}`;
       if (map.password) fields.password = `Password ${map.password}`;
-      if (fields.email || fields.password) return { fields };
+      if (fields.displayName || fields.email || fields.password) return { fields };
     }
   }
   return { fields: {}, general: errorMessage(err) };
@@ -65,6 +67,7 @@ export default function Register() {
   const auth = useAuth();
   const registrationEnabled = useRegistrationEnabled();
   const [values, setValues] = useState<RegisterFormValues>({
+    displayName: "",
     email: "",
     password: "",
     confirm: "",
@@ -90,14 +93,19 @@ export default function Register() {
     const found = validateRegisterForm(values);
     setErrors(found);
     setGeneral(undefined);
-    const first = (["email", "password", "confirm"] as const).find((f) => found[f]);
+    const first = (["displayName", "email", "password", "confirm"] as const).find((f) => found[f]);
     if (first) {
       form.querySelector<HTMLInputElement>(`input[name=${first}]`)?.focus();
       return;
     }
     setSubmitting(true);
     try {
-      await auth.register(normalizeEmail(values.email), values.password);
+      await auth.register(
+        normalizeEmail(values.email),
+        values.password,
+        undefined,
+        values.displayName,
+      );
     } catch (err) {
       if (err instanceof ApiError && err.type === REGISTRATION_DISABLED_PROBLEM_TYPE) {
         setRefused(true);
@@ -144,6 +152,12 @@ export default function Register() {
       <AuthHeading>Create account</AuthHeading>
       <form onSubmit={onSubmit} noValidate className="flex flex-col gap-[18px]">
         {(general || hasErrors) && <Alert>{general ?? "Check the highlighted fields."}</Alert>}
+        <DisplayNameField
+          value={values.displayName}
+          error={errors.displayName}
+          readOnly={submitting}
+          onChange={(v) => set("displayName", v)}
+        />
         <Field label="Email" error={errors.email}>
           {(c) => (
             <Input
@@ -291,6 +305,39 @@ export function PasswordField({
             <span className="text-caption text-muted-foreground">A passphrase works well.</span>
           </div>
         </>
+      )}
+    </Field>
+  );
+}
+
+/** Optional name shown to other members instead of the email (L-278). */
+export function DisplayNameField({
+  value,
+  error,
+  readOnly,
+  onChange,
+}: {
+  value: string;
+  error?: string;
+  readOnly: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <Field
+      label="Your name"
+      hint="Optional. Other members see it; only owners and admins see your email."
+      error={error}
+    >
+      {(c) => (
+        <Input
+          {...c}
+          name="displayName"
+          autoComplete="name"
+          maxLength={DISPLAY_NAME_MAX + 10}
+          readOnly={readOnly}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
       )}
     </Field>
   );

@@ -1460,6 +1460,13 @@ export interface components {
        * @description The token of an invitation link; join that organization instead of creating one
        */
       inviteToken?: string;
+      /**
+       * @description Optional name shown to the other members (members and viewers do not see logins,
+       *     L-278). At most 80 characters after trimming, no control or invisible formatting
+       *     characters (422 otherwise). Ignored when an invitation is accepted with an existing
+       *     account.
+       */
+      displayName?: string;
     };
     PublicConfig: {
       /** @description Whether `POST /api/v1/auth/register` accepts registrations */
@@ -3297,6 +3304,7 @@ export interface operations {
         };
       };
       401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
       default: components["responses"]["Error"];
     };
   };

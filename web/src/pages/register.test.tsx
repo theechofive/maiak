@@ -161,6 +161,31 @@ describe("register page", () => {
     expect(call?.headers.get("X-CSRF-Token")).toBeNull();
   });
 
+  it("sends the optional name trimmed, and rejects invisible characters on the client", async () => {
+    const fetchMock = mockApi({
+      "GET /api/v1/auth/me": () => problem(401, "Unauthenticated"),
+      ...config(true),
+      "POST /api/v1/auth/register": () => problem(503, "Unavailable"),
+    });
+    renderApp("/register");
+    const name = await screen.findByLabelText("Your name");
+    await userEvent.type(name, "Ann\u200dLee");
+    await fill("owner@example.com", PASSWORD);
+    expect(await screen.findByText("Remove control or invisible characters")).toBeInTheDocument();
+    expect(registerCalls(fetchMock)).toHaveLength(0);
+
+    await userEvent.clear(name);
+    await userEvent.type(name, "  Ann Lee ");
+    await userEvent.click(screen.getByRole("button", { name: "Create account" }));
+    await waitFor(() => expect(registerCalls(fetchMock)).toHaveLength(1));
+    const [call] = registerCalls(fetchMock);
+    expect(await call?.json()).toEqual({
+      email: "owner@example.com",
+      password: PASSWORD,
+      displayName: "Ann Lee",
+    });
+  });
+
   it.each([
     [
       "an email that is taken",

@@ -1,6 +1,8 @@
 /** Client-side mirror of the server's registration policy (P-02, ADR-0009 amendment 2026-10-21). */
 
 export interface RegisterFormValues {
+  /** Optional; what members and viewers see instead of the email (L-278). */
+  displayName: string;
   email: string;
   password: string;
   confirm: string;
@@ -13,6 +15,18 @@ export const EMAIL_MIN = 3;
 export const EMAIL_MAX = 254;
 export const PASSWORD_MIN = 12;
 export const PASSWORD_MAX = 128;
+export const DISPLAY_NAME_MAX = 80;
+
+/** Control and invisible formatting characters, refused in names like on the server. */
+const HIDDEN_CHARS = /[\p{Cc}\p{Cf}]/u;
+
+/** The server's display name rule (optional); returns a message or undefined. */
+export function displayNameError(raw: string): string | undefined {
+  const name = raw.trim();
+  if (codePoints(name) > DISPLAY_NAME_MAX) return `Use at most ${DISPLAY_NAME_MAX} characters`;
+  if (HIDDEN_CHARS.test(name)) return "Remove control or invisible characters";
+  return undefined;
+}
 
 /** The login alphabet: every registered email must be usable as a login. */
 const EMAIL_CHARS = /^[A-Za-z0-9._+@-]+$/;
@@ -52,6 +66,8 @@ export function codePoints(s: string): number {
 
 export function validateRegisterForm(values: RegisterFormValues): RegisterFormErrors {
   const errors: RegisterFormErrors = {};
+  const displayName = displayNameError(values.displayName);
+  if (displayName) errors.displayName = displayName;
   const email = emailError(values.email);
   if (email) errors.email = email;
   const length = codePoints(values.password);

@@ -38,6 +38,7 @@ import {
 } from "../../components/ui";
 import { formatDate, formatDateTime } from "../../lib/format";
 import { TenantStatusBadge } from "./TenantStatusBadge";
+import { HIDDEN_PLANS } from "../../lib/usage";
 
 /** The message of a failed admin change: the field error of a 422, otherwise the problem. */
 function changeError(err: unknown): string {
@@ -171,9 +172,11 @@ function TenantInfo({ tenant }: { tenant: AdminTenant }) {
     update.mutate({ planKey: plan });
   }
 
-  const planOptions = plans.data?.plans ?? [
-    { key: tenant.planKey, name: tenant.planName, tenants: 0 },
-  ];
+  // `community` stays out of the picker until self-hosted packaging (L-312), unless the tenant
+  // is already on it.
+  const planOptions = (
+    plans.data?.plans ?? [{ key: tenant.planKey, name: tenant.planName, tenants: 0 }]
+  ).filter((p) => !HIDDEN_PLANS.includes(p.key) || p.key === tenant.planKey);
 
   return (
     <>

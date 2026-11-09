@@ -200,6 +200,25 @@ describe("admin tenant details", () => {
     });
   }
 
+  it("does not offer the community plan until self-hosted packaging (L-312)", async () => {
+    details({
+      "GET /api/v1/admin/stats": () =>
+        json({
+          ...stats,
+          plans: [{ key: "community", name: "Community", tenants: 0 }, ...stats.plans],
+        }),
+    });
+    renderApp("/admin/tenants/t-1");
+    const select = await screen.findByLabelText("Plan");
+    await waitFor(() =>
+      expect(
+        within(select)
+          .getAllByRole("option")
+          .map((o) => o.textContent),
+      ).toEqual(["Free", "Internal"]),
+    );
+  });
+
   it("suspends and unsuspends only after confirming", async () => {
     const fetchMock = details();
     renderApp("/admin/tenants/t-1");

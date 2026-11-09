@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { getUsage, POLL_MS, queryKeys, type Usage } from "../api/endpoints";
 import { useAuth } from "../auth/AuthProvider";
+import { isUnlimited } from "./limits";
 import { abilities } from "./roles";
 
 /**
@@ -28,7 +29,11 @@ export function atHeartbeatLimit(usage: Usage | undefined): boolean {
   return usage !== undefined && usage.usage.heartbeats >= usage.limits.heartbeats;
 }
 
-/** "3 monitors", "1 monitor": a count with its noun. */
+/** Plans the platform admin cannot assign yet: `community` waits for self-hosted packaging (L-312). */
+export const HIDDEN_PLANS: readonly string[] = ["community"];
+
+/** "3 monitors", "1 monitor", "unlimited monitors": a count or limit with its noun. */
 export function countOf(n: number, one: string, many: string): string {
+  if (isUnlimited(n)) return `unlimited ${many}`;
   return `${n} ${n === 1 ? one : many}`;
 }

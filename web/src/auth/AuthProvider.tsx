@@ -15,7 +15,12 @@ export interface AuthValue {
    * Registers and signs in (the answer is a session like login's). With an invitation token the
    * account joins the inviting organization instead of getting its own.
    */
-  register: (email: string, password: string, inviteToken?: string) => Promise<void>;
+  register: (
+    email: string,
+    password: string,
+    inviteToken?: string,
+    displayName?: string,
+  ) => Promise<void>;
   logout: () => Promise<void>;
   /** Moves the session to another organization; every cached answer of the old one is dropped. */
   switchOrganization: (tenantId: string) => Promise<void>;
@@ -98,8 +103,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         queryClient.setQueryData(queryKeys.me, session);
         announce();
       },
-      register: async (email, password, inviteToken) => {
-        const session = await api.register(email, password, inviteToken);
+      register: async (email, password, inviteToken, displayName) => {
+        const session = await api.register(email, password, inviteToken, displayName);
         queryClient.setQueryData(queryKeys.me, session);
         announce();
       },
