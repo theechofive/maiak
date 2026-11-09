@@ -43,8 +43,8 @@ var (
 	ErrDomainTaken = errors.New("auth: domain claimed by another organization")
 )
 
-// AuthDomain is a Google Workspace domain claimed by an organization.
-type AuthDomain struct {
+// Domain is a Google Workspace domain claimed by an organization.
+type Domain struct {
 	ID          uuid.UUID
 	Domain      string
 	DefaultRole string
@@ -54,16 +54,16 @@ type AuthDomain struct {
 }
 
 // ListAuthDomains returns the organization's sign-in domains.
-func (s *Service) ListAuthDomains(ctx context.Context, tenantID uuid.UUID) ([]AuthDomain, error) {
-	var out []AuthDomain
+func (s *Service) ListAuthDomains(ctx context.Context, tenantID uuid.UUID) ([]Domain, error) {
+	var out []Domain
 	err := db.WithTenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
 		rows, err := authdb.New(tx).ListAuthDomains(ctx, tenantID)
 		if err != nil {
 			return err
 		}
-		out = make([]AuthDomain, len(rows))
+		out = make([]Domain, len(rows))
 		for i, r := range rows {
-			out[i] = AuthDomain(r)
+			out[i] = Domain(r)
 		}
 		return nil
 	})
@@ -77,7 +77,7 @@ func (s *Service) ListAuthDomains(ctx context.Context, tenantID uuid.UUID) ([]Au
 // be on the operator's allow-list, the actor's linked Google identity must have signed in or been
 // linked with that hd within DomainProofWindow, and a new claim always starts with the viewer role
 // (defaultRole may only be empty or viewer; raise it with UpdateAuthDomain).
-func (s *Service) CreateAuthDomain(ctx context.Context, a Actor, domain, defaultRole string, enabled bool) (AuthDomain, error) {
+func (s *Service) CreateAuthDomain(ctx context.Context, a Actor, domain, defaultRole string, enabled bool) (Domain, error) {
 	domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
 	var verr validation.Error
 	if len(domain) < 3 || len(domain) > 253 || !domainPattern.MatchString(domain) {
@@ -87,15 +87,15 @@ func (s *Service) CreateAuthDomain(ctx context.Context, a Actor, domain, default
 		verr.Add("defaultRole", "a new domain starts as viewer; raise the role afterwards")
 	}
 	if err := verr.Err(); err != nil {
-		return AuthDomain{}, err
+		return Domain{}, err
 	}
 	if !s.allowedDomains[domain] {
-		return AuthDomain{}, ErrDomainNotAllowed
+		return Domain{}, ErrDomainNotAllowed
 	}
 	defaultRole = RoleViewer
 	now := s.clock.Now()
 	notBefore := now.Add(-DomainProofWindow)
-	d := AuthDomain{ID: uuidv7.New(), Domain: domain, DefaultRole: defaultRole, Enabled: enabled, CreatedAt: now, UpdatedAt: now}
+	d := Domain{ID: uuidv7.New(), Domain: domain, DefaultRole: defaultRole, Enabled: enabled, CreatedAt: now, UpdatedAt: now}
 	err := db.WithTenantTx(ctx, s.pool, a.TenantID, func(tx pgx.Tx) error {
 		if err := requireOwner(ctx, tx, a); err != nil {
 			return err
@@ -128,14 +128,14 @@ func (s *Service) CreateAuthDomain(ctx context.Context, a Actor, domain, default
 		return s.auditDomain(ctx, tx, a, d, "created")
 	})
 	if err != nil {
-		return AuthDomain{}, wrapDomainErr("create", err)
+		return Domain{}, wrapDomainErr("create", err)
 	}
 	return d, nil
 }
 
 // UpdateAuthDomain changes a domain's default role or switches it on or off (owner only).
-func (s *Service) UpdateAuthDomain(ctx context.Context, a Actor, id uuid.UUID, defaultRole *string, enabled *bool) (AuthDomain, error) {
-	var d AuthDomain
+func (s *Service) UpdateAuthDomain(ctx context.Context, a Actor, id uuid.UUID, defaultRole *string, enabled *bool) (Domain, error) {
+	var d Domain
 	err := db.WithTenantTx(ctx, s.pool, a.TenantID, func(tx pgx.Tx) error {
 		if err := requireOwner(ctx, tx, a); err != nil {
 			return err
@@ -148,7 +148,7 @@ func (s *Service) UpdateAuthDomain(ctx context.Context, a Actor, id uuid.UUID, d
 		if err != nil {
 			return fmt.Errorf("lock domain: %w", err)
 		}
-		d = AuthDomain(cur)
+		d = Domain(cur)
 		if defaultRole != nil {
 			d.DefaultRole = *defaultRole
 		}
@@ -167,7 +167,7 @@ func (s *Service) UpdateAuthDomain(ctx context.Context, a Actor, id uuid.UUID, d
 		return s.auditDomain(ctx, tx, a, d, "updated")
 	})
 	if err != nil {
-		return AuthDomain{}, wrapDomainErr("update", err)
+		return Domain{}, wrapDomainErr("update", err)
 	}
 	return d, nil
 }
@@ -189,7 +189,7 @@ func (s *Service) DeleteAuthDomain(ctx context.Context, a Actor, id uuid.UUID) e
 		if _, err := q.DeleteAuthDomain(ctx, authdb.DeleteAuthDomainParams{TenantID: a.TenantID, ID: id}); err != nil {
 			return fmt.Errorf("delete domain: %w", err)
 		}
-		return s.auditDomain(ctx, tx, a, AuthDomain(cur), "deleted")
+		return s.auditDomain(ctx, tx, a, Domain(cur), "deleted")
 	})
 	return wrapDomainErr("delete", err)
 }
@@ -210,7 +210,7 @@ func requireOwner(ctx context.Context, tx pgx.Tx, a Actor) error {
 	return nil
 }
 
-func (s *Service) auditDomain(ctx context.Context, tx pgx.Tx, a Actor, d AuthDomain, change string) error {
+func (s *Service) auditDomain(ctx context.Context, tx pgx.Tx, a Actor, d Domain, change string) error {
 	return audit.Record(ctx, tx, audit.Entry{
 		TenantID: a.TenantID, ActorUserID: &a.UserID, Action: ActionAuthDomainChanged,
 		EntityType: "auth_domain", EntityID: d.ID.String(), IP: a.IP,

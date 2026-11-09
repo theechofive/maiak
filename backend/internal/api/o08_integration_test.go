@@ -127,7 +127,7 @@ func TestIntegrationRegisterDisplayName(t *testing.T) {
 	if r.code != http.StatusCreated || r.body["user"].(map[string]any)["display_name"] != "Ann Lee" {
 		t.Fatalf("register with a name: %d %s", r.code, r.raw)
 	}
-	for _, bad := range []string{`"Ann‮eL"`, `"Ann‍Lee"`, `"` + strings.Repeat("é", 81) + `"`} {
+	for _, bad := range []string{"\"Ann\u202eeL\"", "\"Ann\u200dLee\"", `"` + strings.Repeat("é", 81) + `"`} {
 		r := reg(`{"email":"bad@example.com","password":"` + ownerPassword + `","displayName":` + bad + `}`)
 		if r.code != http.StatusUnprocessableEntity || !strings.Contains(r.raw, "displayName") {
 			t.Fatalf("display name %s: %d %s", bad, r.code, r.raw)

@@ -367,7 +367,7 @@ func (s *server) DeleteAuthDomain(ctx context.Context, req gen.DeleteAuthDomainR
 	return gen.DeleteAuthDomain204Response{}, nil
 }
 
-func toAuthDomain(d auth.AuthDomain) gen.AuthDomain {
+func toAuthDomain(d auth.Domain) gen.AuthDomain {
 	return gen.AuthDomain{Id: openapi_types.UUID(d.ID), Domain: d.Domain, DefaultRole: gen.AuthDomainRole(d.DefaultRole),
 		Enabled: d.Enabled, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt}
 }
