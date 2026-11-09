@@ -2,10 +2,20 @@
 
 Rules are in [ADR-0013](../adr/0013-migrations.md). This page is the practical side.
 
+**From the production reinstall on (O-07) these rules are binding.** The reinstall was the last time compatibility with older releases could be dropped: every migration from now on is expand/contract (the previous release keeps working on the new schema), and a contract step waits for the release after the one that stopped using the old shape. A migration that cannot be written this way needs an ADR and a planned maintenance window.
+
+## Before every release that contains a migration
+Take a manual RDS snapshot of the instance right before the sync that applies it (owner, read-write on RDS; always an explicit `--profile`). The schema is forward-only and images cannot be rolled back across a migration (L-311), so the snapshot is the only way back from a migration that damages data:
+```sh
+aws --profile <platform profile> rds create-db-snapshot --db-instance-identifier <instance> --db-snapshot-identifier maiak-pre-<migration version>
+aws --profile <platform profile> rds wait db-snapshot-available --db-snapshot-identifier maiak-pre-<migration version>   # read-only
+```
+The instance is shared with Grafana (R-001): restoring it means a new instance and a coordinated switch, not an in-place rollback.
+
 ## Adding a migration
 1. Create `backend/migrations/<UTC YYYYMMDDHHMMSS>_<snake_case_description>.sql` (use the current UTC time).
 2. Start with `-- +goose Up`, then `SET LOCAL lock_timeout = '5s';`. No `Down` section.
-3. Write it so the previous application version still works (expand/contract). Add nullable or defaulted columns; do not drop or rename in the same release.
+3. Write it so the previous application version still works (expand/contract, binding, see above). Add nullable or defaulted columns; do not drop or rename in the same release.
 4. New tenant-scoped tables need: `tenant_id uuid not null`, `ENABLE` and `FORCE ROW LEVEL SECURITY`, a policy on `current_setting('app.tenant_id', true)::uuid`, composite foreign keys `(tenant_id, id)`. Default privileges already grant the runtime roles; add explicit grants only when you need less than the default (for example insert-only).
 5. Large indexes: a separate migration with `-- +goose NO TRANSACTION` and `CREATE INDEX CONCURRENTLY` (use `IF NOT EXISTS` so a retried Job does not fail on a finished index). A `CONCURRENTLY` build that fails (lock timeout, cancelled Job) leaves an INVALID index that `IF NOT EXISTS` then skips: check with `SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;` as `maiak_owner`, drop it with `DROP INDEX CONCURRENTLY <name>;` and rerun the migration (delete its row from `goose_db_version` first if it was recorded).
 6. Update the queries in the owning module and run `make generate`. Commit the generated code.
@@ -39,6 +49,7 @@ Rules are in [ADR-0013](../adr/0013-migrations.md). This page is the practical s
 | `20261106150000_status_page_slug_hold.sql` | P-06: `status_page_released_slugs` (PK `(tenant_id, slug)`, forced RLS, `owner_slug_hold_read`; the api inserts and updates, never deletes; nothing for the worker) and `status_page_slug_held(slug)` (`maiak_api`): a freed address stays reserved for its organization for 30 days. Expand only |
 | `20261106200000_projects_contract.sql` | O-03, T-02 contract step (ADR-0102, closes L-285): locks `monitors` then `monitor_channels`, backfills monitors without a project into the Default project and deletes stray links to other projects' channels per tenant under `app.tenant_id`, `monitors.project_id SET NOT NULL`, drops `monitors_fill_project` (trigger and function). Compatible with the previous release (every release since T-02 sets `project_id`); an api from before T-02 can no longer insert monitors, so an image rollback below T-02 is unsupported. First runs on the existing production database (the sync before the reinstall, [first-install.md](first-install.md)), where the backfill and clean-up do the real work |
 | `20261109090000_schema_version_guard.sql` | O-06: `GRANT SELECT ON goose_db_version TO maiak_api, maiak_worker` for the start-up schema guard (api, worker and jobs refuse to start when the database has a migration newer than their binary, `migrations.CheckNotAhead`). After it, an image can be rolled back only to a release that contains the database's newest migration (L-311) |
+| `20261109120000_revoke_tenant_insert.sql` | O-07, contract step of P-07 (ADR-0095, closes L-210): `REVOKE INSERT ON tenants FROM maiak_api`; tenants are created only through the definer `auth_create_tenant`. Compatible with the previous release (no direct insert since P-07) |
 
 `claim_due_monitors(n)`, `finish_delivery(id, status, error, retry_at)` and `drop_expired_partitions()` no longer exist; the [data model](../architecture/data-model.md) lists the current functions.
 
@@ -60,4 +71,4 @@ ArgoCD sync order: bootstrap hook (wave -3, when enabled), migrate Job (wave -1)
 Never edit an applied file. Write a new forward migration that corrects it. For an emergency, stop the rollout, fix forward, push. If a migration is half-applied (non-transactional), check `goose_db_version` and the catalog before writing the fix.
 
 ## Rollback of the application
-Roll the image tag back in `deploy/helm/maiak/values-platform.yaml`. This is safe only because migrations are backward-compatible with the previous version; the schema is not rolled back.
+Roll the image tag back in `deploy/helm/maiak/values-platform.yaml` only between releases with the same migrations: since O-06 api, worker and jobs refuse to start when the database has a migration newer than their binary (L-311). Otherwise roll forward; the schema is never rolled back (restore from the pre-release snapshot as a last resort).

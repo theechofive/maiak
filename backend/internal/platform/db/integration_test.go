@@ -25,7 +25,8 @@ func seed(t *testing.T, ctx context.Context, pool *db.Pool) fixture {
 	t.Helper()
 	f := fixture{tenantA: uuidv7.New(), tenantB: uuidv7.New(), user: uuidv7.New()}
 	err := db.WithTx(ctx, pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO tenants (id, slug, name) VALUES ($1, 'tenant-a', 'A'), ($2, 'tenant-b', 'B')`, f.tenantA, f.tenantB); err != nil {
+		// The api creates tenants only through auth_create_tenant (L-210).
+		if _, err := tx.Exec(ctx, `SELECT auth_create_tenant($1, 'tenant-a', 'A'), auth_create_tenant($2, 'tenant-b', 'B')`, f.tenantA, f.tenantB); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `INSERT INTO users (id, email) VALUES ($1, 'person@example.com')`, f.user)
@@ -240,7 +241,7 @@ func TestIntegrationWithTenantTx(t *testing.T) {
 	// An error rolls the transaction back.
 	boom := errors.New("boom")
 	err = db.WithTx(ctx, pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO tenants (id, slug, name) VALUES ($1, 'rolled-back', 'x')`, uuidv7.New()); err != nil {
+		if _, err := tx.Exec(ctx, `SELECT auth_create_tenant($1, 'rolled-back', 'x')`, uuidv7.New()); err != nil {
 			return err
 		}
 		return boom

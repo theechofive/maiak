@@ -8,6 +8,9 @@ image:
 
 config:
   publicUrl: https://maiak.klr-ops.net
+  # Self-service registration off (owner decision, O-07; R-130). Turned on for ONE sync only to
+  # create the company organization with the owner's personal account (docs/runbooks/first-install.md).
+  registrationEnabled: false
 
 httpRoute:
   hostnames:

@@ -23,7 +23,7 @@ combos=(
   "platform-no-bootstrap|-f $platform --set dbBootstrap.enabled=false"
   "platform-no-web|-f $platform --set web.enabled=false"
   "platform-login-set|-f $platform --set secrets.admin.login=owner+ops@example.com"
-  "platform-registration-off|-f $platform --set config.registrationEnabled=false"
+  "platform-registration-on|-f $platform --set config.registrationEnabled=true"
   "platform-external-secrets|-f $platform --set secrets.admin.source=externalSecret --set secrets.crypto.source=externalSecret"
   "platform-admin-external|-f $platform --set secrets.admin.source=externalSecret"
   "platform-crypto-external|-f $platform --set secrets.crypto.source=externalSecret"
@@ -51,9 +51,10 @@ done
 
 echo "== registration kill switch (MAIAK_REGISTRATION_ENABLED, api only)"
 kill_switch() { grep -A1 'name: MAIAK_REGISTRATION_ENABLED' "$out/$1.yaml" | sed -n 's/.*value: //p'; }
-[ "$(kill_switch platform)" = '"true"' ] || { echo "FAIL: registration not enabled by default" >&2; exit 1; }
-[ "$(kill_switch platform-registration-off)" = '"false"' ] || { echo "FAIL: config.registrationEnabled=false not rendered" >&2; exit 1; }
-echo "default \"true\", config.registrationEnabled=false renders \"false\""
+[ "$(kill_switch defaults)" = '"true"' ] || { echo "FAIL: registration not enabled by the chart default" >&2; exit 1; }
+[ "$(kill_switch platform)" = '"false"' ] || { echo "FAIL: registration not off in values-platform.yaml (O-07)" >&2; exit 1; }
+[ "$(kill_switch platform-registration-on)" = '"true"' ] || { echo "FAIL: config.registrationEnabled=true not rendered" >&2; exit 1; }
+echo "chart default \"true\", platform \"false\", config.registrationEnabled=true renders \"true\""
 
 echo "== negative checks (rendering must fail)"
 expect_fail() {

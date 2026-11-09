@@ -11,6 +11,13 @@ import (
 	"github.com/theechofive/maiak/backend/internal/testsupport/pgtest"
 )
 
+// rollbackRevokeTenantInsert undoes the O-07 migration, so a test can replay an older migration
+// (goose refuses to apply a missing older version).
+var rollbackRevokeTenantInsert = []string{
+	`GRANT INSERT ON tenants TO maiak_api`,
+	`DELETE FROM goose_db_version WHERE version_id = 20261109120000`,
+}
+
 // TestIntegrationAPIRuntimeGrants checks ADR-0018: maiak_api has no UPDATE on the schedule and
 // only column grants on monitor_state and tenants (ADR-0095); it resets a schedule through reset_monitor_runtime,
 // which stays inside the caller's tenant.
@@ -76,7 +83,8 @@ func TestIntegrationAPIRuntimeGrants(t *testing.T) {
 	}
 
 	// tenants (P-07, ADR-0095): the api may lock a tenant row (quota checks) and touch updated_at,
-	// but not change its plan, limits, status, deletion, slug or name. INSERT stays until L-210.
+	// but not change its plan, limits, status, deletion, slug or name, nor insert a tenant: tenants
+	// are created only through auth_create_tenant (L-210, O-07).
 	for _, stmt := range []string{
 		`UPDATE tenants SET plan_key = 'internal'`,
 		`UPDATE tenants SET limits = '{"max_monitors": 100000}'`,
@@ -84,13 +92,14 @@ func TestIntegrationAPIRuntimeGrants(t *testing.T) {
 		`UPDATE tenants SET deleted_at = now()`,
 		`UPDATE tenants SET slug = 'x', name = 'x'`,
 		`DELETE FROM tenants`,
+		`INSERT INTO tenants (id, slug, name) VALUES (gen_random_uuid(), 'direct-insert', 'X')`,
 	} {
 		mustFail(inTenant(api, tenantA, exec(stmt)), "permission denied")
 	}
 	for _, stmt := range []string{
 		`SELECT 1 FROM tenants WHERE id = '` + tenantA + `' FOR UPDATE`,
 		`UPDATE tenants SET updated_at = now() WHERE id = '` + tenantA + `'`,
-		`INSERT INTO tenants (id, slug, name) VALUES (gen_random_uuid(), 'expand-insert', 'X')`,
+		`SELECT auth_create_tenant(gen_random_uuid(), 'through-definer', 'X')`,
 	} {
 		if err := inTenant(api, tenantA, exec(stmt)); err != nil {
 			t.Fatalf("%s: %v", stmt, err)

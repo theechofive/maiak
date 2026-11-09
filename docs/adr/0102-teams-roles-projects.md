@@ -80,6 +80,14 @@ Choices made while building T-02 within this decision:
 - **Start-up schema guard (O-06).** api, worker and jobs read the newest applied migration (`goose_db_version`, `SELECT` granted by `20261109090000_schema_version_guard.sql`) and refuse to start when it is newer than the newest migration embedded in their binary (`migrations.CheckNotAhead`, `ErrSchemaAhead`). `cmd/migrate` does not check; the status page renderer has no table privileges and does not check. Images built before O-06 do not contain the guard. Consequence: an image can be rolled back only to a release that knows the database's newest migration; rolling back across a migration is out of scope (L-311). This closes L-282 for every image from O-06 on.
 - **Code.** sqlc now types `monitors.project_id` as `uuid.UUID`; the nil handling in `monitors`, `queries` and `api` is gone. The OpenAPI `StatusPageComponent.projectId` stays `nullable` (always set now; narrowing it would only regenerate the web types).
 
+## Amendment (O-07, 2026-11-09): organization layout and install decisions on klr-platform
+Owner decisions taken before the production reinstall:
+- **Organization layout.** The company's real work lives in a **dedicated organization** created by the owner's personal account (registration on for one sync, then off; the platform admin sets its plan to `internal`). `default` stays the operator's organization: the system admin (`MAIAK_ADMIN_LOGIN`, break-glass at `/login?admin`) and nothing else. Reasons: the system admin's account is shared operator access, not a person; quotas, members, channels and the audit of the company stay separate from operator actions; a later move to OAuth-only does not touch the break-glass account.
+- **Identity policy** (ADR-0104): Google first; the owner claims `klr.com.ua` in the company organization (`oauth.allowedDomains: [klr.com.ua]`); colleagues are invited or join through the domain; then `config.passwordLoginEnabled: false` (the admin keeps `/login?admin`).
+- **Registration** is off in `values-platform.yaml` (R-130).
+- **Backups.** A manual RDS snapshot right after the install's verification checklist, and before every release that contains a migration (`migrations.md`); expand/contract is binding from the reinstall on.
+Procedure: [first-install.md](../runbooks/first-install.md).
+
 ## Alternatives considered
 - Project-aware RLS (`app.project_ids` set per transaction): stronger, but every definer function, rollup and outbox path would need it, and a member's project list changes at runtime. Kept as the upgrade path if R-212 bites.
 - Invitations bound to an email address: needs outgoing email to mean anything (L-170). The link is single-use, expires, and the admin sees who joined.

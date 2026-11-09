@@ -44,6 +44,7 @@ func TestIntegrationProjectsContract(t *testing.T) {
 	admin := env.AdminConn(t)
 	api := env.Conn(t, env.APIURL)
 
+	pgtest.MustExec(t, admin, rollbackRevokeTenantInsert...)
 	pgtest.MustExec(t, admin, rollbackSchemaVersionGuard...)
 	pgtest.MustExec(t, admin, rollbackProjectsContract...)
 	const cfg = `'{"url":"https://example.com","expectedStatus":"2xx"}'`
@@ -129,8 +130,8 @@ func TestIntegrationProjectsContract(t *testing.T) {
 	}
 	pgtest.MustExec(t, admin, `DELETE FROM monitors WHERE id = '`+orphanC+`'`)
 
-	if n, err := env.Migrate(ctx); err != nil || n != 2 {
-		t.Fatalf("applied %d migrations, err=%v; want 2 (T-02 contract, O-06)", n, err)
+	if n, err := env.Migrate(ctx); err != nil || n != 3 {
+		t.Fatalf("applied %d migrations, err=%v; want 3 (T-02 contract, O-06, O-07)", n, err)
 	}
 	for _, c := range []struct {
 		orphan, def, tenant string

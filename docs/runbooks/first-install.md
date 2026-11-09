@@ -7,7 +7,7 @@ Conventions: always pass an explicit `--context <klr-platform context>` to `kube
 ## What is different on an empty database
 - **Order on klr-platform.** The release with the T-02 contract migration (`20261106200000_projects_contract.sql`) and the schema guard (`20261109090000_schema_version_guard.sql`) is first deployed the normal way, on the **existing** production database, before the reinstall. That is fine: the contract migration is compatible with the previous release (every release since T-02 sets `project_id` on each monitor insert), and its backfill and stray-link clean-up are written for existing data. Only an image from before T-02 breaks on it, and an image rollback below T-02 is unsupported. Then the database is emptied (section 1) and installed again (sections 2 to 7).
 - **Schema guard (O-06).** api, worker and jobs refuse to start when the database has a migration newer than their binary (`database schema is newer than this binary` in the pod log). An image rollback is therefore possible only to a release that contains the database's newest migration; rolling back across a migration is not supported (L-311). Images built before O-06 lack the guard: never deploy one by hand. With the guard in place the T-01 rollback hazard is closed (L-282) and granting `owner` in `default` is safe.
-- **Status page.** The renderer is enabled in the same commit as the db bootstrap (L-292): bootstrap (-3) creates `maiak_statuspage` and the key `statuspage_url`, migrate (-1) grants `status_page_snapshot(text)`, the renderer starts at wave 0. This one-commit order is equally safe on an existing database ([status-page.md](status-page.md)).
+- **Status page.** The renderer is enabled in the same commit as the db bootstrap (L-292): bootstrap (-3) creates `maiak_statuspage` and the key `statuspage_url`, migrate (-1) grants `status_page_snapshot(text)`, the renderer starts at wave 0. This one-commit order is equally safe on an existing database ([status-page.md](status-page.md)). Section 3 is the step that enables it (closes L-292).
 - **Leftovers of the T-02 rollout** (L-286 items 1 and 4, organization-wide channels from the pre-T-02 api) disappear with the old database.
 
 ## 1. Empty the existing database (reinstall only)
@@ -39,6 +39,14 @@ Done by the owner, who holds the RDS master login (`platform/grafana/db`, Grafan
 4. Continue with section 2. The commit of section 3 also removes the `replicas: 0` overrides; re-enable automated sync after it (or sync once by hand and then re-enable it).
 
 ## 2. Before the first sync
+- **Images and CI.** `image.tag` and `web.image.tag` in `values-platform.yaml` must be the CI build of `HEAD` of `main`, which contains the O-07 commit or later (at least `b926390` for the schema guard, plus the O-07 migration). The CI run of that commit is green (backend, migrations on Postgres 15, chart). The release bot owns the tags: do not edit them; wait for its bump commit. After the sync, the migrate log must end at the newest migration, today `20261109120000_revoke_tenant_insert.sql` (or a later one that `HEAD` contains: `ls backend/migrations/*.sql | tail -1`).
+- **RDS backups** (read-only, owner): automated backups and point-in-time recovery are on for the instance:
+  ```sh
+  aws --profile <platform profile> rds describe-db-instances --db-instance-identifier <instance> \
+    --query 'DBInstances[0].[BackupRetentionPeriod,LatestRestorableTime,PreferredBackupWindow]'
+  ```
+  `BackupRetentionPeriod` must be at least 1 (0 means no automated backups and no PITR) and `LatestRestorableTime` recent. If not, raise it with the owner of the shared instance (R-001) before installing.
+
 1. **Database.** The database `maiak` must not exist (section 1), or be empty. Use the explicit `--context` and `--profile` everywhere.
 2. **Secret `maiak-db`.** Not managed by ArgoCD. If it is still there from the previous installation, the bootstrap reuses its passwords (creating or re-passwording the roles) and adds missing keys such as `statuspage_url`; that is fine. Delete it only if you want new role passwords. It must not exist without its `*_password` keys (the Job refuses a Secret it did not write completely).
 3. **Generated Secrets** (`secrets.*.source: generate`, ADR-0091): `maiak-admin`, `maiak-crypto` and `maiak-statuspage` are reused if they exist. On an empty database nothing is encrypted yet, so keeping or deleting `maiak-crypto` makes no difference; delete `maiak-admin` if you want a new admin password (the Job then writes a new `maiak-admin-initial`).
@@ -69,9 +77,8 @@ oauth:                 # optional; needs platform/maiak/oauth
   github:
     enabled: false
   allowedDomains: []   # MAIAK_OAUTH_ALLOWED_DOMAINS; e.g. [klr.com.ua] to allow claiming that Workspace domain
-config:
-  registrationEnabled: false   # recommended until the public-domain gates (R-130, L-172)
 ```
+`config.registrationEnabled: false` is already set in `values-platform.yaml` (owner decision, O-07); section 5 turns it on for one sync only.
 Remove the `replicas: 0` overrides of section 1 in the same commit. Keep `config.passwordLoginEnabled: true` until a provider works (section 6). Commit and push; ArgoCD syncs (re-enable automated sync if you paused it).
 
 ## 4. Sync order and what to check (read-only)
@@ -81,7 +88,7 @@ Remove the `replicas: 0` overrides of section 1 in the same commit. Keep `config
 | -3 | Job `maiak-db-bootstrap` | `kubectl --context CTX -n maiak logs job/maiak-db-bootstrap`: four `maiak_*` roles with `rolsuper=f`, `rolbypassrls=f`, database `maiak` owned by `maiak_owner`; `kubectl --context CTX -n maiak get secret maiak-db -o json \| jq '.data \| keys'` includes `statuspage_url` |
 | -3 | Job `maiak-secrets-bootstrap` | its log lists `maiak-admin`, `maiak-crypto`, `maiak-statuspage` as `secret created` or `left untouched` |
 | -2 | ExternalSecrets `maiak-oauth` (and any `externalSecret` sources), migrate ServiceAccount | `kubectl --context CTX -n maiak get externalsecret` all `SecretSynced` |
-| -1 | Job `maiak-migrate` | `kubectl --context CTX -n maiak logs job/maiak-migrate` applies every migration up to `20261109090000` without error |
+| -1 | Job `maiak-migrate` | `kubectl --context CTX -n maiak logs job/maiak-migrate` applies every migration up to `20261109120000` (section 2) without error |
 | 0 | Deployments `maiak-api`, `maiak-worker`, `maiak-jobs`, `maiak-web`, `maiak-statuspage`, HTTPRoute | `kubectl --context CTX -n maiak get deploy,pods`; `rollout status` for each; no `database schema is newer than this binary` in the api, worker or jobs logs |
 
 A failed wave stops the sync; read the Job log, fix in Git, let ArgoCD retry.
@@ -90,12 +97,31 @@ A failed wave stops the sync; read the Job log, fix in Git, let ArgoCD retry.
 At every start the api's `BootstrapAdmin` creates or adopts the user `MAIAK_ADMIN_LOGIN` (`secrets.admin.login`, default `admin`) as owner of the `default` organization and the only platform admin (ADR-0009, ADR-0097). On a fresh install:
 1. Read the one-time password yourself, in your own terminal (only if `maiak-admin-initial` was created): `kubectl --context CTX -n maiak get secret maiak-admin-initial -o jsonpath='{.data.password}' | base64 -d; echo`.
 2. Sign in at `https://maiak.klr-ops.net/login?admin` (or the normal form while password login is on), store the password in your password manager, then delete the copy: `kubectl --context CTX -n maiak delete secret maiak-admin-initial` (**writes**, R-110).
-3. Invite the first people (Settings → Members, [invitations.md](invitations.md)). Further owners in `default` are fine (L-282 closed by the schema guard).
+3. `default` stays the **operator's organization** (owner decision, ADR-0102 O-07 amendment): only the system admin lives there. Do not put the company's monitors, channels or colleagues into it.
 
-## 6. OAuth
-1. Sign in with each enabled provider from a second browser profile through an invitation, or link it to the admin under Settings → Account → Sign-in methods (`/profile`).
-2. Domain auto-join: only domains in `oauth.allowedDomains` can be claimed; an owner claims it under Settings → Sign-in domains ([oauth.md](oauth.md)).
-3. Only after a provider works: optionally `config.passwordLoginEnabled: false` (the admin keeps `/login?admin`).
+### 5a. The company organization
+1. Commit `config.registrationEnabled: true` and sync (ONE sync; R-130).
+2. The owner opens `https://maiak.klr-ops.net/`, chooses "Create account" and registers with their **personal** account (their own company email and a password; Google is linked later in section 6). This creates the dedicated company organization with the owner as its owner.
+3. Commit `config.registrationEnabled: false` again and sync. Check: the "Create account" link is gone and `POST /api/v1/auth/register` without an invitation answers 403.
+4. The platform admin (`/login?admin`, `/admin`, the organization's details, plan selector; [admin-panel.md](admin-panel.md)) sets the company organization's plan to `internal` (audited as `admin.tenant.plan_changed`).
+5. Colleagues are invited into the company organization (section 6), never into `default`.
+
+## 6. Identity: Google first, then OAuth-only (owner decision, ADR-0104)
+In this order ([oauth.md](oauth.md)):
+1. Create the Google OAuth client (Internal consent screen) and store `google_client_id` and `google_client_secret` in `platform/maiak/oauth` (explicit `--profile`).
+2. Commit `oauth.google.enabled: true` and `oauth.allowedDomains: [klr.com.ua]`; sync. Check: `kubectl --context CTX -n maiak get externalsecret maiak-oauth` is `SecretSynced` and the login page shows "Sign in with Google".
+3. The owner, signed in with the personal account, links Google under Settings → Account → Sign-in methods (`/profile`), using their `klr.com.ua` Google account.
+4. In the company organization the owner claims `klr.com.ua` under Settings → Sign-in domains (within 10 minutes of the link; new domain role viewer, raise it if wanted).
+5. Invite colleagues (or let them join through the domain on their first Google sign-in) and raise roles as needed. Check that a colleague signs in with Google.
+6. Commit `config.passwordLoginEnabled: false`; sync. The password form disappears; the system admin keeps `/login?admin` (break-glass, keep its password safe).
+
+Before colleagues create monitors, check **L-100** (read-only): the VPC (pod) and service CIDRs of `klr-platform` must lie inside the SSRF guard's built-in ranges (RFC 1918 `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, or CGNAT `100.64.0.0/10`):
+```sh
+aws --profile <platform profile> eks describe-cluster --name <cluster> --query 'cluster.[resourcesVpcConfig.vpcId,kubernetesNetworkConfig.serviceIpv4Cidr]'
+aws --profile <platform profile> ec2 describe-vpcs --vpc-ids <vpc id> --query 'Vpcs[0].CidrBlockAssociationSet[].CidrBlock'
+kubectl --context CTX get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}{"\n"}'
+```
+If any range is outside them, add it to `config.blockedCIDRs` and sync before anyone creates a monitor.
 
 ## 7. Switch the bootstrap off
 Next commit: `dbBootstrap.enabled: false`; keep `statuspage.enabled: true`. Sync. The Secret `maiak-db` persists. Check (read-only) that `maiak-db-admin` is gone: `kubectl --context CTX -n maiak get externalsecret,secret | grep maiak-db-admin` prints nothing. Remove leftover bootstrap RBAC by hand if wanted (L-103). Until this is done the namespace holds the RDS master login (R-009).
@@ -109,7 +135,17 @@ Next commit: `dbBootstrap.enabled: false`; keep `statuspage.enabled: true`. Sync
 - [ ] Role check as a superuser (read-only): `SELECT has_function_privilege('maiak_statuspage', 'status_page_snapshot(text)', 'EXECUTE');` is true.
 - [ ] Schema check: `SELECT attnotnull FROM pg_attribute WHERE attrelid = 'monitors'::regclass AND attname = 'project_id';` is true and `SELECT to_regprocedure('monitors_fill_project()');` is NULL.
 - [ ] `dbBootstrap.enabled` is false again and `maiak-db-admin` is gone (section 7).
-- [ ] `config.registrationEnabled` is what you intend (R-130).
+- [ ] `config.registrationEnabled` is `false` again after section 5a (R-130); the company organization exists with plan `internal`; `default` holds only the system admin.
+- [ ] Google sign-in, the `klr.com.ua` claim and `passwordLoginEnabled: false` are done (section 6); the admin still signs in at `/login?admin`.
+- [ ] L-100 checked (section 6).
+
+## 9. Snapshot after the checklist
+When every box above is ticked, take a manual RDS snapshot (owner decision; **writes** on RDS, explicit `--profile`):
+```sh
+aws --profile <platform profile> rds create-db-snapshot --db-instance-identifier <instance> --db-snapshot-identifier maiak-installed-<yyyymmdd>
+aws --profile <platform profile> rds wait db-snapshot-available --db-snapshot-identifier maiak-installed-<yyyymmdd>   # read-only
+```
+From now on, take one before every release that contains a migration ([migrations.md](migrations.md)); expand/contract is binding.
 
 ## Rollback
 - **Configuration:** revert the values commit.
