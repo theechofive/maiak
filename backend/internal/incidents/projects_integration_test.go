@@ -105,8 +105,8 @@ func TestIntegrationProjectChannelRouting(t *testing.T) {
 	if _, err := f.monitors.Update(f.ctx, f.actor, selMon.ID, monitors.UpdateInput{ProjectID: &web, ChannelIDs: &[]uuid.UUID{inDefault}}); err == nil {
 		t.Fatal("selection of the old project accepted with the move")
 	}
-	// A stray link to another project's channel (the previous release, L-286) is not a valid
-	// selection: the monitor notifies its own project's channels (T-13).
+	// A link to another project's channel (only possible by direct SQL since the T-02 contract
+	// step) is not a valid selection: the monitor notifies its own project's channels (T-13).
 	strayMon, err := create(&web)
 	if err != nil {
 		t.Fatal(err)

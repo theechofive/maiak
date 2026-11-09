@@ -211,8 +211,8 @@ type ListDeliveryChannelsRow struct {
 // Read-only (channels are owned by internal/notify): the active channels of a monitor with the
 // events they receive (ADR-0100, T-02). A monitor with a valid selection notifies its selected
 // channels that are organization-wide or of its project; a monitor without a valid selection (none,
-// or only stray links to other projects' channels, L-286) notifies the active channels of its own
-// project only (closes L-261, L-263). The same rule is in enqueue_incident_reminders.
+// or only links to other projects' channels, which the api no longer creates and the T-02 contract
+// migration deleted) notifies the active channels of its own project only (closes L-261, L-263). The same rule is in enqueue_incident_reminders.
 func (q *Queries) ListDeliveryChannels(ctx context.Context, arg ListDeliveryChannelsParams) ([]ListDeliveryChannelsRow, error) {
 	rows, err := q.db.Query(ctx, listDeliveryChannels, arg.MonitorID, arg.TenantID)
 	if err != nil {

@@ -1,11 +1,12 @@
 -- +goose Up
 SET LOCAL lock_timeout = '5s';
 
--- T-02 contract step (ADR-0102, closes L-285; O-03). Compatibility with the previous app version
--- is intentionally dropped: the production database is reinstalled empty before this release, so
--- no api from before T-02 runs against it. A release from before T-02 inserts monitors without a
--- project and now fails with a NOT NULL violation; rolling the image back past T-02 is therefore
--- no longer supported (forward-only, as always).
+-- T-02 contract step (ADR-0102, closes L-285; O-03, O-06). Compatible with the previous release:
+-- every release since T-02 sets project_id on each monitor insert, so only an api from before T-02
+-- (which inserts monitors without a project) fails here, with a NOT NULL violation. An image
+-- rollback below T-02 is unsupported; since O-06 the start-up schema guard blocks any image older
+-- than the schema anyway. It first runs on the existing production database (the sync before the
+-- reinstall), where the backfill and stray-link clean-up below do the real work.
 
 -- Locked up front in the application's order (monitor before channel links), so the migration
 -- never upgrades a lock halfway; with lock_timeout it fails fast instead of queueing.

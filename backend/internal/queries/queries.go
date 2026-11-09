@@ -253,8 +253,9 @@ func (s *Service) Monitor(ctx context.Context, tenantID uuid.UUID, sc authz.Scop
 			}
 			*w.dst = up[id]
 		}
-		// Only links routing honours: organization-wide channels and those of the monitor's project
-		// (a stray link of the previous release to another project's channel is hidden, L-286).
+		// Only links routing honours: organization-wide channels and those of the monitor's project.
+		// A link to another project's channel cannot be created any more (moves drop them, the T-02
+		// contract migration deleted the old ones); the filter stays as a guard.
 		rows, err := tx.Query(ctx, `
 			SELECT mc.channel_id
 			FROM monitor_channels AS mc

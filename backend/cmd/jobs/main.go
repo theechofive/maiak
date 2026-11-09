@@ -25,6 +25,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/platform/metrics"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
 	"github.com/theechofive/maiak/backend/internal/statuspages"
+	"github.com/theechofive/maiak/backend/migrations"
 )
 
 var (
@@ -57,6 +58,10 @@ func run() error {
 		return err
 	}
 	defer pool.Close()
+	// An image older than the schema must not run against it (O-06, L-282, L-311).
+	if err := migrations.CheckNotAhead(ctx, pool); err != nil {
+		return err
+	}
 
 	reg := metrics.NewRegistry("jobs", version, commit)
 	m := jobs.NewMetrics(reg)

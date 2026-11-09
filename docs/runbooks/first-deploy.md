@@ -178,7 +178,7 @@ The bootstrap ServiceAccount, Role and RoleBinding were created as hooks and Arg
 
 ## 8. Rollback
 
-- **Application version:** revert the CI bump commit (`chore(deploy): maiak-backend <sha> [skip ci]`) or set the previous tags in `values-platform.yaml` and push; ArgoCD rolls the Deployments back. The schema is not rolled back: migrations are forward-only and backward compatible with the previous version, except the known case L-070 (an old api pod cannot resume a monitor after the grant migration).
+- **Application version:** revert the CI bump commit (`chore(deploy): maiak-backend <sha> [skip ci]`) or set the previous tags in `values-platform.yaml` and push; ArgoCD rolls the Deployments back. The schema is not rolled back: migrations are forward-only. Since O-06 api, worker and jobs refuse to start when the database has a migration newer than their binary, so this works only between releases with the same migrations; otherwise roll forward (L-311, [first-install.md](first-install.md)).
 - **A bad migration:** fix forward with a new migration ([migrations.md](migrations.md)); the failed Job stops the sync and old pods keep serving.
 - **Bad configuration or secret:** correct the Secrets Manager value, delete the Kubernetes Secret created from it so ESO recreates it (`refreshInterval` is `"0"`), restart the Deployments through ArgoCD (change an annotation in Git) rather than editing live objects. A generated Secret that is wrong or incomplete: delete it and sync; the Job creates a new one (a new key makes the stored Slack webhook unreadable).
 - **Whole app off:** set the replicas to 0 in `values-platform.yaml`, or delete the Application (the finalizer prunes everything it created; the Secret `maiak-db` and the database remain).

@@ -41,6 +41,7 @@ func TestIntegrationProjects(t *testing.T) {
 
 	// The previous release's database with data: two tenants, monitors (one deleted), live and
 	// deleted channels and a channel selection. Then the T-02 migration runs over it.
+	pgtest.MustExec(t, admin, rollbackSchemaVersionGuard...)
 	pgtest.MustExec(t, admin, rollbackProjectsContract...)
 	pgtest.MustExec(t, admin, rollbackOAuthLogin...)
 	pgtest.MustExec(t, admin, rollbackStatusPages...)
@@ -54,8 +55,8 @@ func TestIntegrationProjects(t *testing.T) {
 		`INSERT INTO notification_channels (id, tenant_id, type, config_encrypted) VALUES ('`+chanA+`', '`+tenantA+`', 'slack_webhook', '\x01')`,
 		`INSERT INTO notification_channels (id, tenant_id, type, deleted_at, status) VALUES ('`+chanGone+`', '`+tenantA+`', 'slack_webhook', now(), 'failed')`,
 		`INSERT INTO monitor_channels (tenant_id, monitor_id, channel_id) VALUES ('`+tenantA+`', '`+monA+`', '`+chanA+`')`)
-	if n, err := env.Migrate(ctx); err != nil || n != 5 {
-		t.Fatalf("re-applied %d migrations, err=%v; want 5 (T-02, P-05, P-06, O-01, T-02 contract)", n, err)
+	if n, err := env.Migrate(ctx); err != nil || n != 6 {
+		t.Fatalf("re-applied %d migrations, err=%v; want 6 (T-02, P-05, P-06, O-01, T-02 contract, O-06)", n, err)
 	}
 
 	defaultOf := func(tenant string) string {
@@ -214,8 +215,8 @@ func TestIntegrationProjects(t *testing.T) {
 		selecting := seedMonitor(t, admin, tenantA, "now()", false, false)
 		pgtest.MustExec(t, admin,
 			`INSERT INTO monitor_channels (tenant_id, monitor_id, channel_id) VALUES ('`+tenantA+`', '`+selecting+`', '`+orgWide+`'), ('`+tenantA+`', '`+selecting+`', '`+inOther+`')`)
-		// Only a stray link to another project's channel (the previous release, L-286): not a valid
-		// selection, so the project fallback applies (T-13).
+		// Only a stray link to another project's channel (only possible by direct SQL since the
+		// contract step): not a valid selection, so the project fallback applies (T-13).
 		stray := seedMonitor(t, admin, tenantA, "now()", false, false)
 		pgtest.MustExec(t, admin,
 			`INSERT INTO monitor_channels (tenant_id, monitor_id, channel_id) VALUES ('`+tenantA+`', '`+stray+`', '`+inOther+`')`)

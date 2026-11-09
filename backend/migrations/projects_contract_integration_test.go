@@ -2,6 +2,7 @@ package migrations_test
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -33,67 +34,116 @@ var rollbackProjectsContract = []string{
 	`DELETE FROM goose_db_version WHERE version_id = 20261106200000`,
 }
 
-// TestIntegrationProjectsContract checks the T-02 contract migration: monitors still without a
-// project land in the Default project, stray links to another project's channel are deleted, valid
-// links stay, the column is NOT NULL and the fill trigger is gone.
+// TestIntegrationProjectsContract checks the T-02 contract migration: it fails as a whole when a
+// tenant has no Default project; otherwise monitors still without a project land in their own
+// tenant's Default project, stray links to another project's channel are deleted, valid links
+// stay, the column is NOT NULL and the fill trigger is gone.
 func TestIntegrationProjectsContract(t *testing.T) {
 	env := pgtest.New(t, pgtest.DBName("projectscontract"))
 	ctx := context.Background()
 	admin := env.AdminConn(t)
 	api := env.Conn(t, env.APIURL)
 
+	pgtest.MustExec(t, admin, rollbackSchemaVersionGuard...)
 	pgtest.MustExec(t, admin, rollbackProjectsContract...)
-	pgtest.MustExec(t, admin, `INSERT INTO tenants (id, slug, name) VALUES ('`+tenantA+`', 'a', 'A')`)
-	var def string
-	if err := admin.QueryRow(ctx, `SELECT id::text FROM projects WHERE tenant_id = $1 AND is_default`, tenantA).Scan(&def); err != nil {
-		t.Fatal(err)
-	}
-	other := uuid.NewString()
-	chanOther, chanOrg := uuid.NewString(), uuid.NewString()
-	orphan, inDefault, inOther := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	const cfg = `'{"url":"https://example.com","expectedStatus":"2xx"}'`
+	// seed gives tenant an Other project and, with the fill trigger off (it cannot miss a
+	// monitor with the trigger on; the migration backfills defensively), a monitor without a
+	// project, one in the Default project with a stray link to Other's channel and a valid link
+	// to an organization-wide channel, and one in Other with a valid link. It returns the
+	// orphan, the Default project and the links the migration must keep.
+	seed := func(tenant, slug string) (orphan, def string, keep []string) {
+		t.Helper()
+		pgtest.MustExec(t, admin, `INSERT INTO tenants (id, slug, name) VALUES ('`+tenant+`', '`+slug+`', '`+slug+`')`)
+		if err := admin.QueryRow(ctx, `SELECT id::text FROM projects WHERE tenant_id = $1 AND is_default`, tenant).Scan(&def); err != nil {
+			t.Fatal(err)
+		}
+		other, chanOther, chanOrg := uuid.NewString(), uuid.NewString(), uuid.NewString()
+		orphan = uuid.NewString()
+		inDefault, inOther := uuid.NewString(), uuid.NewString()
+		pgtest.MustExec(t, admin,
+			`INSERT INTO projects (id, tenant_id, name, slug) VALUES ('`+other+`', '`+tenant+`', 'Other', 'other')`,
+			`INSERT INTO notification_channels (id, tenant_id, type, config_encrypted, project_id) VALUES
+				('`+chanOther+`', '`+tenant+`', 'slack_webhook', '\x01', '`+other+`'),
+				('`+chanOrg+`', '`+tenant+`', 'slack_webhook', '\x01', NULL)`,
+			`ALTER TABLE monitors DISABLE TRIGGER monitors_fill_project`,
+			`INSERT INTO monitors (id, tenant_id, name, config, project_id) VALUES
+				('`+orphan+`', '`+tenant+`', 'orphan', `+cfg+`, NULL),
+				('`+inDefault+`', '`+tenant+`', 'default', `+cfg+`, '`+def+`'),
+				('`+inOther+`', '`+tenant+`', 'other', `+cfg+`, '`+other+`')`,
+			`ALTER TABLE monitors ENABLE TRIGGER monitors_fill_project`,
+			`INSERT INTO monitor_channels (tenant_id, monitor_id, channel_id) VALUES
+				('`+tenant+`', '`+inDefault+`', '`+chanOther+`'),
+				('`+tenant+`', '`+inDefault+`', '`+chanOrg+`'),
+				('`+tenant+`', '`+inOther+`', '`+chanOther+`')`,
+		)
+		return orphan, def, []string{inDefault + ">" + chanOrg, inOther + ">" + chanOther}
+	}
+	orphanA, defA, keepA := seed(tenantA, "a")
+	orphanB, defB, keepB := seed(tenantB, "b")
+	projectOf := func(monitor string) string {
+		t.Helper()
+		var p *string
+		if err := admin.QueryRow(ctx, `SELECT project_id::text FROM monitors WHERE id = $1`, monitor).Scan(&p); err != nil {
+			t.Fatal(err)
+		}
+		if p == nil {
+			return "NULL"
+		}
+		return *p
+	}
+	links := func(tenant string) []string {
+		t.Helper()
+		rows, err := admin.Query(ctx, `SELECT monitor_id::text || '>' || channel_id::text FROM monitor_channels WHERE tenant_id = $1 ORDER BY 1`, tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	// A tenant without a Default project leaves a monitor without one: the migration fails as a
+	// whole and changes nothing.
+	tenantC := uuid.NewString()
+	orphanC := uuid.NewString()
 	pgtest.MustExec(t, admin,
-		`INSERT INTO projects (id, tenant_id, name, slug) VALUES ('`+other+`', '`+tenantA+`', 'Other', 'other')`,
-		`INSERT INTO notification_channels (id, tenant_id, type, config_encrypted, project_id) VALUES
-			('`+chanOther+`', '`+tenantA+`', 'slack_webhook', '\x01', '`+other+`'),
-			('`+chanOrg+`', '`+tenantA+`', 'slack_webhook', '\x01', NULL)`,
-		// A monitor the fill trigger missed (it cannot happen with the trigger on; the migration
-		// still backfills defensively).
-		`ALTER TABLE monitors DISABLE TRIGGER monitors_fill_project`,
-		`INSERT INTO monitors (id, tenant_id, name, config, project_id) VALUES
-			('`+orphan+`', '`+tenantA+`', 'orphan', `+cfg+`, NULL),
-			('`+inDefault+`', '`+tenantA+`', 'default', `+cfg+`, '`+def+`'),
-			('`+inOther+`', '`+tenantA+`', 'other', `+cfg+`, '`+other+`')`,
-		`ALTER TABLE monitors ENABLE TRIGGER monitors_fill_project`,
-		`INSERT INTO monitor_channels (tenant_id, monitor_id, channel_id) VALUES
-			('`+tenantA+`', '`+inDefault+`', '`+chanOther+`'),
-			('`+tenantA+`', '`+inDefault+`', '`+chanOrg+`'),
-			('`+tenantA+`', '`+inOther+`', '`+chanOther+`')`,
-	)
+		`INSERT INTO tenants (id, slug, name) VALUES ('`+tenantC+`', 'c', 'C')`,
+		`DELETE FROM projects WHERE tenant_id = '`+tenantC+`'`,
+		`INSERT INTO monitors (id, tenant_id, name, config) VALUES ('`+orphanC+`', '`+tenantC+`', 'orphan', `+cfg+`)`)
+	if n, err := env.Migrate(ctx); err == nil || n != 0 {
+		t.Fatalf("migration over a tenant without a Default project: applied %d, err=%v; want a failure", n, err)
+	}
+	var recorded int
+	if err := admin.QueryRow(ctx, `SELECT count(*) FROM goose_db_version WHERE version_id = 20261106200000`).Scan(&recorded); err != nil || recorded != 0 {
+		t.Fatalf("failed contract recorded %d times (%v)", recorded, err)
+	}
+	if projectOf(orphanA) != "NULL" || len(links(tenantA)) != 3 || len(links(tenantB)) != 3 {
+		t.Fatalf("failed migration changed data: orphan A in %s, links A %v, links B %v", projectOf(orphanA), links(tenantA), links(tenantB))
+	}
+	var fill bool
+	if err := admin.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'monitors'::regclass AND tgname = 'monitors_fill_project')`).Scan(&fill); err != nil || !fill {
+		t.Fatalf("fill trigger after the failed migration: %t (%v), want kept", fill, err)
+	}
+	pgtest.MustExec(t, admin, `DELETE FROM monitors WHERE id = '`+orphanC+`'`)
 
-	if n, err := env.Migrate(ctx); err != nil || n != 1 {
-		t.Fatalf("applied %d migrations, err=%v; want 1 (T-02 contract)", n, err)
+	if n, err := env.Migrate(ctx); err != nil || n != 2 {
+		t.Fatalf("applied %d migrations, err=%v; want 2 (T-02 contract, O-06)", n, err)
 	}
-
-	var got string
-	if err := admin.QueryRow(ctx, `SELECT project_id::text FROM monitors WHERE id = $1`, orphan).Scan(&got); err != nil || got != def {
-		t.Fatalf("monitor without a project moved to %s (%v), want the Default project %s", got, err, def)
-	}
-	rows, err := admin.Query(ctx, `SELECT monitor_id::text || '>' || channel_id::text FROM monitor_channels WHERE tenant_id = $1 ORDER BY 1`, tenantA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	links, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := map[string]bool{inDefault + ">" + chanOrg: true, inOther + ">" + chanOther: true}
-	if len(links) != len(want) {
-		t.Fatalf("links %v, want %v", links, want)
-	}
-	for _, l := range links {
-		if !want[l] {
-			t.Fatalf("unexpected link %s (all: %v)", l, links)
+	for _, c := range []struct {
+		orphan, def, tenant string
+		keep                []string
+	}{{orphanA, defA, tenantA, keepA}, {orphanB, defB, tenantB, keepB}} {
+		if got := projectOf(c.orphan); got != c.def {
+			t.Fatalf("monitor without a project of %s moved to %s, want its Default project %s", c.tenant, got, c.def)
+		}
+		got := links(c.tenant)
+		want := append([]string(nil), c.keep...)
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			t.Fatalf("links of %s: %v, want %v (stray link deleted, valid ones kept)", c.tenant, got, want)
 		}
 	}
 
@@ -109,7 +159,7 @@ func TestIntegrationProjectsContract(t *testing.T) {
 	}
 
 	// A monitor without a project (an api from before T-02) is refused now.
-	err = inTenant(t, api, tenantA, func(tx pgx.Tx) error {
+	err := inTenant(t, api, tenantA, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `INSERT INTO monitors (id, tenant_id, name, config) VALUES (gen_random_uuid(), $1, 'old api', `+cfg+`)`, tenantA)
 		return err
 	})

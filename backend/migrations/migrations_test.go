@@ -2,6 +2,7 @@ package migrations
 
 import (
 	"bufio"
+	"fmt"
 	"io/fs"
 	"regexp"
 	"strings"
@@ -77,4 +78,17 @@ func checkBody(t *testing.T, name, body string) {
 		return
 	}
 	t.Errorf("%s: no statements", name)
+}
+
+// TestLatest checks that Latest is the version of the newest embedded file.
+func TestLatest(t *testing.T) {
+	entries, err := fs.ReadDir(FS, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newest := entries[len(entries)-1].Name()
+	got, err := Latest()
+	if err != nil || !strings.HasPrefix(newest, fmt.Sprint(got)+"_") {
+		t.Fatalf("Latest() = %d, %v; newest file %s", got, err, newest)
+	}
 }

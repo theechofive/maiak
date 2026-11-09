@@ -27,6 +27,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/queries"
 	"github.com/theechofive/maiak/backend/internal/scheduler"
 	"github.com/theechofive/maiak/backend/internal/statuspages"
+	"github.com/theechofive/maiak/backend/migrations"
 )
 
 // Set at build time with -ldflags "-X main.version=... -X main.commit=...".
@@ -56,6 +57,10 @@ func run() error {
 		return err
 	}
 	defer pool.Close()
+	// An image older than the schema must not run against it (O-06, L-282, L-311).
+	if err := migrations.CheckNotAhead(ctx, pool); err != nil {
+		return err
+	}
 
 	reg := metrics.NewRegistry("api", version, commit)
 	authSvc, err := auth.NewService(pool, auth.Options{

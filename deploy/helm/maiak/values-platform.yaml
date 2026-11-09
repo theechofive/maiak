@@ -42,9 +42,9 @@ dbBootstrap:
   host: grafana.czqsaiesae4n.eu-central-1.rds.amazonaws.com
 
 # Status page renderer (P-05, ADR-0103): off until the `maiak-db` Secret has `statuspage_url`. It is
-# added by a run of the db bootstrap, which also creates the maiak_statuspage role (L-292). Fresh
-# install on an empty database: set this to true in the SAME commit as dbBootstrap.enabled: true
-# (docs/runbooks/first-install.md). Existing database: bootstrap first, then this
-# (docs/runbooks/status-page.md). The admin API and the settings page work without it.
+# added by a run of the db bootstrap, which also creates the maiak_statuspage role (L-292). Set this
+# to true in the SAME commit as dbBootstrap.enabled: true (safe on an empty and on an existing
+# database: the bootstrap runs in an earlier wave), then switch only the bootstrap off
+# (docs/runbooks/first-install.md, status-page.md). The admin API and the settings page work without it.
 statuspage:
   enabled: false
