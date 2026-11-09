@@ -88,6 +88,12 @@ Owner decisions taken before the production reinstall:
 - **Backups.** A manual RDS snapshot right after the install's verification checklist, and before every release that contains a migration (`migrations.md`); expand/contract is binding from the reinstall on.
 Procedure: [first-install.md](../runbooks/first-install.md).
 
+## Implementation notes (O-08, 2026-11-09)
+Owner decisions that close three ledger entries:
+- **Last used organization at login (L-307).** `memberships.last_used_at` is set whenever a session is created in that organization (login, OAuth sign-in, registration, accepting an invitation, switching). `auth_login_tenant` keeps its signature, owner and grants and orders: live, active, last used, `default`, oldest membership. Never used since O-08 means the old order.
+- **Member emails for owners and admins only (L-278).** `Member.login` and `ProjectMember.login` are `null` unless the caller is an owner or admin; members and viewers get the display name and role. The web app names people by login when it has one and by display name otherwise. Response field made nullable on purpose (our web app is the only client; recorded here instead of a separate ADR).
+- **Organization usage for owners and admins only (L-288).** `GET /usage` needs the admin role. Members and viewers no longer see organization-wide counts; they learn about a reached limit from the 409 `plan-limit` problem of the create that hits it. The web app does not load usage for them and hides the Plan section of Settings.
+
 ## Alternatives considered
 - Project-aware RLS (`app.project_ids` set per transaction): stronger, but every definer function, rollup and outbox path would need it, and a member's project list changes at runtime. Kept as the upgrade path if R-212 bites.
 - Invitations bound to an email address: needs outgoing email to mean anything (L-170). The link is single-use, expires, and the admin sees who joined.
