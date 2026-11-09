@@ -249,7 +249,7 @@ func TestIntegrationStatusPages(t *testing.T) {
 
 	t.Run("plan key", func(t *testing.T) {
 		var limits string
-		if err := admin.QueryRow(ctx, `SELECT string_agg(key || '=' || (limits->>'max_status_pages'), ',' ORDER BY key) FROM plans`).Scan(&limits); err != nil || limits != "free=1,internal=1" {
+		if err := admin.QueryRow(ctx, `SELECT string_agg(key || '=' || (limits->>'max_status_pages'), ',' ORDER BY key) FROM plans`).Scan(&limits); err != nil || limits != "community=2147483647,free=1,internal=1" {
 			t.Fatalf("max_status_pages = %s (%v)", limits, err)
 		}
 	})

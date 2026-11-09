@@ -280,6 +280,24 @@ func (q *Queries) LockUserCredential(ctx context.Context, id uuid.UUID) (LockUse
 	return i, err
 }
 
+const touchMembership = `-- name: TouchMembership :exec
+UPDATE memberships
+SET last_used_at = $1
+WHERE tenant_id = $2 AND user_id = $3
+`
+
+type TouchMembershipParams struct {
+	UsedAt   *time.Time
+	TenantID uuid.UUID
+	UserID   uuid.UUID
+}
+
+// The organization a login enters next (auth_login_tenant, L-307).
+func (q *Queries) TouchMembership(ctx context.Context, arg TouchMembershipParams) error {
+	_, err := q.db.Exec(ctx, touchMembership, arg.UsedAt, arg.TenantID, arg.UserID)
+	return err
+}
+
 const touchSession = `-- name: TouchSession :exec
 UPDATE sessions
 SET last_seen_at = $1

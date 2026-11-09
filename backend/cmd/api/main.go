@@ -11,6 +11,7 @@ import (
 	"github.com/theechofive/maiak/backend/internal/admin"
 	"github.com/theechofive/maiak/backend/internal/api"
 	"github.com/theechofive/maiak/backend/internal/auth"
+	"github.com/theechofive/maiak/backend/internal/entitlements"
 	"github.com/theechofive/maiak/backend/internal/incidents"
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/notify"
@@ -119,12 +120,13 @@ func run() error {
 		Queries:  queries.New(pool, nil),
 		Slack:    notify.NewService(pool, keys, slack, cfg.PublicURL),
 		Plans:    plans.NewService(pool), Projects: projects.NewService(pool),
-		StatusPages: statuspages.NewService(pool, statuspages.Options{Logger: log}),
-		Admin:       adminSvc,
-		OAuth:       flow,
-		Logger:      log,
-		Metrics:     metrics.NewHTTP(reg),
-		Pings:       api.NewPingMetrics(reg),
+		StatusPages:  statuspages.NewService(pool, statuspages.Options{Logger: log}),
+		Admin:        adminSvc,
+		OAuth:        flow,
+		Entitlements: entitlements.NewService(pool),
+		Logger:       log,
+		Metrics:      metrics.NewHTTP(reg),
+		Pings:        api.NewPingMetrics(reg),
 	})
 	if err != nil {
 		return err

@@ -675,6 +675,10 @@ func (s *Service) insertSession(ctx context.Context, q *authdb.Queries, tenantID
 	if err := q.InsertSession(ctx, params); err != nil {
 		return session{}, fmt.Errorf("insert session: %w", err)
 	}
+	// The next login enters this organization (L-307).
+	if err := q.TouchMembership(ctx, authdb.TouchMembershipParams{UsedAt: &now, TenantID: tenantID, UserID: userID}); err != nil {
+		return session{}, fmt.Errorf("touch membership: %w", err)
+	}
 	return session{id: params.ID, token: token, csrf: csrf, expiresAt: params.ExpiresAt}, nil
 }
 

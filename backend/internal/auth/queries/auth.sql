@@ -80,3 +80,9 @@ VALUES (@id, @email, @password_hash, @display_name);
 -- name: InsertMembership :exec
 INSERT INTO memberships (tenant_id, user_id, role)
 VALUES (@tenant_id, @user_id, @role);
+
+-- name: TouchMembership :exec
+-- The organization a login enters next (auth_login_tenant, L-307).
+UPDATE memberships
+SET last_used_at = @used_at
+WHERE tenant_id = @tenant_id AND user_id = @user_id;

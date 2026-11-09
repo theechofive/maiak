@@ -62,9 +62,11 @@ func (s *server) ListMembers(ctx context.Context, _ gen.ListMembersRequestObject
 	if err != nil {
 		return nil, err
 	}
+	// Logins are email addresses: owners and admins only (L-278).
+	showLogins := authz.Role(p.Role).AtLeast(authz.Admin)
 	out := gen.ListMembers200JSONResponse{Items: make([]gen.Member, len(list))}
 	for i, m := range list {
-		out.Items[i] = toMember(m)
+		out.Items[i] = toMember(m, showLogins)
 	}
 	return out, nil
 }
@@ -78,7 +80,7 @@ func (s *server) UpdateMember(ctx context.Context, req gen.UpdateMemberRequestOb
 	if err != nil {
 		return nil, err
 	}
-	return gen.UpdateMember200JSONResponse(toMember(m)), nil
+	return gen.UpdateMember200JSONResponse(toMember(m, true)), nil
 }
 
 func (s *server) RemoveMember(ctx context.Context, req gen.RemoveMemberRequestObject) (gen.RemoveMemberResponseObject, error) {
@@ -183,7 +185,7 @@ func (s *server) AcceptInvitation(ctx context.Context, req gen.AcceptInvitationR
 	logging.SetTenantID(ctx, res.Tenant.ID.String())
 	cookie := s.sessionCookie(res.Token, res.ExpiresAt).String()
 	return gen.AcceptInvitation200JSONResponse{
-		Body:    toSessionInfo(res.SessionInfo),
+		Body:    s.toSessionInfo(ctx, res.SessionInfo),
 		Headers: gen.AcceptInvitation200ResponseHeaders{SetCookie: &cookie},
 	}, nil
 }
@@ -218,13 +220,14 @@ func (s *server) SwitchOrganization(ctx context.Context, req gen.SwitchOrganizat
 	logging.SetTenantID(ctx, res.Tenant.ID.String())
 	cookie := s.sessionCookie(res.Token, res.ExpiresAt).String()
 	return gen.SwitchOrganization200JSONResponse{
-		Body:    toSessionInfo(res.SessionInfo),
+		Body:    s.toSessionInfo(ctx, res.SessionInfo),
 		Headers: gen.SwitchOrganization200ResponseHeaders{SetCookie: &cookie},
 	}, nil
 }
 
-func toMember(m auth.Member) gen.Member {
-	return gen.Member{UserId: m.UserID, Login: m.Login, DisplayName: m.DisplayName, Role: gen.MembershipRole(m.Role),
+// toMember maps a member; showLogin is false for callers below admin (L-278).
+func toMember(m auth.Member, showLogin bool) gen.Member {
+	return gen.Member{UserId: m.UserID, Login: loginFor(m.Login, showLogin), DisplayName: m.DisplayName, Role: gen.MembershipRole(m.Role),
 		JoinedAt: m.JoinedAt, IsPlatformAdmin: m.IsPlatformAdmin}
 }
 
@@ -232,4 +235,12 @@ func toInvitation(i auth.Invitation) gen.Invitation {
 	return gen.Invitation{Id: i.ID, Role: gen.InvitationRole(i.Role), Label: i.Label, Status: gen.InvitationStatus(i.Status),
 		CreatedAt: i.CreatedAt, ExpiresAt: i.ExpiresAt, CreatedBy: i.CreatedBy, AcceptedBy: i.AcceptedBy,
 		AcceptedAt: i.AcceptedAt, RevokedAt: i.RevokedAt}
+}
+
+// loginFor is the login of a member as a caller may see it: nil unless showLogin (L-278).
+func loginFor(login string, showLogin bool) *string {
+	if !showLogin {
+		return nil
+	}
+	return &login
 }

@@ -66,6 +66,7 @@ func TestIntegrationNotificationChannels(t *testing.T) {
 	}
 
 	t.Run("replay over an existing channel", func(t *testing.T) {
+		pgtest.MustExec(t, admin, rollbackPlanFeaturesLastOrg...)
 		pgtest.MustExec(t, admin, rollbackRevokeTenantInsert...)
 		pgtest.MustExec(t, admin, rollbackSchemaVersionGuard...)
 		pgtest.MustExec(t, admin, rollbackProjectsContract...)
@@ -75,8 +76,8 @@ func TestIntegrationNotificationChannels(t *testing.T) {
 		pgtest.MustExec(t, admin, rollbackInvitationsRoles...)
 		pgtest.MustExec(t, admin, rollbackNotificationChannels...)
 		old := channel(tenantA, "", "")
-		if n, err := env.Migrate(ctx); err != nil || n != 10 {
-			t.Fatalf("re-applied %d migrations, err=%v; want 10 (S-01, T-01, T-02, P-05, P-06, O-01, the T-02 contract, O-06 and O-07)", n, err)
+		if n, err := env.Migrate(ctx); err != nil || n != 11 {
+			t.Fatalf("re-applied %d migrations, err=%v; want 11 (S-01, T-01, T-02, P-05, P-06, O-01, the T-02 contract, O-06, O-07 and O-08)", n, err)
 		}
 		var got string
 		if err := admin.QueryRow(ctx, `SELECT name || ' ' || events::text || ' ' || mention::text || ' ' || reminder_minutes || ' ' || (deleted_at IS NULL)

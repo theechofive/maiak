@@ -39,6 +39,7 @@ export const session = {
   role: "owner",
   csrf_token: "csrf-1",
   expires_at: "2030-01-01T00:00:00Z",
+  features: [] as string[],
 };
 
 export const signedIn = { "GET /api/v1/auth/me": () => json(session) };

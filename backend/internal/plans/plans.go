@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -19,11 +20,16 @@ import (
 	"github.com/theechofive/maiak/backend/internal/tenants"
 )
 
-// Seeded plan keys.
+// Seeded plan keys. New tenants get KeyFree (the tenants.plan_key default); KeyCommunity has no
+// quotas and is the self-hosted default of the later packaging task (ADR-0105).
 const (
-	KeyFree     = "free"
-	KeyInternal = "internal"
+	KeyFree      = "free"
+	KeyInternal  = "internal"
+	KeyCommunity = "community"
 )
+
+// Unlimited is the limit of a resource without a quota: the largest value a limit may hold.
+const Unlimited = math.MaxInt32
 
 // Resource is a kind of thing a quota limits. Its value is the name used in the API (usage
 // keys and the `limit` member of the plan-limit problem).
@@ -317,4 +323,33 @@ func (s *Service) Usage(ctx context.Context, tenantID uuid.UUID) (Usage, error) 
 		return nil
 	})
 	return u, err
+}
+
+// Features returns the paid features the plan of a tenant unlocks (plans.features, ADR-0105),
+// sorted and without duplicates; empty, never nil, when there are none. tx must be a
+// transaction of tenantID.
+func Features(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) ([]string, error) {
+	q, err := tenants.GetQuota(ctx, tx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := plansdb.New(tx).GetPlanFeatures(ctx, q.PlanKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("%w %q", ErrUnknownPlan, q.PlanKey)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("plans: get features: %w", err)
+	}
+	return normalizeFeatures(raw), nil
+}
+
+// normalizeFeatures sorts and deduplicates feature names.
+func normalizeFeatures(in []string) []string {
+	out := slices.Clone(in)
+	slices.Sort(out)
+	out = slices.Compact(out)
+	if out == nil {
+		out = []string{}
+	}
+	return out
 }

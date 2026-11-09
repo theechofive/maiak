@@ -32,6 +32,8 @@ export interface Abilities {
   manageMembers: boolean;
   deleteOrganization: boolean;
   manageStatusPage: boolean;
+  /** Organization-wide plan usage (L-288). */
+  seeUsage: boolean;
 }
 
 export function abilities(session: SessionInfo | null | undefined): Abilities {
@@ -43,6 +45,7 @@ export function abilities(session: SessionInfo | null | undefined): Abilities {
     manageMembers: roleAtLeast(role, "admin"),
     deleteOrganization: role === "owner",
     manageStatusPage: roleAtLeast(role, "admin"),
+    seeUsage: roleAtLeast(role, "admin"),
   };
 }
 

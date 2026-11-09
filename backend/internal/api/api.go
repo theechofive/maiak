@@ -16,6 +16,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	middleware "github.com/oapi-codegen/nethttp-middleware"
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -76,13 +77,21 @@ type Deps struct {
 	// Admin serves /api/v1/admin (P-04); nil answers those operations with 500.
 	Admin *admin.Service
 	// OAuth runs the OAuth sign-in flows (ADR-0104); nil means no provider is configured.
-	OAuth   *oauth.Flow
-	Logger  *slog.Logger
-	Metrics *metrics.HTTP
+	OAuth *oauth.Flow
+	// Entitlements reports the paid features of an organization (ADR-0105); nil means none.
+	Entitlements EntitlementsProvider
+	Logger       *slog.Logger
+	Metrics      *metrics.HTTP
 	// Pings counts heartbeat pings; nil keeps the counts unregistered.
 	Pings *PingMetrics
 	// Clock drives the in-process rate limits; nil means the system clock.
 	Clock clock.Clock
+}
+
+// EntitlementsProvider answers which paid features an organization may use (ADR-0105). Declared
+// here, by its consumer; internal/entitlements implements it.
+type EntitlementsProvider interface {
+	Features(ctx context.Context, tenantID uuid.UUID) ([]string, error)
 }
 
 type server struct {
@@ -96,7 +105,9 @@ type server struct {
 	pages    *statuspages.Service
 	admin    *admin.Service
 	oauth    *oauth.Flow
-	log      *slog.Logger
+	// entitlements is nil when no provider is wired: every organization has no features.
+	entitlements EntitlementsProvider
+	log          *slog.Logger
 	// slackTests limits Slack test messages per tenant (per api replica, like the login limit).
 	slackTests *auth.Limiter
 	pingLimits *pingLimits
@@ -121,7 +132,7 @@ func NewHandler(cfg Config, deps Deps) (http.Handler, error) {
 	if pings == nil {
 		pings = NewPingMetrics(prometheus.NewRegistry())
 	}
-	s := &server{cfg: cfg, auth: deps.Auth, monitors: deps.Monitors, queries: deps.Queries, slack: deps.Slack, plans: deps.Plans, projects: deps.Projects, pages: deps.StatusPages, admin: deps.Admin, oauth: deps.OAuth, log: deps.Logger,
+	s := &server{cfg: cfg, auth: deps.Auth, monitors: deps.Monitors, queries: deps.Queries, slack: deps.Slack, plans: deps.Plans, projects: deps.Projects, pages: deps.StatusPages, admin: deps.Admin, oauth: deps.OAuth, entitlements: deps.Entitlements, log: deps.Logger,
 		slackTests: auth.NewLimiter(1, slackTestInterval, 10_000, clk),
 		pingLimits: newPingLimits(clk),
 		pings:      pings}
@@ -295,7 +306,7 @@ func (s *server) Login(ctx context.Context, req gen.LoginRequestObject) (gen.Log
 	logging.SetTenantID(ctx, res.Tenant.ID.String())
 	cookie := s.sessionCookie(res.Token, res.ExpiresAt).String()
 	return gen.Login200JSONResponse{
-		Body:    toSessionInfo(res.SessionInfo),
+		Body:    s.toSessionInfo(ctx, res.SessionInfo),
 		Headers: gen.Login200ResponseHeaders{SetCookie: &cookie},
 	}, nil
 }
@@ -323,7 +334,7 @@ func (s *server) Register(ctx context.Context, req gen.RegisterRequestObject) (g
 	logging.SetTenantID(ctx, res.Tenant.ID.String())
 	cookie := s.sessionCookie(res.Token, res.ExpiresAt).String()
 	return gen.Register201JSONResponse{
-		Body:    toSessionInfo(res.SessionInfo),
+		Body:    s.toSessionInfo(ctx, res.SessionInfo),
 		Headers: gen.Register201ResponseHeaders{SetCookie: &cookie},
 	}, nil
 }
@@ -359,7 +370,7 @@ func (s *server) GetMe(ctx context.Context, _ gen.GetMeRequestObject) (gen.GetMe
 	if err != nil {
 		return nil, err
 	}
-	return gen.GetMe200JSONResponse(toSessionInfo(info)), nil
+	return gen.GetMe200JSONResponse(s.toSessionInfo(ctx, info)), nil
 }
 
 // sessionCookie builds the session cookie; an empty token expires it.
@@ -382,8 +393,21 @@ func (s *server) sessionCookie(token string, expires time.Time) *http.Cookie {
 	return c
 }
 
-func toSessionInfo(i auth.SessionInfo) gen.SessionInfo {
+// toSessionInfo answers a session with the features of its organization. A failed lookup is
+// logged and reported as no features: the session itself is valid, and every paid operation
+// checks its entitlement again.
+func (s *server) toSessionInfo(ctx context.Context, i auth.SessionInfo) gen.SessionInfo {
+	features := []string{}
+	if s.entitlements != nil {
+		f, err := s.entitlements.Features(ctx, i.Tenant.ID)
+		if err != nil {
+			s.log.ErrorContext(ctx, "entitlements lookup failed", "error", err)
+		} else {
+			features = f
+		}
+	}
 	return gen.SessionInfo{
+		Features:  features,
 		User:      gen.User{Id: i.User.ID, Login: i.User.Login, DisplayName: i.User.DisplayName, IsPlatformAdmin: &i.User.IsPlatformAdmin},
 		Tenant:    gen.Tenant{Id: i.Tenant.ID, Slug: i.Tenant.Slug, Name: i.Tenant.Name},
 		Role:      gen.MembershipRole(i.Role),

@@ -967,7 +967,9 @@ paths:
       summary: Plan, limits and usage
       description: |
         The tenant's plan, its effective limits (the plan's limits with per-tenant overrides
-        applied) and the current usage. Deleted monitors do not count.
+        applied) and the current usage. Deleted monitors do not count. Owner and admin only
+        (L-288): members and viewers get 403 and learn about a reached limit from the 409
+        `plan-limit` problem of the create that hits it.
       tags: [plan]
       responses:
         "200":
@@ -1412,7 +1414,10 @@ paths:
     get:
       operationId: listMembers
       summary: Members of the organization
-      description: Every member with login, role and when they joined, oldest first. Any role.
+      description: |
+        Every member with display name, role and when they joined, oldest first. Any role; the
+        login (an email address) is shown to owners and admins only and is null for members and
+        viewers (L-278).
       tags: [members]
       responses:
         "200":
@@ -2662,7 +2667,7 @@ components:
     SessionInfo:
       type: object
       additionalProperties: false
-      required: [user, tenant, role, csrf_token, expires_at]
+      required: [user, tenant, role, csrf_token, expires_at, features]
       properties:
         user:
           $ref: "#/components/schemas/User"
@@ -2676,6 +2681,14 @@ components:
         expires_at:
           type: string
           format: date-time
+        features:
+          type: array
+          items:
+            type: string
+          description: |
+            The paid features the organization of the session is entitled to (ADR-0105): from the
+            plan in the SaaS, later from the license key when self-hosted. Sorted, empty when none.
+            The web app hides what is not listed; the api enforces it.
     User:
       type: object
       additionalProperties: false
@@ -3598,6 +3611,8 @@ components:
           format: uuid
         login:
           type: string
+          nullable: true
+          description: The member's login (email address); null unless the caller is an owner or admin (L-278)
         displayName:
           type: string
         role:
@@ -3803,6 +3818,8 @@ components:
           format: uuid
         login:
           type: string
+          nullable: true
+          description: The member's login (email address); null unless the caller is an owner or admin (L-278)
         displayName:
           type: string
         organizationRole:

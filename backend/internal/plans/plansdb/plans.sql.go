@@ -116,3 +116,16 @@ func (q *Queries) GetPlan(ctx context.Context, key string) (GetPlanRow, error) {
 	err := row.Scan(&i.Key, &i.Name, &i.Limits)
 	return i, err
 }
+
+const getPlanFeatures = `-- name: GetPlanFeatures :one
+SELECT features
+FROM plans
+WHERE key = $1
+`
+
+func (q *Queries) GetPlanFeatures(ctx context.Context, key string) ([]string, error) {
+	row := q.db.QueryRow(ctx, getPlanFeatures, key)
+	var features []string
+	err := row.Scan(&features)
+	return features, err
+}

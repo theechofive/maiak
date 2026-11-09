@@ -455,7 +455,7 @@ func TestIntegrationAdminFunctions(t *testing.T) {
 		if err := api.QueryRow(ctx, `SELECT admin_stats($1)::text`, userPlatform).Scan(&raw); err != nil {
 			t.Fatal(err)
 		}
-		want := `{"plans": [{"key": "free", "name": "Free", "tenants": 0}, {"key": "internal", "name": "Internal", "tenants": 2}], ` +
+		want := `{"plans": [{"key": "community", "name": "Community", "tenants": 0}, {"key": "free", "name": "Free", "tenants": 0}, {"key": "internal", "name": "Internal", "tenants": 2}], ` +
 			`"users": 3, "tenants": {"total": 2, "active": 2, "deleted": 1, "suspended": 0}, "monitors": 2, "heartbeats": 1}`
 		if raw != want {
 			t.Fatalf("stats = %s\nwant    %s", raw, want)

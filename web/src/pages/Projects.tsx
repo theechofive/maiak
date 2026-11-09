@@ -35,6 +35,7 @@ import {
 import { countOf } from "../lib/usage";
 import { abilities, ROLE_LABELS } from "../lib/roles";
 import { useProjectScope } from "../lib/useProjectScope";
+import { memberLabel } from "../lib/members";
 
 const NAME_MAX = 60;
 
@@ -362,7 +363,7 @@ function ProjectMembers({ project, manage }: { project: Project; manage: boolean
     onSuccess: (m) => {
       refresh();
       setAdding("");
-      toast(`${m.login} in ${project.name}: ${ROLE_LABELS[m.effectiveRole].toLowerCase()}`);
+      toast(`${memberLabel(m)} in ${project.name}: ${ROLE_LABELS[m.effectiveRole].toLowerCase()}`);
     },
     onError: (err) => toast(errorMessage(err), "error"),
   });
@@ -372,8 +373,8 @@ function ProjectMembers({ project, manage }: { project: Project; manage: boolean
       refresh();
       toast(
         project.allMembers
-          ? `${m.login} keeps the organization role in ${project.name}`
-          : `${m.login} removed from ${project.name}`,
+          ? `${memberLabel(m)} keeps the organization role in ${project.name}`
+          : `${memberLabel(m)} removed from ${project.name}`,
       );
     },
     onError: (err) => toast(errorMessage(err), "error"),
@@ -432,14 +433,20 @@ function ProjectMembers({ project, manage }: { project: Project; manage: boolean
               return (
                 <Tr key={m.userId}>
                   <Td>
-                    <span className="font-mono text-caption break-all">{m.login}</span>
+                    <span
+                      className={
+                        m.login ? "font-mono text-caption break-all" : "text-caption break-all"
+                      }
+                    >
+                      {memberLabel(m)}
+                    </span>
                   </Td>
                   <Td className="text-caption">{ROLE_LABELS[m.organizationRole]}</Td>
                   <Td className="text-caption">{accessLabel(m, project)}</Td>
                   <Td className="text-caption">
                     {adjustable ? (
                       <Select
-                        aria-label={`Role of ${m.login} in ${project.name}`}
+                        aria-label={`Role of ${memberLabel(m)} in ${project.name}`}
                         value={m.projectRole === "viewer" ? "viewer" : "member"}
                         disabled={put.isPending}
                         onChange={(e) =>
@@ -460,7 +467,7 @@ function ProjectMembers({ project, manage }: { project: Project; manage: boolean
                           <Button
                             variant="ghost-destructive"
                             size="small"
-                            aria-label={`Remove ${m.login} from ${project.name}`}
+                            aria-label={`Remove ${memberLabel(m)} from ${project.name}`}
                             busy={remove.isPending && remove.variables?.userId === m.userId}
                             onClick={() => remove.mutate(m)}
                           >
@@ -498,7 +505,7 @@ function ProjectMembers({ project, manage }: { project: Project; manage: boolean
                 </option>
                 {candidates.map((m) => (
                   <option key={m.userId} value={m.userId}>
-                    {m.login} · {ROLE_LABELS[m.role]}
+                    {memberLabel(m)} · {ROLE_LABELS[m.role]}
                   </option>
                 ))}
               </Select>

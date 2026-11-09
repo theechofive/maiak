@@ -256,9 +256,16 @@ func TestIntegrationProjectIsolation(t *testing.T) {
 		t.Errorf("member selects alpha and org channels: %d %s", r.code, r.raw)
 	}
 
-	// Usage stays per organization (quotas are shared by all projects).
+	// Usage stays per organization (quotas are shared by all projects) and is shown to owners and
+	// admins only (L-288).
 	for role, hdr := range w.sessions {
 		r := c.do(http.MethodGet, "/api/v1/usage", "", hdr)
+		if !authz.Role(role).AtLeast(authz.Admin) {
+			if r.code != http.StatusForbidden {
+				t.Errorf("%s usage: %d %s, want 403", role, r.code, r.raw)
+			}
+			continue
+		}
 		u, _ := r.body["usage"].(map[string]any)
 		if r.code != http.StatusOK || u["monitors"] != float64(5) || u["heartbeats"] != float64(1) || u["projects"] != float64(4) {
 			t.Errorf("%s usage: %d %s", role, r.code, r.raw)

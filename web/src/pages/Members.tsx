@@ -47,6 +47,7 @@ import {
   ROLE_HINTS,
   ROLE_LABELS,
 } from "../lib/roles";
+import { memberLabel } from "../lib/members";
 
 /** Members, roles and invitations of the organization (T-01, ADR-0102). */
 export default function Members() {
@@ -130,7 +131,7 @@ function MemberList() {
     onSuccess: (updated) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.members });
       if (updated.userId === me) void queryClient.invalidateQueries({ queryKey: queryKeys.me });
-      toast(`${updated.login} is now ${ROLE_LABELS[updated.role].toLowerCase()}`);
+      toast(`${memberLabel(updated)} is now ${ROLE_LABELS[updated.role].toLowerCase()}`);
     },
     onError: (err) => toast(errorMessage(err), "error"),
   });
@@ -141,7 +142,7 @@ function MemberList() {
       setRemoving(null);
       void queryClient.invalidateQueries({ queryKey: queryKeys.members });
       void queryClient.invalidateQueries({ queryKey: queryKeys.usage });
-      toast(`${member.login} was removed`);
+      toast(`${memberLabel(member)} was removed`);
     },
     onError: (err) => {
       setRemoving(null);
@@ -193,14 +194,18 @@ function MemberList() {
               <Tr key={m.userId}>
                 <Td>
                   <span className="flex flex-wrap items-center gap-2">
-                    <span className="font-mono text-[13px] break-all">{m.login}</span>
+                    {m.login ? (
+                      <span className="font-mono text-[13px] break-all">{m.login}</span>
+                    ) : (
+                      <span className="break-all">{memberLabel(m)}</span>
+                    )}
                     {m.userId === me && <Badge>You</Badge>}
                   </span>
                 </Td>
                 <Td>
                   {manageable ? (
                     <Select
-                      aria-label={`Role of ${m.login}`}
+                      aria-label={`Role of ${memberLabel(m)}`}
                       className="w-[130px]"
                       value={m.role}
                       disabled={change.isPending}
@@ -238,7 +243,7 @@ function MemberList() {
       </Table>
       {removing && (
         <ConfirmDialog
-          title={`Remove ${removing.login}?`}
+          title={`Remove ${memberLabel(removing)}?`}
           confirmLabel="Remove member"
           busy={remove.isPending}
           onCancel={() => setRemoving(null)}

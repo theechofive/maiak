@@ -20,7 +20,8 @@ func TestIntegrationPlans(t *testing.T) {
 	if err := admin.QueryRow(ctx, `SELECT string_agg(key || '=' || name || ' ' || limits::text, '; ' ORDER BY key) FROM plans`).Scan(&seeded); err != nil {
 		t.Fatal(err)
 	}
-	want := `free=Free {"max_members": 3, "max_channels": 1, "max_monitors": 3, "max_projects": 50, "max_heartbeats": 1, "max_status_pages": 1}; ` +
+	want := `community=Community {"max_members": 2147483647, "max_channels": 2147483647, "max_monitors": 2147483647, "max_projects": 2147483647, "max_heartbeats": 2147483647, "max_status_pages": 2147483647}; ` +
+		`free=Free {"max_members": 3, "max_channels": 1, "max_monitors": 3, "max_projects": 50, "max_heartbeats": 1, "max_status_pages": 1}; ` +
 		`internal=Internal {"max_members": 50, "max_channels": 10, "max_monitors": 1000, "max_projects": 50, "max_heartbeats": 100, "max_status_pages": 1}`
 	if seeded != want {
 		t.Fatalf("plans = %s\nwant    %s", seeded, want)
@@ -28,6 +29,7 @@ func TestIntegrationPlans(t *testing.T) {
 
 	// Replay the migration over a database of the previous release that already has tenants. The
 	// later migrations are rolled back too, since goose refuses to apply a missing older version.
+	pgtest.MustExec(t, admin, rollbackPlanFeaturesLastOrg...)
 	pgtest.MustExec(t, admin, rollbackRevokeTenantInsert...)
 	pgtest.MustExec(t, admin, rollbackSchemaVersionGuard...)
 	pgtest.MustExec(t, admin, rollbackProjectsContract...)
@@ -59,8 +61,8 @@ func TestIntegrationPlans(t *testing.T) {
 		`DROP TABLE plans`,
 		`DELETE FROM goose_db_version WHERE version_id = 20261021090000`,
 		`INSERT INTO tenants (id, slug, name, limits) VALUES ('`+tenantA+`', 'default', 'Default', '{}'), ('`+tenantB+`', 'b', 'B', '{"max_monitors": 4}')`)
-	if n, err := env.Migrate(ctx); err != nil || n != 17 {
-		t.Fatalf("re-applied %d migrations, err=%v; want 17 (plans and the later registration, heartbeat, P-07, P-08, P-04, P-09, two S-01, T-01, T-02, P-05, P-06, O-01, T-02 contract, O-06 and O-07 migrations)", n, err)
+	if n, err := env.Migrate(ctx); err != nil || n != 18 {
+		t.Fatalf("re-applied %d migrations, err=%v; want 18 (plans and the later registration, heartbeat, P-07, P-08, P-04, P-09, two S-01, T-01, T-02, P-05, P-06, O-01, T-02 contract, O-06, O-07 and O-08 migrations)", n, err)
 	}
 	// Existing rows satisfy the P-07 limits check, which is validated.
 	var validated bool
@@ -82,7 +84,7 @@ func TestIntegrationPlans(t *testing.T) {
 	for _, url := range []string{env.APIURL, env.WorkerURL} {
 		conn := env.Conn(t, url)
 		var n int
-		if err := conn.QueryRow(ctx, `SELECT count(*) FROM plans`).Scan(&n); err != nil || n != 2 {
+		if err := conn.QueryRow(ctx, `SELECT count(*) FROM plans`).Scan(&n); err != nil || n != 3 { // free, internal, community (O-08)
 			t.Fatalf("runtime role reads plans: n=%d err=%v", n, err)
 		}
 		for _, stmt := range []string{

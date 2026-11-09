@@ -635,7 +635,9 @@ export interface paths {
     /**
      * Plan, limits and usage
      * @description The tenant's plan, its effective limits (the plan's limits with per-tenant overrides
-     *     applied) and the current usage. Deleted monitors do not count.
+     *     applied) and the current usage. Deleted monitors do not count. Owner and admin only
+     *     (L-288): members and viewers get 403 and learn about a reached limit from the 409
+     *     `plan-limit` problem of the create that hits it.
      */
     get: operations["getUsage"];
     put?: never;
@@ -872,7 +874,9 @@ export interface paths {
     };
     /**
      * Members of the organization
-     * @description Every member with login, role and when they joined, oldest first. Any role.
+     * @description Every member with display name, role and when they joined, oldest first. Any role; the
+     *     login (an email address) is shown to owners and admins only and is null for members and
+     *     viewers (L-278).
      */
     get: operations["listMembers"];
     put?: never;
@@ -1469,6 +1473,12 @@ export interface components {
       csrf_token: string;
       /** Format: date-time */
       expires_at: string;
+      /**
+       * @description The paid features the organization of the session is entitled to (ADR-0105): from the
+       *     plan in the SaaS, later from the license key when self-hosted. Sorted, empty when none.
+       *     The web app hides what is not listed; the api enforces it.
+       */
+      features: string[];
     };
     User: {
       /** Format: uuid */
@@ -1989,7 +1999,8 @@ export interface components {
     Member: {
       /** Format: uuid */
       userId: string;
-      login: string;
+      /** @description The member's login (email address); null unless the caller is an owner or admin (L-278) */
+      login: string | null;
       displayName: string;
       role: components["schemas"]["MembershipRole"];
       /** Format: date-time */
@@ -2095,7 +2106,8 @@ export interface components {
     ProjectMember: {
       /** Format: uuid */
       userId: string;
-      login: string;
+      /** @description The member's login (email address); null unless the caller is an owner or admin (L-278) */
+      login: string | null;
       displayName: string;
       organizationRole: components["schemas"]["MembershipRole"];
       /** @description The override in this project; null keeps the organization role */

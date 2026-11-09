@@ -16,6 +16,7 @@ import (
 
 	"github.com/theechofive/maiak/backend/internal/api"
 	"github.com/theechofive/maiak/backend/internal/auth"
+	"github.com/theechofive/maiak/backend/internal/entitlements"
 	"github.com/theechofive/maiak/backend/internal/incidents"
 	"github.com/theechofive/maiak/backend/internal/monitors"
 	"github.com/theechofive/maiak/backend/internal/notify"
@@ -68,7 +69,8 @@ func newRegistrationServerWithSlack(t *testing.T, env *pgtest.Env, opts auth.Opt
 		api.Deps{
 			Auth: svc, Monitors: monitors.NewService(pool, sched, incidents.NewService(sched)), Queries: queries.New(pool, nil),
 			Slack: notify.NewService(pool, keys, sender, "https://maiak.example.com"), Plans: plans.NewService(pool), Projects: projects.NewService(pool), Logger: log,
-			StatusPages: statuspages.NewService(pool, statuspages.Options{HashParams: &testHashParams}),
+			StatusPages:  statuspages.NewService(pool, statuspages.Options{HashParams: &testHashParams}),
+			Entitlements: entitlements.NewService(pool),
 		})
 	if err != nil {
 		t.Fatal(err)

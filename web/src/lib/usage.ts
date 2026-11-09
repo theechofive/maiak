@@ -1,9 +1,21 @@
 import { useQuery } from "@tanstack/react-query";
 import { getUsage, POLL_MS, queryKeys, type Usage } from "../api/endpoints";
+import { useAuth } from "../auth/AuthProvider";
+import { abilities } from "./roles";
 
-/** Plan, limits and usage of the tenant, polled like the monitor list. */
+/**
+ * Plan, limits and usage of the tenant, polled like the monitor list. Owners and admins only
+ * (L-288): for members and viewers it never loads, so limit hints stay off and a reached limit
+ * shows up as the create's own "plan limit reached" message.
+ */
 export function useUsage() {
-  return useQuery({ queryKey: queryKeys.usage, queryFn: getUsage, refetchInterval: POLL_MS });
+  const { session } = useAuth();
+  return useQuery({
+    queryKey: queryKeys.usage,
+    queryFn: getUsage,
+    refetchInterval: POLL_MS,
+    enabled: abilities(session).seeUsage,
+  });
 }
 
 /** True when the tenant cannot create another monitor (unknown usage is not a limit). */

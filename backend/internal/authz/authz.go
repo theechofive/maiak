@@ -174,7 +174,6 @@ var operations = map[string]Role{
 	"getmonitorstats":      Viewer,
 	"listmonitorchecks":    Viewer,
 	"listmonitorincidents": Viewer,
-	"getusage":             Viewer,
 	"listchannels":         Viewer,
 	"getchannel":           Viewer,
 	"listmembers":          Viewer,
@@ -192,10 +191,13 @@ var operations = map[string]Role{
 	"regenerateheartbeattoken": Member,
 
 	// Notification channels, members and invitations.
-	"createchannel":    Admin,
-	"updatechannel":    Admin,
-	"deletechannel":    Admin,
-	"testchannel":      Admin,
+	"createchannel": Admin,
+	"updatechannel": Admin,
+	"deletechannel": Admin,
+	"testchannel":   Admin,
+	// Organization-wide usage counts (L-288): members and viewers learn about a reached limit
+	// from the 409 of the create that hits it.
+	"getusage":         Admin,
 	"listinvitations":  Admin,
 	"createinvitation": Admin,
 	"revokeinvitation": Admin,

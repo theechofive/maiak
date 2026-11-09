@@ -77,9 +77,11 @@ export default function Settings() {
       <h1 className="pt-6 pb-6 text-headline leading-[1.1] font-semibold tracking-[-0.02em] sm:pt-10 sm:pb-9 sm:text-display">
         Settings
       </h1>
-      <SettingsSection id="plan" title="Plan">
-        <PlanUsage />
-      </SettingsSection>
+      {abilities(auth.session).seeUsage && (
+        <SettingsSection id="plan" title="Plan">
+          <PlanUsage />
+        </SettingsSection>
+      )}
       <SettingsSection
         id="channels"
         title="Notification channels"

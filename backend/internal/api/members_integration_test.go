@@ -110,7 +110,7 @@ var roleCalls = map[string]struct {
 	"getMonitorStats":          {authz.Viewer, http.MethodGet, "/api/v1/monitors/{id}/stats", ""},
 	"listMonitorChecks":        {authz.Viewer, http.MethodGet, "/api/v1/monitors/{id}/checks", ""},
 	"listMonitorIncidents":     {authz.Viewer, http.MethodGet, "/api/v1/monitors/{id}/incidents", ""},
-	"getUsage":                 {authz.Viewer, http.MethodGet, "/api/v1/usage", ""},
+	"getUsage":                 {authz.Admin, http.MethodGet, "/api/v1/usage", ""},
 	"listChannels":             {authz.Viewer, http.MethodGet, "/api/v1/channels", ""},
 	"createChannel":            {authz.Admin, http.MethodPost, "/api/v1/channels", `{"name":"role","webhookUrl":"https://hooks.slack.com/services/T000/B000/xyz"}`},
 	"getChannel":               {authz.Viewer, http.MethodGet, "/api/v1/channels/{id}", ""},

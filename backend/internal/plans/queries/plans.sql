@@ -41,3 +41,8 @@ WHERE tenant_id = @tenant_id AND deleted_at IS NULL;
 SELECT count(*)
 FROM status_pages
 WHERE tenant_id = @tenant_id AND deleted_at IS NULL;
+
+-- name: GetPlanFeatures :one
+SELECT features
+FROM plans
+WHERE key = @key;

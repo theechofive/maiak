@@ -39,6 +39,36 @@ const requests = (mock: ReturnType<typeof mockApi>, method: string, path: string
     .filter((r) => r.method === method && new URL(r.url).pathname === path);
 
 describe("members page", () => {
+  it("shows a viewer display names and roles, never logins (L-278)", async () => {
+    mockApi({
+      ...as("viewer"),
+      "GET /api/v1/members": () =>
+        json({
+          items: [
+            member({ userId: "u1", login: null, displayName: "Admin", role: "owner" }),
+            member({ login: null, displayName: "Bob" }),
+            member({ userId: "u3", login: null, displayName: "" }),
+          ],
+        }),
+    });
+    renderApp("/members");
+    expect(await screen.findByText("Bob")).toBeInTheDocument();
+    expect(screen.getByText("A member")).toBeInTheDocument();
+    expect(screen.queryByText(/@example\.com/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+  });
+
+  it("does not load or show organization usage for a member (L-288)", async () => {
+    const fetchMock = mockApi({
+      ...as("member"),
+      "GET /api/v1/channels": () => json({ items: [] }),
+    });
+    renderApp("/settings");
+    expect(await screen.findByRole("heading", { name: "Settings", level: 1 })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Plan" })).not.toBeInTheDocument();
+    expect(requests(fetchMock, "GET", "/api/v1/usage")).toHaveLength(0);
+  });
+
   it("lets an owner change a role, remove a member and invite with a link shown once", async () => {
     let members = [me, member()];
     const fetchMock = mockApi({
