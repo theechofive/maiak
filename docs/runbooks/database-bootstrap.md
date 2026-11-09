@@ -1,6 +1,6 @@
 # Runbook: database bootstrap
 
-The whole first deployment, including this step in context, is in [first-deploy.md](first-deploy.md).
+The whole first deployment, including this step in context, is in [first-deploy.md](first-deploy.md); a reinstall on an empty database (bootstrap, migrations, admin, OAuth, status page) is in [first-install.md](first-install.md).
 
 Decision and rationale: [ADR-0014](../adr/0014-db-bootstrap-automation.md). The database `maiak` and the roles `maiak_owner`, `maiak_api`, `maiak_worker` and (since P-05) `maiak_statuspage` are created automatically by the hook Job `maiak-db-bootstrap` before the migration Job. This page covers enabling it, verifying it and the manual fallback.
 

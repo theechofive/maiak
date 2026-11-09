@@ -23,7 +23,7 @@ func TestIntegrationAPIRuntimeGrants(t *testing.T) {
 		`INSERT INTO tenants (id, slug, name) VALUES ('`+tenantA+`', 'a', 'A'), ('`+tenantB+`', 'b', 'B')`)
 	for _, m := range [][2]string{{tenantA, monitorA}, {tenantB, monitorB}} {
 		pgtest.MustExec(t, admin,
-			`INSERT INTO monitors (id, tenant_id, name, config) VALUES ('`+m[1]+`', '`+m[0]+`', 'm', '{"url":"https://example.com"}')`,
+			`INSERT INTO monitors (id, tenant_id, project_id, name, config) VALUES ('`+m[1]+`', '`+m[0]+`', `+defaultProject(m[0])+`, 'm', '{"url":"https://example.com"}')`,
 			`INSERT INTO monitor_locations (tenant_id, monitor_id, location_id) VALUES ('`+m[0]+`', '`+m[1]+`', '`+homeLocation+`')`,
 			`INSERT INTO monitor_location_state (tenant_id, monitor_id, location_id, next_run_at, status, consecutive_failures, lease_token, lease_until)
 			 VALUES ('`+m[0]+`', '`+m[1]+`', '`+homeLocation+`', now() + interval '1 hour', 'down', 3, gen_random_uuid(), now() + interval '30 seconds')`,

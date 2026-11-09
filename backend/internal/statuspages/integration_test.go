@@ -43,7 +43,8 @@ func (f fixture) monitor(tenant, name, typ, status string, failures int, created
 	if typ == "heartbeat" {
 		config, threshold = `{"graceSeconds":60}`, 1
 	}
-	f.exec(`INSERT INTO monitors (id, tenant_id, name, type, config, failure_threshold, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+	f.exec(`INSERT INTO monitors (id, tenant_id, project_id, name, type, config, failure_threshold, created_at)
+		VALUES ($1, $2, (SELECT id FROM projects WHERE tenant_id = $2 AND is_default), $3, $4, $5, $6, $7)`,
 		id, tenant, name, typ, config, threshold, created)
 	f.exec(`INSERT INTO monitor_locations (tenant_id, monitor_id, location_id) VALUES ($1, $2, $3)`, tenant, id, homeLocation)
 	f.exec(`INSERT INTO monitor_location_state (tenant_id, monitor_id, location_id, next_run_at, status, consecutive_failures) VALUES ($1, $2, $3, now(), $4, $5)`,

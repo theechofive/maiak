@@ -74,8 +74,9 @@ func TestIntegrationChannels(t *testing.T) {
 	pgtest.MustExec(t, admin,
 		`INSERT INTO tenants (id, slug, name, plan_key) VALUES ('`+tenantA+`', 'a', 'A', 'internal'), ('`+tenantB+`', 'b', 'B', 'free')`,
 		`INSERT INTO users (id, email) VALUES ('`+userA+`', 'a@example.com')`,
-		`INSERT INTO monitors (id, tenant_id, name, config) VALUES ('`+monitorA+`', '`+tenantA+`', 'a', '{"url":"https://a.example","expectedStatus":"2xx"}'),
-			('`+monitorB+`', '`+tenantB+`', 'b', '{"url":"https://b.example","expectedStatus":"2xx"}')`)
+		`INSERT INTO monitors (id, tenant_id, project_id, name, config) VALUES
+			('`+monitorA+`', '`+tenantA+`', (SELECT id FROM projects WHERE tenant_id = '`+tenantA+`' AND is_default), 'a', '{"url":"https://a.example","expectedStatus":"2xx"}'),
+			('`+monitorB+`', '`+tenantB+`', (SELECT id FROM projects WHERE tenant_id = '`+tenantB+`' AND is_default), 'b', '{"url":"https://b.example","expectedStatus":"2xx"}')`)
 	sender := &fakeSender{}
 	svc := notify.NewService(env.Pool(t, env.APIURL, 4), keyring(t), sender, "https://maiak.example.com")
 	a := notify.Actor{TenantID: uuid.MustParse(tenantA), UserID: uuid.MustParse(userA)}

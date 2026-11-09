@@ -73,7 +73,7 @@ type ComponentConfig struct {
 	MonitorID   uuid.UUID
 	MonitorName string
 	MonitorType string
-	ProjectID   *uuid.UUID
+	ProjectID   uuid.UUID
 	PublicName  string
 	GroupName   *string
 	Position    int

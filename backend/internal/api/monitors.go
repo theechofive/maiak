@@ -43,7 +43,7 @@ func (s *server) ListMonitors(ctx context.Context, req gen.ListMonitorsRequestOb
 	items := make([]gen.MonitorListItem, len(list))
 	for i, m := range list {
 		items[i] = gen.MonitorListItem{
-			Id: m.ID, ProjectId: projectIDOf(m), Type: gen.MonitorType(m.Type), Name: m.Name, Url: m.URL, ExpectedStatus: m.ExpectedStatus,
+			Id: m.ID, ProjectId: m.ProjectID, Type: gen.MonitorType(m.Type), Name: m.Name, Url: m.URL, ExpectedStatus: m.ExpectedStatus,
 			IntervalSeconds: m.IntervalSeconds, TimeoutSeconds: m.TimeoutSeconds,
 			FailureThreshold: m.FailureThreshold, NotifySlack: m.NotifySlack, Paused: m.Paused,
 			Status: gen.MonitorStatus(m.Status), StatusSince: m.StatusSince, LastErrorKind: m.LastErrorKind,
@@ -247,7 +247,7 @@ func (s *server) detail(ctx context.Context, id uuid.UUID) (gen.MonitorDetail, e
 	}
 	m := d.Monitor
 	return gen.MonitorDetail{
-		Id: m.ID, ProjectId: projectIDOf(m), Type: gen.MonitorType(m.Type), Name: m.Name, Url: m.URL, ExpectedStatus: m.ExpectedStatus,
+		Id: m.ID, ProjectId: m.ProjectID, Type: gen.MonitorType(m.Type), Name: m.Name, Url: m.URL, ExpectedStatus: m.ExpectedStatus,
 		IntervalSeconds: m.IntervalSeconds, TimeoutSeconds: m.TimeoutSeconds,
 		FailureThreshold: m.FailureThreshold, NotifySlack: m.NotifySlack, Paused: m.Paused,
 		Status: gen.MonitorStatus(m.Status), StatusSince: m.StatusSince, LastErrorKind: m.LastErrorKind,
@@ -257,14 +257,6 @@ func (s *server) detail(ctx context.Context, id uuid.UUID) (gen.MonitorDetail, e
 		ChannelIds: d.ChannelIDs,
 		CreatedAt:  m.CreatedAt, UpdatedAt: m.UpdatedAt,
 	}, nil
-}
-
-// projectIDOf is the monitor's project; uuid.Nil only before the T-02 contract step (L-285).
-func projectIDOf(m queries.Monitor) uuid.UUID {
-	if m.ProjectID == nil {
-		return uuid.Nil
-	}
-	return *m.ProjectID
 }
 
 // expectedInterval is a heartbeat's expected ping interval (its interval_seconds), nil for http.

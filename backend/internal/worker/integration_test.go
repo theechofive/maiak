@@ -68,8 +68,9 @@ func (e *env) monitor(tenant, url string, threshold int) uuid.UUID {
 	e.t.Helper()
 	id := uuid.New()
 	pgtest.MustExec(e.t, e.admin,
-		fmt.Sprintf(`INSERT INTO monitors (id, tenant_id, name, config, failure_threshold) VALUES ('%s', '%s', 'm', jsonb_build_object('url', '%s', 'expectedStatus', '2xx'), %d)`,
-			id, tenant, url, threshold),
+		fmt.Sprintf(`INSERT INTO monitors (id, tenant_id, project_id, name, config, failure_threshold)
+			VALUES ('%s', '%s', (SELECT id FROM projects WHERE tenant_id = '%s' AND is_default), 'm', jsonb_build_object('url', '%s', 'expectedStatus', '2xx'), %d)`,
+			id, tenant, tenant, url, threshold),
 		fmt.Sprintf(`INSERT INTO monitor_locations (tenant_id, monitor_id, location_id) VALUES ('%s', '%s', '%s')`, tenant, id, homeLocation),
 		fmt.Sprintf(`INSERT INTO monitor_location_state (tenant_id, monitor_id, location_id, next_run_at) VALUES ('%s', '%s', '%s', now())`, tenant, id, homeLocation),
 		fmt.Sprintf(`INSERT INTO monitor_state (tenant_id, monitor_id) VALUES ('%s', '%s')`, tenant, id),

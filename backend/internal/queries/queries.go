@@ -64,10 +64,8 @@ type Incident struct {
 
 // Monitor is a monitor with its current state, as the list shows it.
 type Monitor struct {
-	ID uuid.UUID
-	// ProjectID is the monitor's project (nil only for a monitor the previous release created
-	// before the T-02 contract step, L-285; the fill trigger prevents it).
-	ProjectID *uuid.UUID
+	ID        uuid.UUID
+	ProjectID uuid.UUID
 	// Type is "http" or "heartbeat".
 	Type             string
 	Name             string

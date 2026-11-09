@@ -224,7 +224,7 @@ type ListComponentsRow struct {
 	Position         int32
 	MonitorName      string
 	MonitorType      string
-	ProjectID        *uuid.UUID
+	ProjectID        uuid.UUID
 	Paused           bool
 	MonitorCreatedAt time.Time
 	MonitorStatus    string

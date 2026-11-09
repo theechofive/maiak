@@ -2,6 +2,9 @@
 
 Decision: [ADR-0103](../adr/0103-status-page.md) (with implementation notes). Organizations configure the page in the app (**Status page**, owners and admins); visitors open `https://<host>/status/<slug>`, served by the `statuspage` process.
 
+## Enabling it on a new installation
+On an empty database the renderer is enabled together with the db bootstrap, in one commit: [first-install.md](first-install.md).
+
 ## Enabling it on an existing installation (klr-platform)
 The renderer logs in as `maiak_statuspage`, which only `maiakctl db bootstrap` creates, and reads its URL from the key `statuspage_url` of the Secret `maiak-db`. Installations from before P-05 have neither, so `statuspage.enabled` is `false` in `values-platform.yaml` (L-292). The admin API, the settings page and the snapshots work without it; only the public page is missing.
 

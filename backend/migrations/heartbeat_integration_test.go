@@ -19,9 +19,13 @@ func seedHeartbeat(t *testing.T, admin *pgx.Conn, tenant, token string, interval
 	t.Helper()
 	id := uuid.New().String()
 	sum := sha256.Sum256([]byte(token))
+	projectCol, projectVal := "", ""
+	if hasMonitorProject(t, admin) {
+		projectCol, projectVal = ", project_id", ", "+defaultProject(tenant)
+	}
 	pgtest.MustExec(t, admin,
-		fmt.Sprintf(`INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, failure_threshold)
-			VALUES ('%s', '%s', 'hb', 'heartbeat', '{"graceSeconds": %d}', %d, 1)`, id, tenant, grace, interval),
+		fmt.Sprintf(`INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, failure_threshold%s)
+			VALUES ('%s', '%s', 'hb', 'heartbeat', '{"graceSeconds": %d}', %d, 1%s)`, projectCol, id, tenant, grace, interval, projectVal),
 		fmt.Sprintf(`INSERT INTO monitor_locations (tenant_id, monitor_id, location_id) VALUES ('%s', '%s', '%s')`, tenant, id, homeLocation),
 		fmt.Sprintf(`INSERT INTO monitor_location_state (tenant_id, monitor_id, location_id, next_run_at) VALUES ('%s', '%s', '%s', 'infinity')`, tenant, id, homeLocation),
 		fmt.Sprintf(`INSERT INTO monitor_state (tenant_id, monitor_id) VALUES ('%s', '%s')`, tenant, id))
@@ -46,24 +50,24 @@ func TestIntegrationHeartbeatSchema(t *testing.T) {
 
 	t.Run("constraints: the MVP limits bind http only, heartbeats have their own", func(t *testing.T) {
 		for stmt, want := range map[string]string{
-			`INSERT INTO monitors (id, tenant_id, name, config, interval_seconds) VALUES (gen_random_uuid(), '` + tenantA + `', 'h', '{"url":"https://example.com"}', 300)`:                                   "monitors_mvp_interval",
-			`INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', 'h', 'heartbeat', '{"graceSeconds": 0}', 59, 1)`:     "monitors_heartbeat_check",
-			`INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', 'h', 'heartbeat', '{"graceSeconds": 0}', 86401, 1)`:  "monitors_heartbeat_check",
-			`INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', 'h', 'heartbeat', '{"graceSeconds": 0}', 300, 2)`:    "monitors_heartbeat_check",
-			`INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', 'h', 'heartbeat', '{}', 300, 1)`:                     "monitors_heartbeat_check",
-			`INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', 'h', 'heartbeat', '{"graceSeconds": "60"}', 300, 1)`: "monitors_heartbeat_check",
-			`INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', 'h', 'heartbeat', '{"graceSeconds": 3601}', 300, 1)`: "monitors_heartbeat_check",
-			`INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', 'h', 'heartbeat', '{"graceSeconds": 1.5}', 300, 1)`:  "monitors_heartbeat_check",
-			`INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', 'h', 'heartbeat', '{"graceSeconds": 60.0}', 300, 1)`: "monitors_heartbeat_check",
-			`INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', 'h', 'heartbeat', '{"graceSeconds": -1}', 300, 1)`:   "monitors_heartbeat_check",
-			`INSERT INTO monitors (id, tenant_id, name, type, config) VALUES (gen_random_uuid(), '` + tenantA + `', 'h', 'tcp', '{}')`:                                                                        "monitors_type_check",
+			`INSERT INTO monitors (id, tenant_id, project_id, name, config, interval_seconds) VALUES (gen_random_uuid(), '` + tenantA + `', ` + defaultProject(tenantA) + `, 'h', '{"url":"https://example.com"}', 300)`:                                   "monitors_mvp_interval",
+			`INSERT INTO monitors (id, tenant_id, project_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', ` + defaultProject(tenantA) + `, 'h', 'heartbeat', '{"graceSeconds": 0}', 59, 1)`:     "monitors_heartbeat_check",
+			`INSERT INTO monitors (id, tenant_id, project_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', ` + defaultProject(tenantA) + `, 'h', 'heartbeat', '{"graceSeconds": 0}', 86401, 1)`:  "monitors_heartbeat_check",
+			`INSERT INTO monitors (id, tenant_id, project_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', ` + defaultProject(tenantA) + `, 'h', 'heartbeat', '{"graceSeconds": 0}', 300, 2)`:    "monitors_heartbeat_check",
+			`INSERT INTO monitors (id, tenant_id, project_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', ` + defaultProject(tenantA) + `, 'h', 'heartbeat', '{}', 300, 1)`:                     "monitors_heartbeat_check",
+			`INSERT INTO monitors (id, tenant_id, project_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', ` + defaultProject(tenantA) + `, 'h', 'heartbeat', '{"graceSeconds": "60"}', 300, 1)`: "monitors_heartbeat_check",
+			`INSERT INTO monitors (id, tenant_id, project_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', ` + defaultProject(tenantA) + `, 'h', 'heartbeat', '{"graceSeconds": 3601}', 300, 1)`: "monitors_heartbeat_check",
+			`INSERT INTO monitors (id, tenant_id, project_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', ` + defaultProject(tenantA) + `, 'h', 'heartbeat', '{"graceSeconds": 1.5}', 300, 1)`:  "monitors_heartbeat_check",
+			`INSERT INTO monitors (id, tenant_id, project_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', ` + defaultProject(tenantA) + `, 'h', 'heartbeat', '{"graceSeconds": 60.0}', 300, 1)`: "monitors_heartbeat_check",
+			`INSERT INTO monitors (id, tenant_id, project_id, name, type, config, interval_seconds, failure_threshold) VALUES (gen_random_uuid(), '` + tenantA + `', ` + defaultProject(tenantA) + `, 'h', 'heartbeat', '{"graceSeconds": -1}', 300, 1)`:   "monitors_heartbeat_check",
+			`INSERT INTO monitors (id, tenant_id, project_id, name, type, config) VALUES (gen_random_uuid(), '` + tenantA + `', ` + defaultProject(tenantA) + `, 'h', 'tcp', '{}')`:                                                                        "monitors_type_check",
 		} {
 			if _, err := admin.Exec(ctx, stmt); err == nil || !strings.Contains(err.Error(), want) {
 				t.Errorf("%s: err = %v, want %s", stmt, err, want)
 			}
 		}
-		if _, err := admin.Exec(ctx, `INSERT INTO monitors (id, tenant_id, name, type, config, interval_seconds, failure_threshold)
-			VALUES (gen_random_uuid(), '`+tenantA+`', 'h', 'heartbeat', '{"graceSeconds": 0}', 86400, 1)`); err != nil {
+		if _, err := admin.Exec(ctx, `INSERT INTO monitors (id, tenant_id, project_id, name, type, config, interval_seconds, failure_threshold)
+			VALUES (gen_random_uuid(), '`+tenantA+`', `+defaultProject(tenantA)+`, 'h', 'heartbeat', '{"graceSeconds": 0}', 86400, 1)`); err != nil {
 			t.Fatalf("valid heartbeat: %v", err)
 		}
 	})

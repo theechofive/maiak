@@ -74,15 +74,11 @@ type Actor struct {
 // checkAccess refuses a change of a monitor in project: ErrNotFound when the actor does not see
 // the project (so ids of other projects reveal nothing), authz.ErrProjectForbidden when its role
 // there is below member.
-func (a Actor) checkAccess(project *uuid.UUID) error {
-	var p uuid.UUID
-	if project != nil {
-		p = *project
-	}
-	if !a.Access.Sees(p) {
+func (a Actor) checkAccess(project uuid.UUID) error {
+	if !a.Access.Sees(project) {
 		return ErrNotFound
 	}
-	if !a.Access.CanEditIn(p) {
+	if !a.Access.CanEditIn(project) {
 		return authz.ErrProjectForbidden
 	}
 	return nil
@@ -91,7 +87,7 @@ func (a Actor) checkAccess(project *uuid.UUID) error {
 // Monitor is a monitor with its aggregated state.
 type Monitor struct {
 	ID        uuid.UUID
-	ProjectID *uuid.UUID
+	ProjectID uuid.UUID
 	Type      string
 	Name      string
 	// URL and ExpectedStatus are empty for a heartbeat.
@@ -270,7 +266,7 @@ func (s *Service) Create(ctx context.Context, a Actor, in CreateInput) (Monitor,
 		if !a.Access.CanEditIn(project) {
 			return authz.ErrProjectForbidden
 		}
-		row.ProjectID = &project
+		row.ProjectID = project
 		location, err := s.sched.HomeLocation(ctx, tx)
 		if err != nil {
 			return err
@@ -395,10 +391,7 @@ func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateIn
 		if err := verr.Err(); err != nil {
 			return err
 		}
-		project := uuid.Nil
-		if cur.ProjectID != nil {
-			project = *cur.ProjectID
-		}
+		project := cur.ProjectID
 		var moveMeta map[string]any
 		if in.ProjectID != nil && *in.ProjectID != project {
 			target, err := projects.ForUse(ctx, tx, a.TenantID, in.ProjectID)
@@ -411,7 +404,7 @@ func (s *Service) Update(ctx context.Context, a Actor, id uuid.UUID, in UpdateIn
 			if !a.Access.CanEditIn(target) {
 				return authz.ErrProjectForbidden
 			}
-			if err := q.SetMonitorProject(ctx, monitorsdb.SetMonitorProjectParams{TenantID: a.TenantID, ID: id, ProjectID: &target}); err != nil {
+			if err := q.SetMonitorProject(ctx, monitorsdb.SetMonitorProjectParams{TenantID: a.TenantID, ID: id, ProjectID: target}); err != nil {
 				return fmt.Errorf("move monitor: %w", err)
 			}
 			// Channels of the old project are not allowed in the new one (ADR-0102, T-02).

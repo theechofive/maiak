@@ -25,14 +25,37 @@ func seedMonitor(t *testing.T, admin *pgx.Conn, tenant, nextRun string, paused, 
 	if deleted {
 		deletedAt = "now()"
 	}
+	// Tests also seed schemas rolled back to before T-02, which have no monitors.project_id.
+	projectCol, projectVal := "", ""
+	if hasMonitorProject(t, admin) {
+		projectCol, projectVal = ", project_id", ", "+defaultProject(tenant)
+	}
 	pgtest.MustExec(t, admin,
-		fmt.Sprintf(`INSERT INTO monitors (id, tenant_id, name, config, paused, deleted_at)
-			VALUES ('%s', '%s', 'm', '{"url":"https://example.com/%s","expectedStatus":"204"}', %t, %s)`, id, tenant, id, paused, deletedAt),
+		fmt.Sprintf(`INSERT INTO monitors (id, tenant_id, name, config, paused, deleted_at%s)
+			VALUES ('%s', '%s', 'm', '{"url":"https://example.com/%s","expectedStatus":"204"}', %t, %s%s)`,
+			projectCol, id, tenant, id, paused, deletedAt, projectVal),
 		fmt.Sprintf(`INSERT INTO monitor_locations (tenant_id, monitor_id, location_id) VALUES ('%s', '%s', '%s')`, tenant, id, homeLocation),
 		fmt.Sprintf(`INSERT INTO monitor_location_state (tenant_id, monitor_id, location_id, next_run_at) VALUES ('%s', '%s', '%s', %s)`, tenant, id, homeLocation, nextRun),
 		fmt.Sprintf(`INSERT INTO monitor_state (tenant_id, monitor_id) VALUES ('%s', '%s')`, tenant, id),
 	)
 	return id
+}
+
+// hasMonitorProject reports whether monitors.project_id exists (T-02 applied).
+func hasMonitorProject(t *testing.T, admin *pgx.Conn) bool {
+	t.Helper()
+	var ok bool
+	if err := admin.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM pg_attribute
+		WHERE attrelid = 'monitors'::regclass AND attname = 'project_id' AND NOT attisdropped)`).Scan(&ok); err != nil {
+		t.Fatal(err)
+	}
+	return ok
+}
+
+// defaultProject is an SQL expression for the Default project of tenant; monitors need a project
+// since the T-02 contract step (L-285).
+func defaultProject(tenant string) string {
+	return "(SELECT id FROM projects WHERE tenant_id = '" + tenant + "' AND is_default)"
 }
 
 // monthPartition creates the check_results partition of the UTC month starting at start the way
@@ -526,7 +549,7 @@ func TestIntegrationClaimDueMonitors(t *testing.T) {
 			VALUES ('`+other+`', 'agent-lab', 'Lab agent', 'self', 'lab', 'agent')`)
 		om := uuid.New().String()
 		pgtest.MustExec(t, admin,
-			`INSERT INTO monitors (id, tenant_id, name, config) VALUES ('`+om+`', '`+tenantA+`', 'o', '{"url":"https://example.com/o"}')`,
+			`INSERT INTO monitors (id, tenant_id, project_id, name, config) VALUES ('`+om+`', '`+tenantA+`', `+defaultProject(tenantA)+`, 'o', '{"url":"https://example.com/o"}')`,
 			`INSERT INTO monitor_locations (tenant_id, monitor_id, location_id) VALUES ('`+tenantA+`', '`+om+`', '`+other+`')`,
 			`INSERT INTO monitor_location_state (tenant_id, monitor_id, location_id, next_run_at) VALUES ('`+tenantA+`', '`+om+`', '`+other+`', now() - interval '1 minute')`)
 		claimAt := func(location string) []string {

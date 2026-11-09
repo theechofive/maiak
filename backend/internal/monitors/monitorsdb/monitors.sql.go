@@ -29,7 +29,7 @@ type GetMonitorParams struct {
 
 type GetMonitorRow struct {
 	ID                uuid.UUID
-	ProjectID         *uuid.UUID
+	ProjectID         uuid.UUID
 	Name              string
 	Type              string
 	Config            []byte
@@ -98,7 +98,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 type InsertMonitorParams struct {
 	ID               uuid.UUID
 	TenantID         uuid.UUID
-	ProjectID        *uuid.UUID
+	ProjectID        uuid.UUID
 	Name             string
 	Type             string
 	Config           []byte
@@ -202,7 +202,7 @@ type LockMonitorParams struct {
 
 type LockMonitorRow struct {
 	ID               uuid.UUID
-	ProjectID        *uuid.UUID
+	ProjectID        uuid.UUID
 	Name             string
 	Type             string
 	Config           []byte
@@ -338,7 +338,7 @@ WHERE tenant_id = $2 AND id = $3
 `
 
 type SetMonitorProjectParams struct {
-	ProjectID *uuid.UUID
+	ProjectID uuid.UUID
 	TenantID  uuid.UUID
 	ID        uuid.UUID
 }

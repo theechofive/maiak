@@ -101,6 +101,7 @@ func TestIntegrationHeartbeatHardening(t *testing.T) {
 	replay := func(t *testing.T, grace string) error {
 		t.Helper()
 		// The later platform admin and P-09 migrations are rolled back and re-applied with it.
+		pgtest.MustExec(t, admin, rollbackProjectsContract...)
 		pgtest.MustExec(t, admin, rollbackOAuthLogin...)
 		pgtest.MustExec(t, admin, rollbackStatusPages...)
 		pgtest.MustExec(t, admin, rollbackProjects...)
@@ -114,8 +115,8 @@ func TestIntegrationHeartbeatHardening(t *testing.T) {
 			`DELETE FROM goose_db_version WHERE version_id = 20261021180000`,
 			`UPDATE monitors SET config = jsonb_set(config, '{graceSeconds}', '`+grace+`'::jsonb) WHERE id = '`+id+`'`)
 		n, err := env.Migrate(ctx)
-		if err == nil && n != 10 {
-			t.Fatalf("re-applied %d migrations, want 10 (with T-01, T-02, P-05, P-06 and O-01)", n)
+		if err == nil && n != 11 {
+			t.Fatalf("re-applied %d migrations, want 11 (with T-01, T-02, P-05, P-06, O-01 and the T-02 contract)", n)
 		}
 		return err
 	}

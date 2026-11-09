@@ -181,7 +181,7 @@ func toComponentList(list []statuspages.ComponentConfig) gen.StatusPageComponent
 	out := gen.StatusPageComponentList{Items: make([]gen.StatusPageComponent, len(list))}
 	for i, c := range list {
 		out.Items[i] = gen.StatusPageComponent{MonitorId: c.MonitorID, MonitorName: c.MonitorName, MonitorType: gen.MonitorType(c.MonitorType),
-			ProjectId: c.ProjectID, PublicName: c.PublicName, GroupName: c.GroupName, Position: c.Position}
+			ProjectId: &c.ProjectID, PublicName: c.PublicName, GroupName: c.GroupName, Position: c.Position}
 	}
 	return out
 }

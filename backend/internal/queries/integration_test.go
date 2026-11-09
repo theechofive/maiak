@@ -54,8 +54,8 @@ func (f *fixture) monitor(tenant, id uuid.UUID, created time.Time, paused, delet
 	if deleted {
 		deletedAt = &created
 	}
-	f.exec(`INSERT INTO monitors (id, tenant_id, name, config, paused, created_at, deleted_at)
-		VALUES ($1, $2, 'm', '{"url":"https://example.com/","expectedStatus":"204"}', $3, $4, $5)`, id, tenant, paused, created, deletedAt)
+	f.exec(`INSERT INTO monitors (id, tenant_id, project_id, name, config, paused, created_at, deleted_at)
+		VALUES ($1, $2, (SELECT id FROM projects WHERE tenant_id = $2 AND is_default), 'm', '{"url":"https://example.com/","expectedStatus":"204"}', $3, $4, $5)`, id, tenant, paused, created, deletedAt)
 	f.exec(`INSERT INTO monitor_locations (tenant_id, monitor_id, location_id) VALUES ($1, $2, $3)`, tenant, id, homeLocation)
 	f.exec(`INSERT INTO monitor_location_state (tenant_id, monitor_id, location_id, next_run_at) VALUES ($1, $2, $3, now())`, tenant, id, homeLocation)
 	f.exec(`INSERT INTO monitor_state (tenant_id, monitor_id, status, status_changed_at) VALUES ($1, $2, $3, $4)`, tenant, id, status, created)

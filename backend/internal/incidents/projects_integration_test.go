@@ -95,7 +95,7 @@ func TestIntegrationProjectChannelRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 	moved, err := f.monitors.Update(f.ctx, f.actor, selMon.ID, monitors.UpdateInput{ProjectID: &def})
-	if err != nil || moved.ProjectID == nil || *moved.ProjectID != def {
+	if err != nil || moved.ProjectID != def {
 		t.Fatalf("move: %+v %v", moved.ProjectID, err)
 	}
 	if got := opened(selMon.ID); got != "org" {

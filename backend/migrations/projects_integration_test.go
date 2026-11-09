@@ -30,8 +30,8 @@ var rollbackProjects = []string{
 }
 
 // TestIntegrationProjects checks the T-02 migration: the backfill over existing tenants, monitors
-// and channels, the Default project of new tenants and of monitors the previous release creates,
-// isolation and grants of the new tables, and the routing rule of enqueue_incident_reminders.
+// and channels, the Default project of new tenants, isolation and grants of the new tables, and the
+// routing rule of enqueue_incident_reminders.
 func TestIntegrationProjects(t *testing.T) {
 	env := pgtest.New(t, pgtest.DBName("projects"))
 	ctx := context.Background()
@@ -41,6 +41,7 @@ func TestIntegrationProjects(t *testing.T) {
 
 	// The previous release's database with data: two tenants, monitors (one deleted), live and
 	// deleted channels and a channel selection. Then the T-02 migration runs over it.
+	pgtest.MustExec(t, admin, rollbackProjectsContract...)
 	pgtest.MustExec(t, admin, rollbackOAuthLogin...)
 	pgtest.MustExec(t, admin, rollbackStatusPages...)
 	pgtest.MustExec(t, admin, rollbackProjects...)
@@ -53,8 +54,8 @@ func TestIntegrationProjects(t *testing.T) {
 		`INSERT INTO notification_channels (id, tenant_id, type, config_encrypted) VALUES ('`+chanA+`', '`+tenantA+`', 'slack_webhook', '\x01')`,
 		`INSERT INTO notification_channels (id, tenant_id, type, deleted_at, status) VALUES ('`+chanGone+`', '`+tenantA+`', 'slack_webhook', now(), 'failed')`,
 		`INSERT INTO monitor_channels (tenant_id, monitor_id, channel_id) VALUES ('`+tenantA+`', '`+monA+`', '`+chanA+`')`)
-	if n, err := env.Migrate(ctx); err != nil || n != 4 {
-		t.Fatalf("re-applied %d migrations, err=%v; want 4 (T-02, P-05, P-06, O-01)", n, err)
+	if n, err := env.Migrate(ctx); err != nil || n != 5 {
+		t.Fatalf("re-applied %d migrations, err=%v; want 5 (T-02, P-05, P-06, O-01, T-02 contract)", n, err)
 	}
 
 	defaultOf := func(tenant string) string {
@@ -97,32 +98,22 @@ func TestIntegrationProjects(t *testing.T) {
 		}
 	})
 
-	t.Run("previous release keeps working", func(t *testing.T) {
+	t.Run("new tenants and organization-wide channels", func(t *testing.T) {
 		// auth_create_tenant (and a direct insert) gives the new tenant its Default project.
 		var created uuid.UUID
 		newID := uuid.New()
 		if err := api.QueryRow(ctx, `SELECT auth_create_tenant($1, 'fresh', 'Fresh')`, newID).Scan(&created); err != nil || created != newID {
 			t.Fatalf("auth_create_tenant: %v %v", created, err)
 		}
-		defNew := defaultOf(newID.String())
-		// A monitor inserted without a project (the previous api) lands in the Default project.
-		var id string
-		err := inTenant(t, api, newID.String(), func(tx pgx.Tx) error {
-			return tx.QueryRow(ctx, `INSERT INTO monitors (id, tenant_id, name, config) VALUES (gen_random_uuid(), $1, 'old api', '{"url":"https://example.com","expectedStatus":"2xx"}') RETURNING id::text`, newID).Scan(&id)
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := projectOf("monitors", id); got != defNew {
-			t.Fatalf("monitor of the previous api in %s, want %s", got, defNew)
-		}
-		// A channel of the previous api is organization-wide (L-286).
+		defaultOf(newID.String())
+		// A channel without a project is organization-wide (by design, ADR-0102). Monitors without
+		// a project are refused since the contract step (TestIntegrationProjectsContract).
 		var ch string
-		err = inTenant(t, api, newID.String(), func(tx pgx.Tx) error {
+		err := inTenant(t, api, newID.String(), func(tx pgx.Tx) error {
 			return tx.QueryRow(ctx, `INSERT INTO notification_channels (id, tenant_id, type, config_encrypted) VALUES (gen_random_uuid(), $1, 'slack_webhook', '\x01') RETURNING id::text`, newID).Scan(&ch)
 		})
 		if err != nil || projectOf("notification_channels", ch) != "NULL" {
-			t.Fatalf("channel of the previous api: %v %s", err, projectOf("notification_channels", ch))
+			t.Fatalf("organization-wide channel: %v %s", err, projectOf("notification_channels", ch))
 		}
 	})
 

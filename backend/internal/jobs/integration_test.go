@@ -140,7 +140,8 @@ func (e *env) monitor(tenant, name string) uuid.UUID {
 	e.t.Helper()
 	id := uuid.New()
 	pgtest.MustExec(e.t, e.admin,
-		fmt.Sprintf(`INSERT INTO monitors (id, tenant_id, name, config) VALUES ('%s', '%s', '%s', '{"url":"https://example.com/"}')`, id, tenant, name))
+		fmt.Sprintf(`INSERT INTO monitors (id, tenant_id, project_id, name, config)
+			VALUES ('%s', '%s', (SELECT id FROM projects WHERE tenant_id = '%s' AND is_default), '%s', '{"url":"https://example.com/"}')`, id, tenant, tenant, name))
 	return id
 }
 

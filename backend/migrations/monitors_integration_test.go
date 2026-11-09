@@ -64,7 +64,7 @@ func TestIntegrationMonitorsSchema(t *testing.T) {
 	}
 
 	create := `
-INSERT INTO monitors (id, tenant_id, name, config) VALUES ('` + monitorA + `', '` + tenantA + `', 'm', '{"url":"https://example.com"}');
+INSERT INTO monitors (id, tenant_id, project_id, name, config) VALUES ('` + monitorA + `', '` + tenantA + `', ` + defaultProject(tenantA) + `, 'm', '{"url":"https://example.com"}');
 INSERT INTO monitor_locations (tenant_id, monitor_id, location_id) VALUES ('` + tenantA + `', '` + monitorA + `', '` + homeLocation + `');
 INSERT INTO monitor_location_state (tenant_id, monitor_id, location_id, next_run_at) VALUES ('` + tenantA + `', '` + monitorA + `', '` + homeLocation + `', now());
 INSERT INTO monitor_state (tenant_id, monitor_id) VALUES ('` + tenantA + `', '` + monitorA + `');`
