@@ -73,7 +73,7 @@ jobs:
           persist-credentials: false
       # On push to main everything runs: the "before" commit can be unreachable after a force push,
       # which makes paths-filter fail with git exit 128.
-      - uses: dorny/paths-filter@v3 # TODO(L-019) pin to SHA
+      - uses: dorny/paths-filter@v4 # TODO(L-019) pin to SHA
         if: github.event_name == 'pull_request'
         id: filter
         with:
