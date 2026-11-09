@@ -45,7 +45,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6 # TODO(L-019) pin to SHA
+      - uses: docker/build-push-action@v7 # TODO(L-019) pin to SHA
         with:
           context: .
           file: Dockerfile
@@ -83,7 +83,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6 # TODO(L-019) pin to SHA
+      - uses: docker/build-push-action@v7 # TODO(L-019) pin to SHA
         with:
           context: web
           platforms: linux/amd64,linux/arm64
